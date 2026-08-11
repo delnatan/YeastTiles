@@ -1,0 +1,4 @@
+{
+    "categories": ["single", "tetrad", "two", "junk", "weird", "empty", "missegment"],
+    "description": "Yeast cell-crop classifier (brightfield + fluorescence + mask, EfficientNet-B0 stem modified for 2 input channels). Trained via VICReg self-supervised pretraining + supervised fine-tuning; see Bri/02_supervised_training.py."
+}

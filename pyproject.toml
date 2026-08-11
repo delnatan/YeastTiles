@@ -1,0 +1,61 @@
+[project]
+name = "tileclass"
+version = "0.1.0"
+description = "Minimal, fast tile-grid viewer for browsing and classifying folders of small microscopy/image tiles."
+requires-python = ">=3.11"
+dependencies = [
+    "cellpose",
+    "ipykernel",
+    "jupyter",
+    "matplotlib",
+    "numpy",
+    "Pillow",
+    "polars",
+    "psfkit",
+    "PyQt6",
+    "pyvistra",
+    "qtpy",
+    "resolvde",
+    "scipy",
+    "tifffile",
+    "torch",
+    "torchvision",
+    "vispy",
+]
+
+[project.scripts]
+tiled_viewer = "tileclass.__main__:main"
+yeastprep = "yeastprep.__main__:main"
+yeastprep-batch = "yeastprep.core.cli:main"
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+# run `uv sync` in the folder where this file lives.
+# pyvistra/resolvde/psfkit are local-only dev packages (no PyPI release, and
+# resolvde/psfkit have no git remote yet), so they're pulled in as editable
+# local path dependencies rather than via a shared uv workspace. To reproduce
+# on another machine: clone the three repos below to matching paths (or edit
+# the paths here to match wherever they were cloned), then `uv sync`.
+[tool.uv.sources]
+pyvistra = { path = "/home/starrluxton/CustomPythonPackages/pyvistra", editable = true }
+resolvde = { path = "/home/starrluxton/CustomPythonPackages/resolvde", editable = true }
+psfkit = { path = "/home/starrluxton/CustomPythonPackages/psfkit", editable = true }
+
+torch = [
+    { index = "pytorch-cu132", marker = "sys_platform == 'linux'" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cu132"
+url = "https://download.pytorch.org/whl/cu132"
+explicit = true
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
