@@ -26,3 +26,6 @@ venv/
 
 # Claude Code local settings
 .claude/settings.local.json
+
+# Cellpose models (large files)
+models/

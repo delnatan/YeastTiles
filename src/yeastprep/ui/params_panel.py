@@ -10,6 +10,7 @@ signals for the manual-control buttons.
 from qtpy.QtCore import Signal
 from qtpy.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QDoubleSpinBox,
     QFormLayout,
     QGroupBox,
@@ -105,7 +106,7 @@ class ParamsPanel(QWidget):
         form.addRow("Defocus offset (um)", self.offset_um)
 
         self.auto_recompute = QCheckBox("Auto-recompute on change")
-        self.auto_recompute.setChecked(True)
+        self.auto_recompute.setChecked(False)
         form.addRow(self.auto_recompute)
 
         return group
@@ -114,23 +115,17 @@ class ParamsPanel(QWidget):
         group = QGroupBox("Channel selection")
         form = QFormLayout(group)
 
-        bf_row = QHBoxLayout()
-        self.brightfield_channel = QSpinBox()
-        self.brightfield_channel.setRange(0, 0)
-        self.brightfield_channel.valueChanged.connect(self._on_channel_edited)
-        bf_row.addWidget(self.brightfield_channel)
-        self.brightfield_name_label = QLabel("")
-        bf_row.addWidget(self.brightfield_name_label, 1)
-        form.addRow("Brightfield ch.", bf_row)
+        # Dropdowns listing the file's actual channels (by name/wavelength),
+        # not raw index spin-boxes -- there's nothing to mis-index this way,
+        # and picking the same channel for both is immediately visible
+        # instead of a silent (0, 0) default. See `set_channels_meta`.
+        self.brightfield_channel = QComboBox()
+        self.brightfield_channel.currentIndexChanged.connect(self._on_channel_edited)
+        form.addRow("Brightfield ch.", self.brightfield_channel)
 
-        proj_row = QHBoxLayout()
-        self.target_channel = QSpinBox()
-        self.target_channel.setRange(0, 0)
-        self.target_channel.valueChanged.connect(self._on_channel_edited)
-        proj_row.addWidget(self.target_channel)
-        self.target_name_label = QLabel("")
-        proj_row.addWidget(self.target_name_label, 1)
-        form.addRow("Target (DAPI) ch.", proj_row)
+        self.target_channel = QComboBox()
+        self.target_channel.currentIndexChanged.connect(self._on_channel_edited)
+        form.addRow("Target (DAPI) ch.", self.target_channel)
 
         return group
 
@@ -138,16 +133,16 @@ class ParamsPanel(QWidget):
         column = QVBoxLayout()
 
         recompute_row = QHBoxLayout()
-        self.recompute_btn = QPushButton("Recompute Now")
+        self.recompute_btn = QPushButton("Do it")
         self.recompute_btn.clicked.connect(self.recompute_requested)
         recompute_row.addWidget(self.recompute_btn)
         column.addLayout(recompute_row)
 
         defaults_row = QHBoxLayout()
-        self.save_defaults_btn = QPushButton("Save as folder defaults")
+        self.save_defaults_btn = QPushButton("Save as project defaults")
         self.save_defaults_btn.clicked.connect(self.save_defaults_requested)
         defaults_row.addWidget(self.save_defaults_btn)
-        self.reset_defaults_btn = QPushButton("Reset to folder defaults")
+        self.reset_defaults_btn = QPushButton("Reset to project defaults")
         self.reset_defaults_btn.clicked.connect(self.reset_defaults_requested)
         defaults_row.addWidget(self.reset_defaults_btn)
         column.addLayout(defaults_row)
@@ -177,17 +172,18 @@ class ParamsPanel(QWidget):
         self._emitting = False
 
     def channels(self) -> ChannelSelection:
+        brightfield = self.brightfield_channel.currentData()
+        target = self.target_channel.currentData()
         return ChannelSelection(
-            brightfield=self.brightfield_channel.value(),
-            projection=self.target_channel.value(),
+            brightfield=brightfield if brightfield is not None else 0,
+            projection=target if target is not None else 0,
         )
 
     def set_channels(self, channels: ChannelSelection):
         self._emitting = True
-        self.brightfield_channel.setValue(channels.brightfield)
-        self.target_channel.setValue(channels.projection)
+        self._set_combo_channel(self.brightfield_channel, channels.brightfield)
+        self._set_combo_channel(self.target_channel, channels.projection)
         self._emitting = False
-        self._update_channel_labels()
 
     def set_scale(self, dz: float, dy: float, dx: float):
         self.dz_label.setText(f"{dz:.4f}")
@@ -195,13 +191,37 @@ class ParamsPanel(QWidget):
         self.dx_label.setText(f"{dx:.4f}")
 
     def set_channels_meta(self, channels_meta: list[dict]):
-        """Update the channel spinbox ranges and inferred-name labels for
-        a newly loaded file's `meta['channels']`."""
+        """Rebuild the brightfield/target dropdowns for a newly loaded
+        file's `meta['channels']`, listing every channel by name (or
+        wavelength, or just its index if neither is known). Keeps the
+        current brightfield/target selection if it's still a valid, distinct
+        pair for the new channel count; otherwise falls back to (0, 1)
+        rather than silently collapsing both to the same channel."""
         self._channels_meta = channels_meta or []
-        n = max(len(self._channels_meta) - 1, 0)
-        self.brightfield_channel.setRange(0, n)
-        self.target_channel.setRange(0, n)
-        self._update_channel_labels()
+        n = len(self._channels_meta)
+
+        prev_bf = self.brightfield_channel.currentData()
+        prev_tg = self.target_channel.currentData()
+
+        self._emitting = True
+        for combo in (self.brightfield_channel, self.target_channel):
+            combo.blockSignals(True)
+            combo.clear()
+            for idx in range(max(n, 1)):
+                combo.addItem(self._channel_label(idx), idx)
+            combo.blockSignals(False)
+
+        valid_prev = (
+            prev_bf is not None
+            and prev_tg is not None
+            and prev_bf < max(n, 1)
+            and prev_tg < max(n, 1)
+            and (prev_bf != prev_tg or n <= 1)
+        )
+        bf, tg = (prev_bf, prev_tg) if valid_prev else ((0, 1) if n >= 2 else (0, 0))
+        self._set_combo_channel(self.brightfield_channel, bf)
+        self._set_combo_channel(self.target_channel, tg)
+        self._emitting = False
 
     def is_auto_recompute(self) -> bool:
         return self.auto_recompute.isChecked()
@@ -213,19 +233,22 @@ class ParamsPanel(QWidget):
             return
         self.params_changed.emit(self.params())
 
-    def _on_channel_edited(self, _value):
-        self._update_channel_labels()
+    def _on_channel_edited(self, _index):
         if self._emitting:
             return
         self.channels_changed.emit(self.channels())
 
-    def _update_channel_labels(self):
-        def name_for(idx):
-            if 0 <= idx < len(self._channels_meta):
-                name = self._channels_meta[idx].get("name")
-                if name:
-                    return f'("{name}")'
-            return ""
+    def _channel_label(self, idx: int) -> str:
+        meta = self._channels_meta[idx] if idx < len(self._channels_meta) else {}
+        name = meta.get("name")
+        if name:
+            return f"{idx}: {name}"
+        wavelength = meta.get("emission_wavelength") or meta.get("excitation_wavelength")
+        if wavelength:
+            return f"{idx}: {float(wavelength):.0f}nm"
+        return f"Channel {idx}"
 
-        self.brightfield_name_label.setText(name_for(self.brightfield_channel.value()))
-        self.target_name_label.setText(name_for(self.target_channel.value()))
+    @staticmethod
+    def _set_combo_channel(combo: QComboBox, channel_idx: int):
+        idx = combo.findData(channel_idx)
+        combo.setCurrentIndex(idx if idx >= 0 else 0)

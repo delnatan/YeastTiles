@@ -13,9 +13,10 @@ dependencies = [
     "polars",
     "psfkit",
     "PyQt6",
-    "pyvistra",
+    "jssl-denoise @ https://github.com/delnatan/jssl_denoise.git",
+    "pyvistra @ git+https://github.com/delnatan/pyvistra.git",
+    "psfkit @ git+https://github.com/delnatan/psfkit.git",
     "qtpy",
-    "resolvde",
     "scipy",
     "tifffile",
     "torch",
@@ -35,19 +36,12 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 where = ["src"]
 
-# run `uv sync` in the folder where this file lives.
-# pyvistra/resolvde/psfkit are local-only dev packages (no PyPI release, and
-# resolvde/psfkit have no git remote yet), so they're pulled in as editable
-# local path dependencies rather than via a shared uv workspace. To reproduce
-# on another machine: clone the three repos below to matching paths (or edit
-# the paths here to match wherever they were cloned), then `uv sync`.
 [tool.uv.sources]
-pyvistra = { path = "/home/starrluxton/CustomPythonPackages/pyvistra", editable = true }
-resolvde = { path = "/home/starrluxton/CustomPythonPackages/resolvde", editable = true }
-psfkit = { path = "/home/starrluxton/CustomPythonPackages/psfkit", editable = true }
-
 torch = [
-    { index = "pytorch-cu132", marker = "sys_platform == 'linux'" },
+    { index = "pytorch-cu132", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+torchvision = [
+    { index = "pytorch-cu132", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
 ]
 
 [[tool.uv.index]]

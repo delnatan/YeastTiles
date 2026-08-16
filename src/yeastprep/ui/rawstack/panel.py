@@ -9,7 +9,7 @@ popping open a separate foreign window.
 """
 
 import numpy as np
-from qtpy.QtCore import Qt
+from qtpy.QtCore import Qt, Signal
 from qtpy.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -28,11 +28,21 @@ from .channel_controls import ChannelRow
 
 
 class RawStackViewerPanel(QWidget):
+    # Emitted for every channel whenever its colormap changes -- both the
+    # initial per-channel default (gray for brightfield, wavelength-based
+    # for fluorescence -- see colormaps.default_colormap_for_channel) and
+    # later user edits via ChannelRow's dropdown. DataReductionPage listens
+    # so a color choice made here can carry over to PreviewPage's
+    # composite (see that page's docstring) instead of that page picking
+    # its own colors independently.
+    colormap_changed = Signal(int, str)  # channel_idx, colormap_name
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self._proxy = None
         self._meta = None
         self._channel_rows: list[ChannelRow] = []
+        self._display_unsubscribe = None
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
@@ -91,10 +101,19 @@ class RawStackViewerPanel(QWidget):
         _T, Z, C, _Y, _X = proxy.shape
         dz, dy, dx = meta["scale"]
 
-        self.canvas.set_channels(C, dtype=proxy.dtype, scale=(dy, dx))
+        channels_meta = meta.get("channels") or []
+        self.canvas.set_channels(C, dtype=proxy.dtype, scale=(dy, dx), channels_meta=channels_meta)
+
+        # set_channels() assigns each channel's default colormap before this
+        # subscription exists, so those defaults need announcing by hand;
+        # the subscription then covers every later user edit.
+        if self._display_unsubscribe is not None:
+            self._display_unsubscribe()
+        self._display_unsubscribe = self.canvas.display.subscribe(self._on_display_changed)
+        for c in range(C):
+            self.colormap_changed.emit(c, self.canvas.display[c].colormap_name)
 
         clim_hi = 65535.0 if np.issubdtype(proxy.dtype, np.integer) else 1.0
-        channels_meta = meta.get("channels") or []
         for c in range(C):
             name = (
                 str(channels_meta[c].get("name"))
@@ -119,6 +138,10 @@ class RawStackViewerPanel(QWidget):
         self.canvas.reset_camera()
         self.canvas.auto_contrast()
 
+    def _on_display_changed(self, idx, field):
+        if field == "colormap_name":
+            self.colormap_changed.emit(idx, self.canvas.display[idx].colormap_name)
+
     def _update_slice(self):
         if self._proxy is None:
             return
@@ -126,6 +149,10 @@ class RawStackViewerPanel(QWidget):
         plane = np.asarray(self._proxy[0, z, :, :, :])
         self.canvas.set_plane(plane)
         self.z_label.setText(f"{z + 1}/{self._proxy.shape[1]}")
+
+        for c, row in enumerate(self._channel_rows):
+            if c < plane.shape[0]:
+                row.set_data(plane[c])
 
     def _clear_channel_rows(self):
         for row in self._channel_rows:

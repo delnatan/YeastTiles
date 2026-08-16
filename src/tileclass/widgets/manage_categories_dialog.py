@@ -47,6 +47,7 @@ class ManageCategoriesDialog(QDialog):
         button_row.addWidget(self.add_btn)
         button_row.addWidget(self.rename_btn)
         button_row.addWidget(self.delete_btn)
+        button_row.addStretch(1)
         layout.addLayout(button_row)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Close)

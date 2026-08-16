@@ -24,7 +24,9 @@ from cellpose import io as cp_io
 from cellpose import utils as cp_utils
 from cellpose.models import CellposeModel
 
-from .pipeline import load_brightfield_channel
+from tileclass.classifiers.device import select_device
+
+from .combined_tiff import load_brightfield_channel
 
 DEFAULT_MODEL_PATH: str | None = None  # None -> cellpose's built-in default (cpsam)
 
@@ -39,7 +41,7 @@ class SegmentationParams:
 
 
 def _default_device() -> torch.device:
-    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    return select_device()
 
 
 _model_cache: dict[tuple[str | None, str], CellposeModel] = {}

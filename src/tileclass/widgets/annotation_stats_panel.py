@@ -36,15 +36,15 @@ class AnnotationStatsPanel(QWidget):
         self.table.horizontalHeader().setSectionResizeMode(
             0, QHeaderView.Stretch
         )
-        layout.addWidget(self.table)
+        layout.addWidget(self.table, 1)
 
         QShortcut(QKeySequence.Copy, self.table, self._copy_selection)
 
         copy_button = QPushButton("Copy to Clipboard")
         copy_button.clicked.connect(self._copy_all)
         button_row = QHBoxLayout()
-        button_row.addStretch()
         button_row.addWidget(copy_button)
+        button_row.addStretch(1)
         layout.addLayout(button_row)
 
     def _table_text(self, rows):

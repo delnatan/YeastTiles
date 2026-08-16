@@ -7,7 +7,7 @@ real dependency rather than stubbing it.
 import numpy as np
 from pyvistra.io import save_tiff
 
-from yeastprep.core.pipeline import combine_channels
+from yeastprep.core.combined_tiff import combine_channels
 from yeastprep.core.segmentation import (
     SegmentationParams,
     get_model,

@@ -1,5 +1,5 @@
 """Cell-tile export: crops each segmented cell out of a combined-channel
-tiff (core/pipeline.py's `combine_channels` convention: channel 0 =
+tiff (core/combined_tiff.py's `combine_channels` convention: channel 0 =
 flattened brightfield, channel 1 = sum-projected target) into a
 homogeneously sized ``(3, size, size)`` tile -- [brightfield, target,
 binary cell mask] -- per design.md stage 3.
@@ -21,7 +21,7 @@ import polars as pl
 import scipy.ndimage as ndi
 import tifffile
 
-from .pipeline import BRIGHTFIELD_CHANNEL, TARGET_CHANNEL
+from .combined_tiff import load_combined_channels
 from .segmentation import load_saved_masks, seg_npy_path
 
 Slices = tuple[slice, slice]
@@ -120,15 +120,6 @@ def crop_cell(
     return np.stack([ch_bf, ch_target, ch_mask], axis=0)
 
 
-def load_combined_channels(path) -> tuple[np.ndarray, np.ndarray]:
-    """Read both channels back out of a combined-channel tiff written by
-    `core.pipeline.process_and_save` -- unlike
-    `pipeline.load_brightfield_channel`, tile export needs the target
-    channel too."""
-    arr = tifffile.imread(path)
-    return arr[BRIGHTFIELD_CHANNEL], arr[TARGET_CHANNEL]
-
-
 @dataclass
 class TileExportResult:
     path: Path
@@ -217,3 +208,44 @@ def append_tile_index(out_dir, records: pl.DataFrame):
         combined = records
     combined = combined.sort(["fov_id", "label"])
     combined.write_csv(index_path)
+
+
+@dataclass
+class FovTileStatus:
+    n_cells: int
+    up_to_date: bool  # newest surviving tile file's mtime vs. this FOV's _seg.npy sidecar
+
+
+def fov_tile_status(out_dir, mask_dir=None) -> dict[str, FovTileStatus]:
+    """Per-source-FOV tile summary, read from `out_dir`'s tile_index.csv --
+    the one place that already tracks which cell_id/crop_path came from
+    which fov_id (see append_tile_index). A FOV counts as up to date if its
+    newest surviving tile file is no older than its `_seg.npy` sidecar in
+    `mask_dir` (tiles are cropped straight from that saved mask), so a mask
+    re-run since the last export shows up as stale without re-reading any
+    image data."""
+    index_path = tile_index_path(out_dir)
+    if not index_path.exists():
+        return {}
+    try:
+        df = pl.read_csv(index_path)
+    except Exception:
+        return {}
+
+    by_fov: dict[str, list[Path]] = {}
+    for row in df.iter_rows(named=True):
+        by_fov.setdefault(row["fov_id"], []).append(Path(row["crop_path"]))
+
+    mask_dir = Path(mask_dir) if mask_dir else None
+    statuses: dict[str, FovTileStatus] = {}
+    for fov_id, crop_paths in by_fov.items():
+        existing = [p for p in crop_paths if p.exists()]
+        if not existing:
+            continue
+        newest_tile_mtime = max(p.stat().st_mtime for p in existing)
+        up_to_date = True
+        if mask_dir is not None:
+            seg_path = mask_dir / f"{fov_id}_seg.npy"
+            up_to_date = seg_path.exists() and newest_tile_mtime >= seg_path.stat().st_mtime
+        statuses[fov_id] = FovTileStatus(n_cells=len(existing), up_to_date=up_to_date)
+    return statuses

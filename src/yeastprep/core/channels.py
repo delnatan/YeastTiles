@@ -40,6 +40,15 @@ def _channel_emission_nm(meta: dict):
         return None
 
 
+def is_brightfield_name(name: str) -> bool:
+    """Whether a channel's name looks like transmitted light rather than a
+    fluorescence channel -- exposed for `ui/rawstack/colormaps.py`'s
+    default-colormap-per-channel assignment, which needs the same
+    brightfield/fluorescence distinction this module already makes for
+    picking `ChannelSelection.brightfield`."""
+    return any(hint in name.strip().lower() for hint in _BRIGHTFIELD_NAME_HINTS)
+
+
 def _find_by_name(channels_meta: list[dict], hints: tuple[str, ...]):
     for idx, meta in enumerate(channels_meta):
         name = _channel_name(meta)

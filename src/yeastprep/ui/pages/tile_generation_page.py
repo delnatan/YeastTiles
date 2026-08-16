@@ -1,17 +1,12 @@
-"""Tile Generation page: crops every segmented cell out of the
-combined-channel tiffs (design.md stage 3) using whichever mask each file
-already has saved (from the Segmentation stage's batch run, or corrected
-in the real Cellpose GUI). Self-contained -- owns its own input (2D images
-+ masks) and output (tiles) folder selection, batch worker, and status
-feedback; works standalone off whatever's already on disk, with no
-dependency on the Segmentation page being open (or ever having run in this
-session). The one convenience that legitimately needs the *other* page's
-state -- "use the Segmentation folder" -- is deliberately not wired here;
-the shell (which is the only thing that knows about both pages) connects
-that button's click.
+"""Tile Generation page: crops every segmented cell out of whichever 2D
+stage folder is currently the project's active segmentation source (see
+the shared ProjectTreePanel's "Segmentation / Tile Generation source"
+control), using whichever mask each file already has saved, and writes the
+crops into the project's 05_tiles/. Works standalone off whatever's already
+on disk -- requires only that Segmentation has run (in this session or a
+previous one) on the active source stage.
 """
 
-import re
 import subprocess
 import sys
 from pathlib import Path
@@ -26,34 +21,31 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
-from yeastprep.core.pipeline import load_brightfield_channel
+from yeastprep.core import project as project_core
+from yeastprep.core.combined_tiff import load_brightfield_channel
 from yeastprep.core.segmentation import load_saved_masks, seg_npy_path
 from yeastprep.core.tiles import TileParams
 
-from .. import settings, tile_folder_config
+from .. import settings
+from ..batch_progress_bar import BatchProgressBar
+from ..common.preview_source_label import PreviewSourceLabel
 from ..diagnostics.tile_generation_preview_panel import TileGenerationPreviewPanel
-from ..file_list_panel import FileListPanel
-from ..tile_folder_panel import TileFolderPanel
+from ..project_tree_panel import ProjectTreePanel
 from ..tile_params_panel import TileParamsPanel
 from ..worker import TileBatchWorker
 from .page_progress import PageProgress
-
-_DIGITS = re.compile(r"(\d+)")
-
-
-def _natsort_key(path: Path):
-    parts = _DIGITS.split(path.name)
-    return [int(p) if p.isdigit() else p.lower() for p in parts]
 
 
 class TileGenerationPage(QWidget):
     progress_changed = Signal(object)  # PageProgress
 
-    def __init__(self, parent=None):
+    def __init__(self, tree_panel: ProjectTreePanel, parent=None):
         super().__init__(parent)
+        self.tree_panel = tree_panel
 
         self._last_focal_slice = None
         self._last_masks = None
+        self._source_stage = None
         self._batch_thread = None
         self._batch_worker = None
 
@@ -75,26 +67,9 @@ class TileGenerationPage(QWidget):
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(0, 0, 0, 0)
 
-        self.tile_folder_panel = TileFolderPanel()
-        left_layout.addWidget(self.tile_folder_panel)
-
-        # Click handler wired by the shell, not here -- see module docstring.
-        self.use_segmentation_folder_btn = QPushButton("Use Segmentation folder")
-        left_layout.addWidget(self.use_segmentation_folder_btn)
-
-        self.file_list_panel = FileListPanel()
-        left_layout.addWidget(self.file_list_panel, 1)
-
-        # No cross-page auto-refresh (pages are insulated -- see module
-        # docstring), so this is the way to pick up files that appeared
-        # after the folder was first pointed here: a batch run finishing on
-        # the Segmentation page, new corrected masks written by the real
-        # Cellpose GUI, files dropped in from elsewhere, etc.
-        self.refresh_btn = QPushButton("Refresh file list")
-        left_layout.addWidget(self.refresh_btn)
-
         self.tile_params_panel = TileParamsPanel()
         left_layout.addWidget(self.tile_params_panel)
+        left_layout.addStretch(1)
 
         left.setMinimumWidth(320)
         left.setMaximumWidth(420)
@@ -104,6 +79,8 @@ class TileGenerationPage(QWidget):
         right_layout = QVBoxLayout(right)
         right_layout.setContentsMargins(0, 0, 0, 0)
 
+        self.preview_source_label = PreviewSourceLabel()
+        right_layout.addWidget(self.preview_source_label)
         self.preview_panel = TileGenerationPreviewPanel()
         right_layout.addWidget(self.preview_panel, 1)
 
@@ -112,6 +89,8 @@ class TileGenerationPage(QWidget):
         batch_row.addWidget(self.export_btn)
         self.open_tile_viewer_btn = QPushButton("Open in Tile Viewer")
         batch_row.addWidget(self.open_tile_viewer_btn)
+        self.batch_progress = BatchProgressBar()
+        batch_row.addWidget(self.batch_progress, 1)
         right_layout.addLayout(batch_row)
 
         row.addWidget(right, 1)
@@ -123,46 +102,34 @@ class TileGenerationPage(QWidget):
     # Wiring
 
     def _wire_up(self):
-        self.tile_folder_panel.input_folder_changed.connect(self._on_input_folder_changed)
-        self.tile_folder_panel.output_folder_changed.connect(self._on_output_folder_changed)
-        self.file_list_panel.file_selected.connect(self._on_file_selected)
+        self.tree_panel.file_preview_requested.connect(self._on_file_selected)
+        self.tree_panel.project_root_changed.connect(self._on_project_root_changed)
 
         self.tile_params_panel.params_changed.connect(self._on_params_changed)
         self.tile_params_panel.recompute_requested.connect(self._recompute_now)
-        self.tile_params_panel.save_defaults_requested.connect(self._save_folder_defaults)
-        self.tile_params_panel.reset_defaults_requested.connect(self._reset_folder_defaults)
+        self.tile_params_panel.save_defaults_requested.connect(self._save_project_defaults)
+        self.tile_params_panel.reset_defaults_requested.connect(self._reset_project_defaults)
 
         self.export_btn.clicked.connect(self._start_batch)
         self.open_tile_viewer_btn.clicked.connect(self._open_tile_viewer)
-        self.refresh_btn.clicked.connect(self._rescan_folder)
 
     # ------------------------------------------------------------------
-    # Folder handling
+    # Project handling
 
-    def _on_input_folder_changed(self, _folder: str):
-        self._rescan_folder()
-
-    def _rescan_folder(self):
-        folder = self.tile_folder_panel.input_folder()
-        if not folder or not Path(folder).is_dir():
-            self.file_list_panel.set_files([])
-            return
-        paths = sorted(Path(folder).glob("*.tiff"), key=_natsort_key)
-        self.file_list_panel.set_files([str(p) for p in paths])
-
-    def _on_output_folder_changed(self, folder: str):
-        params = tile_folder_config.load_tile_folder_config(folder)
-        if params:
-            self.tile_params_panel.set_params(params)
-            self.status_label.setText(
-                "Loaded tile parameters from a previous run in this folder."
-            )
+    def _on_project_root_changed(self, root: str):
+        config = project_core.load_project_config(root)
+        if config:
+            self.tile_params_panel.set_params(config.tile_params)
+            self.status_label.setText("Loaded tile parameters from this project.")
 
     # ------------------------------------------------------------------
     # File selection -> live crop-window preview (requires a saved mask;
     # tile export never runs segmentation itself)
 
-    def _on_file_selected(self, path: str):
+    def _on_file_selected(self, stage: str, path: str):
+        if stage != self.tree_panel.active_2d_stage():
+            return
+        self.preview_source_label.set_path(path)
         masks = load_saved_masks(seg_npy_path(path))
         if masks is None:
             self._last_focal_slice = None
@@ -203,50 +170,49 @@ class TileGenerationPage(QWidget):
         )
 
     # ------------------------------------------------------------------
-    # Folder-scoped defaults
+    # Project-scoped defaults
 
-    def _save_folder_defaults(self):
-        folder = self.tile_folder_panel.output_folder()
-        if not folder:
-            QMessageBox.warning(self, "yeastprep", "Select a tiles output folder first.")
+    def _save_project_defaults(self):
+        root = self.tree_panel.project_root()
+        if not root:
+            QMessageBox.warning(self, "yeastprep", "Open a project first.")
             return
-        tile_folder_config.save_tile_folder_config(folder, self.tile_params_panel.params())
-        self.status_label.setText("Saved as tile-output folder defaults.")
+        config = project_core.load_project_config(root) or project_core.ProjectConfig()
+        config.tile_params = self.tile_params_panel.params()
+        project_core.save_project_config(root, config)
+        self.status_label.setText("Saved as project defaults.")
 
-    def _reset_folder_defaults(self):
-        folder = self.tile_folder_panel.output_folder()
-        params = tile_folder_config.load_tile_folder_config(folder) if folder else None
-        self.tile_params_panel.set_params(params or settings.get_default_tile_params())
+    def _reset_project_defaults(self):
+        root = self.tree_panel.project_root()
+        config = project_core.load_project_config(root) if root else None
+        self.tile_params_panel.set_params(
+            config.tile_params if config else settings.get_default_tile_params()
+        )
 
     # ------------------------------------------------------------------
     # Batch export
 
     def _start_batch(self):
-        input_folder = self.tile_folder_panel.input_folder()
-        output_folder = self.tile_folder_panel.output_folder()
-        if not input_folder or not output_folder:
+        paths_root = self.tree_panel.project_paths()
+        source_stage = self.tree_panel.active_2d_stage()
+        if paths_root is None or not source_stage:
             QMessageBox.warning(
                 self,
                 "yeastprep",
-                "Select both a 2D images folder and a tiles output folder first.",
+                "No 2D images available yet -- run Data Reduction (and Segmentation) first.",
             )
             return
 
-        paths = [Path(p) for p in self.file_list_panel.checked_paths()]
+        paths = [Path(p) for p in self.tree_panel.checked_paths_for_stage(source_stage)]
         if not paths:
-            QMessageBox.warning(
-                self,
-                "yeastprep",
-                f"No tiffs found in {input_folder}.\n"
-                "Segment some files first (Segmentation page), or point this folder "
-                "at an existing set of segmented tiffs.",
-            )
+            QMessageBox.warning(self, "yeastprep", "No files checked to export.")
             return
+
+        self._source_stage = source_stage
+        outdir = paths_root.tiles
 
         self._batch_thread = QThread()
-        self._batch_worker = TileBatchWorker(
-            paths, Path(output_folder), self.tile_params_panel.params()
-        )
+        self._batch_worker = TileBatchWorker(paths, outdir, self.tile_params_panel.params())
         self._batch_worker.moveToThread(self._batch_thread)
         self._thread_started_connection = self._batch_thread.started.connect(
             self._batch_worker.run
@@ -256,25 +222,33 @@ class TileGenerationPage(QWidget):
         self._batch_worker.finished.connect(self._on_batch_finished)
 
         self.export_btn.setEnabled(False)
-        self.progress_changed.emit(PageProgress(active=True, done=0, total=len(paths)))
+        self._emit_progress(PageProgress(active=True, done=0, total=len(paths)))
 
         self._batch_thread.start()
 
+    def _emit_progress(self, progress: PageProgress):
+        self.progress_changed.emit(progress)
+        self.batch_progress.apply(progress)
+
     def _on_batch_progress(self, done: int, total: int, name: str):
-        self.progress_changed.emit(PageProgress(active=True, done=done, total=total, message=name))
+        self._emit_progress(PageProgress(active=True, done=done, total=total, message=name))
         self.status_label.setText(f"Exporting tiles from {name} ({done}/{total})")
 
     def _on_batch_file_result(self, result):
-        self.file_list_panel.mark_result(str(result.path), result.success, result.error)
+        if self._source_stage:
+            self.tree_panel.mark_result(
+                self._source_stage, result.path, result.success, result.error
+            )
         if result.success:
             self.status_label.setText(f"{result.path.name}: {result.n_cells} tile(s) exported")
         else:
             self.status_label.setText(f"{result.path.name}: {result.error}")
 
     def _on_batch_finished(self):
-        self.progress_changed.emit(PageProgress(active=False))
+        self._emit_progress(PageProgress(active=False))
         self.export_btn.setEnabled(True)
         self.status_label.setText("Batch tile export complete.")
+        self.tree_panel.refresh()
 
         self._batch_thread.quit()
         self._batch_thread.wait()
@@ -282,14 +256,28 @@ class TileGenerationPage(QWidget):
         self._batch_worker = None
 
     def _open_tile_viewer(self):
-        folder = self.tile_folder_panel.output_folder()
-        if not folder or not Path(folder).is_dir():
-            QMessageBox.warning(self, "yeastprep", "Select a tiles output folder first.")
+        paths_root = self.tree_panel.project_paths()
+        if paths_root is None or not paths_root.tiles.is_dir():
+            QMessageBox.warning(self, "yeastprep", "No tiles exported yet.")
             return
-        subprocess.Popen(
-            [sys.executable, "-m", "tileclass", folder],
-            start_new_session=True,
-        )
+
+        cmd = [sys.executable, "-m", "tileclass", str(paths_root.tiles)]
+
+        # If the tree's checkboxes exclude some of the active stage's FOVs,
+        # scope the viewer session to just the checked ones -- lets
+        # annotation work be split cleanly by source file, since the tiles
+        # of an unchecked FOV are simply never loaded into this session.
+        # Leaving everything checked (the default) or nothing checked opens
+        # the whole folder, same as before this filter existed.
+        source_stage = self.tree_panel.active_2d_stage()
+        if source_stage:
+            all_paths = self.tree_panel.all_paths_for_stage(source_stage)
+            checked_paths = self.tree_panel.checked_paths_for_stage(source_stage)
+            if checked_paths and len(checked_paths) < len(all_paths):
+                for p in checked_paths:
+                    cmd += ["--fov", Path(p).stem]
+
+        subprocess.Popen(cmd, start_new_session=True)
 
     # ------------------------------------------------------------------
 

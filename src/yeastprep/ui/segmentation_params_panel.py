@@ -2,7 +2,7 @@
 flow/cellprob thresholds, edge-mask removal.
 
 Structurally mirrors params_panel.py -- same params_changed/auto-recompute
-wiring, same Recompute Now / Save & Reset folder-defaults actions.
+wiring, same Do it / Save & Reset folder-defaults actions.
 """
 
 from pathlib import Path
@@ -94,7 +94,7 @@ class SegmentationParamsPanel(QWidget):
         form.addRow(self.remove_edge_masks)
 
         self.auto_recompute = QCheckBox("Auto-recompute on change")
-        self.auto_recompute.setChecked(True)
+        self.auto_recompute.setChecked(False)
         form.addRow(self.auto_recompute)
 
         return group
@@ -103,16 +103,16 @@ class SegmentationParamsPanel(QWidget):
         column = QVBoxLayout()
 
         recompute_row = QHBoxLayout()
-        self.recompute_btn = QPushButton("Recompute Now")
+        self.recompute_btn = QPushButton("Do it")
         self.recompute_btn.clicked.connect(self.recompute_requested)
         recompute_row.addWidget(self.recompute_btn)
         column.addLayout(recompute_row)
 
         defaults_row = QHBoxLayout()
-        self.save_defaults_btn = QPushButton("Save as folder defaults")
+        self.save_defaults_btn = QPushButton("Save as project defaults")
         self.save_defaults_btn.clicked.connect(self.save_defaults_requested)
         defaults_row.addWidget(self.save_defaults_btn)
-        self.reset_defaults_btn = QPushButton("Reset to folder defaults")
+        self.reset_defaults_btn = QPushButton("Reset to project defaults")
         self.reset_defaults_btn.clicked.connect(self.reset_defaults_requested)
         defaults_row.addWidget(self.reset_defaults_btn)
         column.addLayout(defaults_row)

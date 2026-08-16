@@ -12,9 +12,8 @@ from qtpy.QtWidgets import QVBoxLayout, QWidget
 class TileVarianceInspectorPanel(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setMaximumHeight(240)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setContentsMargins(2, 2, 2, 2)
 
         # Wide/short aspect -- this is a single line plot, not a square
         # image panel, so it shouldn't compete for vertical space with the

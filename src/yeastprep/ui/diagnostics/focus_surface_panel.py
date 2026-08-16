@@ -43,7 +43,7 @@ class FocusSurfacePanel(QWidget):
         if self._im is not None:
             self._im.remove()
             self._im = None
-        self.ax.set_title("Fitted focus surface (click 'Recompute Now' to view)")
+        self.ax.set_title("Fitted focus surface (click 'Do it' to view)")
         self.canvas.draw_idle()
 
     def set_data(self, fine_focus_indices, tile_info):

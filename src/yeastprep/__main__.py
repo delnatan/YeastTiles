@@ -11,8 +11,8 @@ from .ui.main_window import YeastPrepWindow
 def main():
     parser = argparse.ArgumentParser(
         prog="yeastprep",
-        description="Yeast image-processing pipeline: Data Reduction (raw stacks -> "
-        "flattened focal slices), Segmentation, and Tile Generation pages.",
+        description="Yeast image-processing pipeline: Data Reduction, Denoise, "
+        "Deconvolve, Segmentation, Tile Generation, and Train Denoiser pages.",
     )
     parser.add_argument(
         "input_folder", nargs="?", default=None, help="Folder of raw stacks to open"

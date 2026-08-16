@@ -10,10 +10,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
-import tifffile
 from pyvistra.io import load_image, save_tiff
 
 from .channels import ChannelSelection
+from .combined_tiff import combine_channels
 from .focus import (
     TileVarianceStack,
     compute_tile_variance_stack,
@@ -109,24 +109,6 @@ def sum_project(volume: LoadedVolume) -> np.ndarray:
     return np.sum(volume.projection3d, axis=0).astype(np.uint16)
 
 
-# Channel order within the combined 2D output tiff -- the one place this
-# convention is defined. Segmentation (core/segmentation.py) only ever
-# reads BRIGHTFIELD_CHANNEL; a later tile-cropping stage would read both.
-BRIGHTFIELD_CHANNEL = 0
-TARGET_CHANNEL = 1
-
-
-def combine_channels(focal_slice: np.ndarray, projected: np.ndarray) -> np.ndarray:
-    """Stack the flattened brightfield slice and the sum-projected target
-    channel into one (2, Ny, Nx) array -- BRIGHTFIELD_CHANNEL first,
-    TARGET_CHANNEL second. One file per FOV instead of two parallel
-    folders matched by filename stem: fewer places for the two halves of
-    a FOV to drift out of sync, and the Cellpose GUI already supports
-    picking which channel to segment on when opening a multi-channel
-    tiff, so nothing is lost for manual correction either."""
-    return np.stack([focal_slice, projected], axis=0)
-
-
 @dataclass
 class ProcessResult:
     path: Path
@@ -164,29 +146,3 @@ def process_and_save(
         return ProcessResult(path=path, success=False, error=str(exc))
 
 
-def load_brightfield_channel(path) -> np.ndarray:
-    """Read just the brightfield channel back out of a combined-channel
-    tiff written by `process_and_save` -- the common case: segmentation
-    (core/segmentation.py) and every current display panel only ever
-    need this one channel, never the target/DAPI one."""
-    return tifffile.imread(path)[BRIGHTFIELD_CHANNEL]
-
-
-def find_processed_output(raw_path, output_folder) -> Path | None:
-    """Pure filesystem check: has `raw_path` already been flattened into
-    `output_folder` (in the "processed" subfolder), with output still
-    newer than the source file?
-
-    Returns the combined-channel tiff's path if so, else None. Shared by
-    the UI layer's "is this file processed" status dot (file_list_panel)
-    and its "load the saved output instead of recomputing" fast-inspect
-    path (ui/pages/data_reduction_page.py) -- one rule, defined once,
-    with no Qt dependency.
-    """
-    raw_path = Path(raw_path)
-    output_path = Path(output_folder) / "processed" / f"{raw_path.stem}.tiff"
-    if not (raw_path.exists() and output_path.exists()):
-        return None
-    if output_path.stat().st_mtime >= raw_path.stat().st_mtime:
-        return output_path
-    return None

@@ -9,7 +9,7 @@ import polars as pl
 import tifffile
 from pyvistra.io import save_tiff
 
-from yeastprep.core.pipeline import combine_channels
+from yeastprep.core.combined_tiff import combine_channels
 from yeastprep.core.segmentation import seg_npy_path
 from yeastprep.core.tiles import (
     TileParams,

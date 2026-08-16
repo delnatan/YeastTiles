@@ -12,18 +12,20 @@ import tifffile
 from pyvistra.io import save_tiff
 
 from yeastprep.core.channels import ChannelSelection
-from yeastprep.core.pipeline import (
+from yeastprep.core.combined_tiff import (
     BRIGHTFIELD_CHANNEL,
     TARGET_CHANNEL,
+    load_brightfield_channel,
+)
+from yeastprep.core.pipeline import (
     FlattenFieldParams,
     compute_focal_slice,
     compute_focus_diagnostics,
-    find_processed_output,
-    load_brightfield_channel,
     load_volume,
     process_and_save,
     sum_project,
 )
+from yeastprep.core.project import stage_file_status
 
 CHANNELS = ChannelSelection(brightfield=0, projection=1)
 
@@ -104,29 +106,39 @@ def test_process_and_save_reports_failure_without_raising(tmp_path):
     assert result.error is not None
 
 
-def test_find_processed_output_before_and_after_processing(tmp_path):
+def test_stage_file_status_before_and_after_processing(tmp_path):
     path = tmp_path / "synthetic.tif"
     _write_synthetic_stack(path, Nz=8, Ny=32, Nx=32)
-    output_folder = tmp_path / "output"
+    raw_folder = tmp_path / "raw"
+    raw_folder.mkdir()
+    raw_path = raw_folder / "synthetic.tiff"
+    raw_path.write_bytes(b"")
+    outdir = tmp_path / "reduced"
 
-    assert find_processed_output(path, output_folder) is None
+    assert stage_file_status(outdir, upstream_dir=raw_folder) == {}
 
-    result = process_and_save(path, output_folder / "processed")
+    result = process_and_save(path, outdir)
     assert result.success
 
-    found = find_processed_output(path, output_folder)
-    assert found == result.output_path
+    statuses = stage_file_status(outdir, upstream_dir=raw_folder)
+    assert statuses["synthetic"].exists
+    assert statuses["synthetic"].up_to_date
 
 
-def test_find_processed_output_stale_after_raw_file_touched(tmp_path):
+def test_stage_file_status_stale_after_upstream_file_touched(tmp_path):
     path = tmp_path / "synthetic.tif"
     _write_synthetic_stack(path, Nz=8, Ny=32, Nx=32)
-    output_folder = tmp_path / "output"
-    process_and_save(path, output_folder / "processed")
+    raw_folder = tmp_path / "raw"
+    raw_folder.mkdir()
+    raw_path = raw_folder / "synthetic.tiff"
+    raw_path.write_bytes(b"")
+    outdir = tmp_path / "reduced"
+    process_and_save(path, outdir)
 
-    # Simulate the raw file being re-acquired/replaced after processing --
+    # Simulate the upstream file being re-produced after this stage ran --
     # the saved output is now stale and shouldn't be reported as current.
     future = time.time() + 10
-    os.utime(path, (future, future))
+    os.utime(raw_path, (future, future))
 
-    assert find_processed_output(path, output_folder) is None
+    statuses = stage_file_status(outdir, upstream_dir=raw_folder)
+    assert not statuses["synthetic"].up_to_date

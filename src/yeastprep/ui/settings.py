@@ -8,6 +8,8 @@ this kind of app-global, not-folder-scoped state.
 from qtpy.QtCore import QByteArray, QSettings
 
 from yeastprep.core.channels import ChannelSelection
+from yeastprep.core.deconvolve import DeconvolveParams
+from yeastprep.core.denoise import DenoiseParams
 from yeastprep.core.pipeline import FlattenFieldParams
 from yeastprep.core.segmentation import SegmentationParams
 from yeastprep.core.tiles import TileParams
@@ -35,44 +37,20 @@ def _add_recent(key: str, path: str):
     _settings().setValue(key, entries[:_MAX_RECENT])
 
 
-def get_recent_input_dirs() -> list[str]:
-    return _recent("recent_input_dirs")
+def get_recent_project_roots() -> list[str]:
+    return _recent("recent_project_roots")
 
 
-def add_recent_input_dir(path: str):
-    _add_recent("recent_input_dirs", path)
+def add_recent_project_root(path: str):
+    _add_recent("recent_project_roots", path)
 
 
-def get_recent_output_dirs() -> list[str]:
-    return _recent("recent_output_dirs")
+def get_recent_denoise_checkpoints() -> list[str]:
+    return _recent("recent_denoise_checkpoints")
 
 
-def add_recent_output_dir(path: str):
-    _add_recent("recent_output_dirs", path)
-
-
-def get_recent_segmentation_dirs() -> list[str]:
-    return _recent("recent_segmentation_dirs")
-
-
-def add_recent_segmentation_dir(path: str):
-    _add_recent("recent_segmentation_dirs", path)
-
-
-def get_recent_tile_input_dirs() -> list[str]:
-    return _recent("recent_tile_input_dirs")
-
-
-def add_recent_tile_input_dir(path: str):
-    _add_recent("recent_tile_input_dirs", path)
-
-
-def get_recent_tile_output_dirs() -> list[str]:
-    return _recent("recent_tile_output_dirs")
-
-
-def add_recent_tile_output_dir(path: str):
-    _add_recent("recent_tile_output_dirs", path)
+def add_recent_denoise_checkpoint(path: str):
+    _add_recent("recent_denoise_checkpoints", path)
 
 
 def get_default_params() -> FlattenFieldParams:
@@ -124,6 +102,24 @@ def set_default_channels(channels: ChannelSelection):
     s.setValue("default_channels/projection", channels.projection)
 
 
+_DEFAULT_ROLE_COLORMAPS = {"brightfield": "gray", "target": "Green"}
+
+
+def get_channel_colormap(role: str) -> str:
+    """Last colormap the user (or the raw-stack view's auto-assignment)
+    picked for the brightfield/target role, so PreviewPage's
+    composite -- which has no per-file channel metadata of its own to
+    auto-assign colors from, see combine_channels -- can match whatever
+    the Raw Stack tab is showing instead of picking its own colors."""
+    return _settings().value(
+        f"channel_colormaps/{role}", _DEFAULT_ROLE_COLORMAPS.get(role, "White")
+    )
+
+
+def set_channel_colormap(role: str, name: str):
+    _settings().setValue(f"channel_colormaps/{role}", name)
+
+
 def get_default_segmentation_params() -> SegmentationParams:
     s = _settings()
     s.beginGroup("default_segmentation_params")
@@ -152,6 +148,54 @@ def set_default_segmentation_params(params: SegmentationParams):
     s.setValue("flow_threshold", params.flow_threshold)
     s.setValue("cellprob_threshold", params.cellprob_threshold)
     s.setValue("remove_edge_masks", params.remove_edge_masks)
+    s.endGroup()
+
+
+def get_default_denoise_params() -> DenoiseParams:
+    s = _settings()
+    s.beginGroup("default_denoise_params")
+    defaults = DenoiseParams()
+    params = DenoiseParams(
+        channel=int(s.value("channel", defaults.channel)),
+        checkpoint_path=s.value("checkpoint_path", defaults.checkpoint_path) or None,
+        tta=_as_bool(s.value("tta", defaults.tta)),
+    )
+    s.endGroup()
+    return params
+
+
+def set_default_denoise_params(params: DenoiseParams):
+    s = _settings()
+    s.beginGroup("default_denoise_params")
+    s.setValue("channel", params.channel)
+    s.setValue("checkpoint_path", params.checkpoint_path or "")
+    s.setValue("tta", params.tta)
+    s.endGroup()
+
+
+def get_default_deconvolve_params() -> DeconvolveParams:
+    s = _settings()
+    s.beginGroup("default_deconvolve_params")
+    defaults = DeconvolveParams()
+    params = DeconvolveParams(
+        enabled=_as_bool(s.value("enabled", defaults.enabled)),
+        psf_path=s.value("psf_path", defaults.psf_path) or None,
+        zoom=float(s.value("zoom", defaults.zoom)),
+        background=float(s.value("background", defaults.background)),
+        num_iter=int(s.value("num_iter", defaults.num_iter)),
+    )
+    s.endGroup()
+    return params
+
+
+def set_default_deconvolve_params(params: DeconvolveParams):
+    s = _settings()
+    s.beginGroup("default_deconvolve_params")
+    s.setValue("enabled", params.enabled)
+    s.setValue("psf_path", params.psf_path or "")
+    s.setValue("zoom", params.zoom)
+    s.setValue("background", params.background)
+    s.setValue("num_iter", params.num_iter)
     s.endGroup()
 
 

@@ -13,6 +13,7 @@ from pathlib import Path
 
 from .channels import ChannelSelection
 from .pipeline import DEFAULT_CHANNELS, FlattenFieldParams, process_and_save
+from .project import ProjectPaths
 
 
 def main(argv=None):
@@ -54,7 +55,7 @@ def main(argv=None):
         print(f"No files matching '{args.pattern}' found under {args.input_folder}")
         return 1
 
-    outdir = args.output_folder / "processed"
+    outdir = ProjectPaths(args.output_folder).reduced
 
     n_failed = 0
     for path in files:

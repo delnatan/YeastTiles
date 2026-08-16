@@ -43,7 +43,7 @@ class CoarseHeatmapPanel(QWidget):
         if self._im is not None:
             self._im.remove()
             self._im = None
-        self.ax.set_title("Coarse focus map (click 'Recompute Now' to view)")
+        self.ax.set_title("Coarse focus map (click 'Do it' to view)")
         self.canvas.draw_idle()
 
     def set_data(self, coarse_focal_indices, n_z: int):

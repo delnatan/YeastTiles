@@ -27,3 +27,11 @@ def scan_folder(folder):
                 paths.append(os.path.join(root, name))
     paths.sort(key=_natsort_key)
     return paths
+
+
+def filter_by_fov(paths, fov_names):
+    """Keep only paths whose filename is `{fov}_cell...` for one of
+    fov_names -- matches the `{fov_id}_cell{label:05d}` naming yeastprep's
+    tile export writes (core/tiles.py's `export_tiles`)."""
+    prefixes = tuple(f"{name}_cell" for name in fov_names)
+    return [p for p in paths if os.path.basename(p).startswith(prefixes)]
