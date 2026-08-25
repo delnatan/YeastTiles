@@ -61,6 +61,7 @@ class DataReductionPage(QWidget):
         self.params_panel.set_params(default_params)
         default_channels = settings.get_default_channels() or DEFAULT_CHANNELS
         self.params_panel.set_channels(default_channels)
+        self._update_batch_button_state()
 
     # ------------------------------------------------------------------
     # UI construction
@@ -145,7 +146,9 @@ class DataReductionPage(QWidget):
 
     def _wire_up(self):
         self.tree_panel.project_root_changed.connect(self._on_project_root_changed)
-        self.tree_panel.file_preview_requested.connect(self._on_file_selected)
+        self.tree_panel.project_root_changed.connect(self._update_batch_button_state)
+        self.tree_panel.checked_changed.connect(self._update_batch_button_state)
+        self.tree_panel.refreshed.connect(self._update_batch_button_state)
         self.process_btn.clicked.connect(self._start_batch)
 
         self.pipeline = PipelineController()
@@ -179,9 +182,7 @@ class DataReductionPage(QWidget):
     # ------------------------------------------------------------------
     # File selection -> raw viewer + flatten pipeline
 
-    def _on_file_selected(self, stage: str, path: str):
-        if stage != "raw":
-            return
+    def load_selection(self, stage: str, path: str, mode: str = "live"):
         self._current_raw_path = path
         self.preview_source_label.set_path(path)
 
@@ -300,7 +301,7 @@ class DataReductionPage(QWidget):
         default-colormap-on-load case that `_on_raw_colormap_changed`
         alone can't (that signal fires while channel roles still belong to
         the previously loaded file, see the call site in
-        `_on_file_selected`). Also fine as a plain re-sync any time roles
+        `load_selection`). Also fine as a plain re-sync any time roles
         or colors might have changed."""
         display = self.rawstack_panel.canvas.display
         if display is None:
@@ -351,23 +352,20 @@ class DataReductionPage(QWidget):
     # ------------------------------------------------------------------
     # Batch processing
 
+    def _update_batch_button_state(self, *_args):
+        paths_root = self.tree_panel.project_paths()
+        checked = self.tree_panel.checked_paths_for_stage("raw") if paths_root else []
+        self.process_btn.setEnabled(bool(checked))
+        if paths_root is None:
+            self.process_btn.setToolTip("Open a project first.")
+        elif not checked:
+            self.process_btn.setToolTip("Check at least one raw file in the tree.")
+        else:
+            self.process_btn.setToolTip("")
+
     def _start_batch(self):
         paths_root = self.tree_panel.project_paths()
-        if paths_root is None:
-            QMessageBox.warning(self, "yeastprep", "Open a project folder first.")
-            return
-
-        if not self.tree_panel.all_paths_for_stage("raw"):
-            QMessageBox.warning(self, "yeastprep", "No raw files found in this project.")
-            return
-
         paths = [Path(p) for p in self.tree_panel.checked_paths_for_stage("raw")]
-        if not paths:
-            QMessageBox.warning(
-                self, "yeastprep", "No files checked -- check at least one raw file in the tree."
-            )
-            return
-
         outdir = paths_root.reduced
 
         self._batch_thread = QThread()
@@ -375,9 +373,7 @@ class DataReductionPage(QWidget):
             paths, outdir, self.params_panel.params(), self.params_panel.channels()
         )
         self._batch_worker.moveToThread(self._batch_thread)
-        self._thread_started_connection = self._batch_thread.started.connect(
-            self._batch_worker.run
-        )
+        self._batch_thread.started.connect(self._batch_worker.run)
         self._batch_worker.progress.connect(self._on_batch_progress)
         self._batch_worker.file_result.connect(self._on_batch_file_result)
         self._batch_worker.finished.connect(self._on_batch_finished)
@@ -400,7 +396,7 @@ class DataReductionPage(QWidget):
 
     def _on_batch_finished(self):
         self._emit_progress(PageProgress(active=False))
-        self.process_btn.setEnabled(True)
+        self._update_batch_button_state()
         self.status_label.setText("Batch processing complete.")
 
         root = self.tree_panel.project_root()

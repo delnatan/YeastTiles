@@ -171,12 +171,6 @@ class ThumbnailGridWidget(QWidget):
         self._pixmap_cache.clear()
         self.update()
 
-    def clear_decode_cache(self):
-        """Full reset, e.g. after changing how every image should be
-        parsed (axes order)."""
-        self._cache.clear()
-        self._pixmap_cache.clear()
-
     @property
     def selected_paths(self):
         return list(self._selected)

@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import project
+from .fs_status import dir_has_files
 
 STAGE_RAW = "raw"
 # Virtual stage: segmentation writes `_seg.npy` sidecars in place next to
@@ -42,7 +43,7 @@ class StageState:
     key: str
     label: str
     optional: bool
-    status: str  # "empty" | "stale" | "done"
+    status: str  # "empty" | "archived" | "stale" | "done"
     # Whether this is the stage Segmentation/Tile Generation currently read
     # from (project.resolve_2d_source) -- kept separate from `status` so a
     # stale-but-active stage doesn't lose its "stale" warning.
@@ -50,7 +51,7 @@ class StageState:
 
 
 def _has_any(folder: Path, pattern: str) -> bool:
-    return folder.is_dir() and any(folder.glob(pattern))
+    return dir_has_files(folder, pattern)
 
 
 def _producer_dir(
@@ -77,7 +78,14 @@ def _folder_stage_status(
         return "empty"
     producer = _producer_dir(paths, stage_key, config)
     statuses = project.stage_file_status(stage_dir, upstream_dir=producer)
-    if statuses and all(s.up_to_date for s in statuses.values()):
+    if not statuses:
+        return "stale"
+    # The producer folder was named but has nothing in it -- most likely
+    # archived off this computer (see project.FileStatus.upstream_available)
+    # rather than evidence anything here is actually out of date.
+    if any(not s.upstream_available for s in statuses.values()):
+        return "archived"
+    if all(s.up_to_date for s in statuses.values()):
         return "done"
     return "stale"
 
@@ -138,3 +146,29 @@ def input_stage_for(
         source = project.resolve_2d_source(paths, config.segmentation_source_stage)
         return source.name if source is not None else None
     return None
+
+
+_CONSUMER_CANDIDATES = (
+    project.STAGE_DENOISED,
+    project.STAGE_DECONVOLVED,
+    STAGE_SEGMENTATION,
+    project.STAGE_TILES,
+)
+
+
+def consumers_for(
+    stage_key: str,
+    paths: project.ProjectPaths,
+    config: project.ProjectConfig | None = None,
+) -> list[str]:
+    """Which stages currently resolve their 2D input from `stage_key`, given
+    the current project state -- the inverse of `input_stage_for`. Used to
+    tell a tree selection which downstream tasks it can currently feed
+    (e.g. a 01_reduced file only offers "Deconvolve this file" if Deconvolve
+    is actually configured to read from Reduced right now)."""
+    config = config or project.ProjectConfig()
+    return [
+        candidate
+        for candidate in _CONSUMER_CANDIDATES
+        if input_stage_for(candidate, paths, config) == stage_key
+    ]

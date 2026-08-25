@@ -12,6 +12,7 @@ import sys
 from pathlib import Path
 
 from .channels import ChannelSelection
+from .fs_status import list_visible
 from .pipeline import DEFAULT_CHANNELS, FlattenFieldParams, process_and_save
 from .project import ProjectPaths
 
@@ -50,7 +51,7 @@ def main(argv=None):
         brightfield=args.brightfield_channel, projection=args.target_channel
     )
 
-    files = sorted(args.input_folder.glob(args.pattern))
+    files = sorted(list_visible(args.input_folder, args.pattern))
     if not files:
         print(f"No files matching '{args.pattern}' found under {args.input_folder}")
         return 1

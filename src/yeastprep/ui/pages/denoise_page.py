@@ -75,6 +75,7 @@ class DenoisePage(QWidget):
         self._wire_up()
 
         self.params_panel.set_params(settings.get_default_denoise_params())
+        self._update_batch_button_state()
 
     # ------------------------------------------------------------------
     # UI construction
@@ -98,6 +99,11 @@ class DenoisePage(QWidget):
         left = QWidget()
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(0, 0, 0, 0)
+        # Sits directly above the params/"Do it" group it describes, rather
+        # than off in the preview column -- it's what "Do it" is about to
+        # act on, so it belongs next to the button, not next to the image.
+        self.preview_source_label = PreviewSourceLabel()
+        left_layout.addWidget(self.preview_source_label)
         self.params_panel = DenoiseParamsPanel()
         left_layout.addWidget(self.params_panel)
         left_layout.addStretch(1)
@@ -108,8 +114,6 @@ class DenoisePage(QWidget):
         right = QWidget()
         right_layout = QVBoxLayout(right)
         right_layout.setContentsMargins(0, 0, 0, 0)
-        self.preview_source_label = PreviewSourceLabel()
-        right_layout.addWidget(self.preview_source_label)
         self.preview_panel = DenoisePreviewPanel()
         right_layout.addWidget(self.preview_panel, 1)
 
@@ -132,8 +136,10 @@ class DenoisePage(QWidget):
     # Wiring
 
     def _wire_up(self):
-        self.tree_panel.file_preview_requested.connect(self._on_file_selected)
         self.tree_panel.project_root_changed.connect(self._on_project_root_changed)
+        self.tree_panel.project_root_changed.connect(self._update_batch_button_state)
+        self.tree_panel.checked_changed.connect(self._update_batch_button_state)
+        self.tree_panel.refreshed.connect(self._update_batch_button_state)
 
         self.controller = DenoiseController()
         self.controller.result_ready.connect(self._on_result_ready)
@@ -193,12 +199,11 @@ class DenoisePage(QWidget):
             return self._source_brightfield
         return self._source_target
 
-    def _on_file_selected(self, stage: str, path: str):
-        if stage == project_core.STAGE_REDUCED:
-            self.preview_source_label.set_path(path)
+    def load_selection(self, stage: str, path: str, mode: str):
+        self.preview_source_label.set_path(path)
+        if mode == "live":
             self._load_live_source(path)
-        elif stage == project_core.STAGE_DENOISED:
-            self.preview_source_label.set_path(path)
+        elif mode == "saved":
             self._load_saved_output(path)
 
     def _load_live_source(self, path: str):
@@ -318,30 +323,30 @@ class DenoisePage(QWidget):
     # ------------------------------------------------------------------
     # Batch denoise
 
+    def _update_batch_button_state(self, *_args):
+        paths_root = self.tree_panel.project_paths()
+        checked = (
+            self.tree_panel.checked_paths_for_stage(project_core.STAGE_REDUCED)
+            if paths_root
+            else []
+        )
+        self.denoise_btn.setEnabled(bool(checked))
+        if paths_root is None:
+            self.denoise_btn.setToolTip("Open a project first.")
+        elif not checked:
+            self.denoise_btn.setToolTip(
+                "Check at least one reduced (2D) file in the tree -- run Data Reduction first "
+                "if there are none."
+            )
+        else:
+            self.denoise_btn.setToolTip("")
+
     def _start_batch(self):
         paths_root = self.tree_panel.project_paths()
-        if paths_root is None:
-            QMessageBox.warning(self, "yeastprep", "Open a project first.")
-            return
-
-        if not self.tree_panel.all_paths_for_stage(project_core.STAGE_REDUCED):
-            QMessageBox.warning(
-                self,
-                "yeastprep",
-                "No reduced (2D) tiffs found. Run Data Reduction first.",
-            )
-            return
-
         paths = [
             Path(p)
             for p in self.tree_panel.checked_paths_for_stage(project_core.STAGE_REDUCED)
         ]
-        if not paths:
-            QMessageBox.warning(
-                self, "yeastprep", "No files checked -- check at least one file in the tree."
-            )
-            return
-
         outdir = paths_root.denoised
 
         self._batch_channel = self.params_panel.channel()
@@ -350,9 +355,7 @@ class DenoisePage(QWidget):
         self._batch_thread = QThread()
         self._batch_worker = DenoiseBatchWorker(paths, outdir, self.params_panel.params())
         self._batch_worker.moveToThread(self._batch_thread)
-        self._thread_started_connection = self._batch_thread.started.connect(
-            self._batch_worker.run
-        )
+        self._batch_thread.started.connect(self._batch_worker.run)
         self._batch_worker.progress.connect(self._on_batch_progress)
         self._batch_worker.file_result.connect(self._on_batch_file_result)
         self._batch_worker.finished.connect(self._on_batch_finished)
@@ -382,7 +385,7 @@ class DenoisePage(QWidget):
 
     def _on_batch_finished(self):
         self._emit_progress(PageProgress(active=False))
-        self.denoise_btn.setEnabled(True)
+        self._update_batch_button_state()
         self.status_label.setText("Batch denoise complete.")
 
         root = self.tree_panel.project_root()

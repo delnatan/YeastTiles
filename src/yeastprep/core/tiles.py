@@ -22,6 +22,7 @@ import scipy.ndimage as ndi
 import tifffile
 
 from .combined_tiff import load_combined_channels
+from .fs_status import dir_has_files
 from .segmentation import load_saved_masks, seg_npy_path
 
 Slices = tuple[slice, slice]
@@ -214,6 +215,10 @@ def append_tile_index(out_dir, records: pl.DataFrame):
 class FovTileStatus:
     n_cells: int
     up_to_date: bool  # newest surviving tile file's mtime vs. this FOV's _seg.npy sidecar
+    # False only when a mask_dir was given but is empty/missing -- see
+    # project.FileStatus.upstream_available for why that's kept distinct
+    # from a genuine staleness signal.
+    mask_available: bool = True
 
 
 def fov_tile_status(out_dir, mask_dir=None) -> dict[str, FovTileStatus]:
@@ -237,6 +242,11 @@ def fov_tile_status(out_dir, mask_dir=None) -> dict[str, FovTileStatus]:
         by_fov.setdefault(row["fov_id"], []).append(Path(row["crop_path"]))
 
     mask_dir = Path(mask_dir) if mask_dir else None
+    # Narrowed to `*_seg.npy` sidecars specifically (not "any file") --
+    # mask_dir is a 2D-stage folder that can also hold incidental files
+    # (`.DS_Store`, ...) which shouldn't count as "still populated".
+    mask_available = mask_dir is None or dir_has_files(mask_dir, "*_seg.npy")
+
     statuses: dict[str, FovTileStatus] = {}
     for fov_id, crop_paths in by_fov.items():
         existing = [p for p in crop_paths if p.exists()]
@@ -244,8 +254,10 @@ def fov_tile_status(out_dir, mask_dir=None) -> dict[str, FovTileStatus]:
             continue
         newest_tile_mtime = max(p.stat().st_mtime for p in existing)
         up_to_date = True
-        if mask_dir is not None:
+        if mask_dir is not None and mask_available:
             seg_path = mask_dir / f"{fov_id}_seg.npy"
             up_to_date = seg_path.exists() and newest_tile_mtime >= seg_path.stat().st_mtime
-        statuses[fov_id] = FovTileStatus(n_cells=len(existing), up_to_date=up_to_date)
+        statuses[fov_id] = FovTileStatus(
+            n_cells=len(existing), up_to_date=up_to_date, mask_available=mask_available
+        )
     return statuses

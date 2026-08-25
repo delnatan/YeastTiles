@@ -21,6 +21,15 @@ _STATUS_TO_DOT_STATUS = {
     "empty": "unprocessed",
     "stale": "stale",
     "done": "done",
+    "archived": "archived",
+}
+
+_STATUS_TOOLTIPS = {
+    "empty": "Nothing produced yet",
+    "done": "Up to date",
+    "stale": "Source changed since this was last produced",
+    "archived": "Source folder isn't present on this computer (likely moved "
+    "to storage) -- can't verify freshness, showing as up to date",
 }
 
 
@@ -72,5 +81,5 @@ class PipelineBreadcrumb(QWidget):
             f"padding: 2px 8px; border-radius: 8px; background-color: {color}33; "
             f"color: {color}; border: {border}; font-weight: {weight};"
         )
-        tooltip = status + (" (optional)" if optional else "")
+        tooltip = _STATUS_TOOLTIPS.get(status, status) + (" (optional)" if optional else "")
         chip.setToolTip(tooltip)

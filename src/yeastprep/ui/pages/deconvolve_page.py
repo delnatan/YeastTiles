@@ -61,7 +61,14 @@ class DeconvolvePage(QWidget):
         super().__init__(parent)
         self.tree_panel = tree_panel
 
+        # "live": _last_target came from a source file about to be (or
+        # just) deconvolved in this session -- params changes recompute.
+        # "saved": _last_target/_output_target came from inspecting an
+        # existing 03_deconvolved file -- params changes just re-render,
+        # until "Do it" switches back to live.
+        self._mode = "live"
         self._last_target = None
+        self._output_target = None
         self._source_stage = None
         self._source_generation = 0
         self._batch_thread = None
@@ -72,6 +79,7 @@ class DeconvolvePage(QWidget):
 
         self.params_panel.set_params(settings.get_default_deconvolve_params())
         self._refresh_source_status()
+        self._update_batch_button_state()
 
     # ------------------------------------------------------------------
     # UI construction
@@ -110,8 +118,6 @@ class DeconvolvePage(QWidget):
         right = QWidget()
         right_layout = QVBoxLayout(right)
         right_layout.setContentsMargins(0, 0, 0, 0)
-        self.preview_source_label = PreviewSourceLabel()
-        right_layout.addWidget(self.preview_source_label)
         self.preview_panel = DeconvolvePreviewPanel()
         right_layout.addWidget(self.preview_panel, 1)
 
@@ -143,15 +149,24 @@ class DeconvolvePage(QWidget):
         self.source_status_label.setWordWrap(True)
         v.addWidget(self.source_status_label)
 
+        # Which single file "Do it"/auto-recompute below will act on --
+        # kept in this same box (not off in the preview column) since it's
+        # the third and most specific answer to "what's the input", right
+        # above the button it feeds.
+        self.preview_source_label = PreviewSourceLabel()
+        v.addWidget(self.preview_source_label)
+
         return group
 
     # ------------------------------------------------------------------
     # Wiring
 
     def _wire_up(self):
-        self.tree_panel.file_preview_requested.connect(self._on_file_selected)
         self.tree_panel.project_root_changed.connect(self._on_project_root_changed)
+        self.tree_panel.project_root_changed.connect(self._update_batch_button_state)
         self.tree_panel.refreshed.connect(self._refresh_source_status)
+        self.tree_panel.checked_changed.connect(self._update_batch_button_state)
+        self.tree_panel.refreshed.connect(self._update_batch_button_state)
         self.source_combo.currentIndexChanged.connect(self._on_source_combo_changed)
 
         self.controller = DeconvolveController()
@@ -198,10 +213,13 @@ class DeconvolvePage(QWidget):
         # The old preview/target belonged to whichever stage was active
         # before -- leaving it up would look like it's still the current
         # input, so it's cleared rather than left stale.
+        self._mode = "live"
         self._last_target = None
+        self._output_target = None
         self.preview_panel.clear()
         self.preview_source_label.clear_path()
         self._refresh_source_status()
+        self._update_batch_button_state()
         self.tree_panel.refresh()
 
     def _refresh_source_status(self):
@@ -227,12 +245,15 @@ class DeconvolvePage(QWidget):
         )
 
     # ------------------------------------------------------------------
-    # File selection -> live preview
+    # File selection -> live preview, or a saved-output inspect
 
-    def _on_file_selected(self, stage: str, path: str):
-        if stage != self._input_stage():
-            return
+    def load_selection(self, stage: str, path: str, mode: str):
         self.preview_source_label.set_path(path)
+        if mode == "saved":
+            self._load_saved_output(path)
+            return
+
+        self._mode = "live"
         try:
             _brightfield, target = load_combined_channels(path)
         except Exception as exc:
@@ -248,8 +269,46 @@ class DeconvolvePage(QWidget):
                 target, self._source_generation, self.params_panel.params()
             )
 
+    def _load_saved_output(self, path: str):
+        """Fast inspect path: show an already-deconvolved 03_deconvolved
+        file as-is -- before = the matching source file's target channel
+        (whichever stage this project currently deconvolves from), after =
+        the saved output target channel -- without spending a live
+        inference pass on it. Mirrors denoise_page.py's
+        `_load_saved_output`."""
+        paths_root = self.tree_panel.project_paths()
+        input_stage = self._input_stage()
+        source_dir = (
+            paths_root.stage_dir(input_stage) if paths_root and input_stage else None
+        )
+        source_path = source_dir / f"{Path(path).stem}.tiff" if source_dir is not None else None
+        try:
+            _out_brightfield, out_target = load_combined_channels(path)
+            if source_path is not None and source_path.exists():
+                _src_brightfield, src_target = load_combined_channels(source_path)
+            else:
+                src_target = out_target
+        except Exception as exc:
+            self.status_label.setText(f"Failed to load {path}: {exc}")
+            return
+
+        self._mode = "saved"
+        self._last_target = src_target
+        self._output_target = out_target
+        self._source_generation += 1
+        self._render_saved_preview()
+        self.status_label.setText(
+            f"{Path(path).name}: showing saved output. Click 'Do it' to tune live."
+        )
+
+    def _render_saved_preview(self):
+        self.preview_panel.set_data(self._last_target, self._output_target, _CHANNEL_LABEL)
+
     def _on_params_changed(self, params: DeconvolveParams):
         if self._last_target is None:
+            return
+        if self._mode == "saved":
+            self._render_saved_preview()
             return
         if not self.params_panel.is_auto_recompute():
             return
@@ -258,6 +317,7 @@ class DeconvolvePage(QWidget):
     def _recompute_now(self):
         if self._last_target is None:
             return
+        self._mode = "live"
         self.controller.recompute_now(
             self._last_target, self._source_generation, self.params_panel.params()
         )
@@ -294,31 +354,34 @@ class DeconvolvePage(QWidget):
     # ------------------------------------------------------------------
     # Batch deconvolve
 
+    def _update_batch_button_state(self, *_args):
+        paths_root = self.tree_panel.project_paths()
+        input_stage = self._input_stage() if paths_root else None
+        checked = (
+            self.tree_panel.checked_paths_for_stage(input_stage) if input_stage else []
+        )
+        self.deconvolve_btn.setEnabled(bool(checked))
+        if paths_root is None:
+            self.deconvolve_btn.setToolTip("Open a project first.")
+        elif input_stage is None:
+            self.deconvolve_btn.setToolTip(
+                "No reduced (2D) tiffs found. Run Data Reduction (and optionally Denoise) first."
+            )
+        elif not checked:
+            self.deconvolve_btn.setToolTip("Check at least one file in the tree to deconvolve.")
+        else:
+            self.deconvolve_btn.setToolTip("")
+
     def _start_batch(self):
         paths_root = self.tree_panel.project_paths()
         input_stage = self._input_stage()
-        if paths_root is None or input_stage is None:
-            QMessageBox.warning(
-                self,
-                "yeastprep",
-                "No reduced (2D) tiffs found. Run Data Reduction (and optionally "
-                "Denoise) first.",
-            )
-            return
-
         paths = [Path(p) for p in self.tree_panel.checked_paths_for_stage(input_stage)]
-        if not paths:
-            QMessageBox.warning(self, "yeastprep", "No files checked to deconvolve.")
-            return
-
         outdir = paths_root.deconvolved
 
         self._batch_thread = QThread()
         self._batch_worker = DeconvolveBatchWorker(paths, outdir, self.params_panel.params())
         self._batch_worker.moveToThread(self._batch_thread)
-        self._thread_started_connection = self._batch_thread.started.connect(
-            self._batch_worker.run
-        )
+        self._batch_thread.started.connect(self._batch_worker.run)
         self._batch_worker.progress.connect(self._on_batch_progress)
         self._batch_worker.file_result.connect(self._on_batch_file_result)
         self._batch_worker.finished.connect(self._on_batch_finished)
@@ -349,7 +412,7 @@ class DeconvolvePage(QWidget):
 
     def _on_batch_finished(self):
         self._emit_progress(PageProgress(active=False))
-        self.deconvolve_btn.setEnabled(True)
+        self._update_batch_button_state()
         self.status_label.setText("Batch deconvolve complete.")
 
         root = self.tree_panel.project_root()

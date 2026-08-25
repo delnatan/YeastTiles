@@ -32,6 +32,7 @@ from pathlib import Path
 from .channels import ChannelSelection
 from .deconvolve import DeconvolveParams
 from .denoise import DenoiseParams
+from .fs_status import is_hidden, list_visible
 from .pipeline import DEFAULT_CHANNELS, FlattenFieldParams
 from .segmentation import SegmentationParams
 from .tiles import TileParams
@@ -80,7 +81,7 @@ class ProjectPaths:
 
 
 def _has_tiffs(folder: Path) -> bool:
-    return folder.is_dir() and any(folder.glob("*.tiff"))
+    return bool(list_visible(folder, "*.tiff"))
 
 
 def upstream_2d_stage(paths: ProjectPaths, stages: tuple[str, ...]) -> Path | None:
@@ -136,6 +137,11 @@ def segmentation_mask_dir(
 class FileStatus:
     exists: bool
     up_to_date: bool  # only meaningful when exists and an upstream dir was given
+    # False only when an upstream_dir was given to stage_file_status but it
+    # was empty/missing -- distinguishes "can't verify, producer's likely
+    # archived elsewhere" from a genuine per-file staleness signal. Always
+    # True when no upstream_dir was given at all.
+    upstream_available: bool = True
 
 
 def find_stage_output(stage_dir: Path, source_path) -> Path | None:
@@ -168,21 +174,37 @@ def stage_file_status(
     if not stage_dir.is_dir():
         return statuses
 
+    own_paths = list_visible(stage_dir, "*.tiff")
+
     upstream_by_stem: dict[str, Path] = {}
     if upstream_dir is not None and upstream_dir.is_dir():
         for upstream_path in upstream_dir.iterdir():
-            if upstream_path.is_file():
+            if upstream_path.is_file() and not is_hidden(upstream_path):
                 upstream_by_stem[upstream_path.stem] = upstream_path
 
-    for path in stage_dir.glob("*.tiff"):
-        up_to_date = True
-        if upstream_dir is not None:
+    # Whether the upstream dir has *anything relevant* -- deliberately not
+    # "has any file at all": `upstream_dir` can be the project root itself
+    # (01_reduced/'s upstream), which also holds the config sidecar,
+    # denoise checkpoints, `.DS_Store`, other stage folders, etc., none of
+    # which will ever share a stem with a real FOV file. Intersecting on
+    # stem is what tells "raw stacks archived off this computer" (no
+    # overlap at all) apart from "raw stacks still here" (full or partial
+    # overlap), regardless of incidental files sitting alongside them.
+    own_stems = {p.stem for p in own_paths}
+    upstream_available = upstream_dir is None or bool(set(upstream_by_stem) & own_stems)
+
+    for path in own_paths:
+        if upstream_dir is None or not upstream_available:
+            up_to_date = True
+        else:
             upstream_path = upstream_by_stem.get(path.stem)
             up_to_date = (
                 upstream_path is not None
                 and path.stat().st_mtime >= upstream_path.stat().st_mtime
             )
-        statuses[path.stem] = FileStatus(exists=True, up_to_date=up_to_date)
+        statuses[path.stem] = FileStatus(
+            exists=True, up_to_date=up_to_date, upstream_available=upstream_available
+        )
     return statuses
 
 
@@ -196,7 +218,7 @@ def segmentation_file_status(mask_dir: Path) -> dict[str, FileStatus]:
     statuses: dict[str, FileStatus] = {}
     if not mask_dir.is_dir():
         return statuses
-    for seg_path in mask_dir.glob("*_seg.npy"):
+    for seg_path in list_visible(mask_dir, "*_seg.npy"):
         stem = seg_path.name[: -len("_seg.npy")]
         source_path = mask_dir / f"{stem}.tiff"
         up_to_date = (

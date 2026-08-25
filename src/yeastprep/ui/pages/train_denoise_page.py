@@ -44,6 +44,7 @@ from jssl_denoise.checkpoint import save_checkpoint
 
 from yeastprep.core import project as project_core
 from yeastprep.core.denoise import checkpoint_filename_for_channel
+from yeastprep.core.fs_status import list_visible
 
 from .. import settings
 from ..batch_progress_bar import BatchProgressBar
@@ -245,7 +246,7 @@ class TrainDenoisePage(QWidget):
             self.pool_tree.clear()
             for root in self._pooled_roots:
                 folder = project_core.ProjectPaths(root).stage_dir(stage)
-                paths = sorted(folder.glob("*.tiff")) if folder.is_dir() else []
+                paths = sorted(list_visible(folder, "*.tiff"))
 
                 top_item = QTreeWidgetItem(self.pool_tree, [f"{root}  ({len(paths)} file(s))"])
                 top_item.setData(0, Qt.UserRole, root)

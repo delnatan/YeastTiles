@@ -53,6 +53,7 @@ class TileGenerationPage(QWidget):
         self._wire_up()
 
         self.tile_params_panel.set_params(settings.get_default_tile_params())
+        self._update_batch_button_state()
 
     # ------------------------------------------------------------------
     # UI construction
@@ -102,8 +103,11 @@ class TileGenerationPage(QWidget):
     # Wiring
 
     def _wire_up(self):
-        self.tree_panel.file_preview_requested.connect(self._on_file_selected)
         self.tree_panel.project_root_changed.connect(self._on_project_root_changed)
+        self.tree_panel.project_root_changed.connect(self._update_batch_button_state)
+        self.tree_panel.checked_changed.connect(self._update_batch_button_state)
+        self.tree_panel.refreshed.connect(self._update_batch_button_state)
+        self.tree_panel.segmentation_source_changed.connect(self._update_batch_button_state)
 
         self.tile_params_panel.params_changed.connect(self._on_params_changed)
         self.tile_params_panel.recompute_requested.connect(self._recompute_now)
@@ -111,7 +115,7 @@ class TileGenerationPage(QWidget):
         self.tile_params_panel.reset_defaults_requested.connect(self._reset_project_defaults)
 
         self.export_btn.clicked.connect(self._start_batch)
-        self.open_tile_viewer_btn.clicked.connect(self._open_tile_viewer)
+        self.open_tile_viewer_btn.clicked.connect(lambda _checked=False: self._open_tile_viewer())
 
     # ------------------------------------------------------------------
     # Project handling
@@ -126,8 +130,9 @@ class TileGenerationPage(QWidget):
     # File selection -> live crop-window preview (requires a saved mask;
     # tile export never runs segmentation itself)
 
-    def _on_file_selected(self, stage: str, path: str):
-        if stage != self.tree_panel.active_2d_stage():
+    def load_selection(self, stage: str, path: str, mode: str = "live"):
+        if mode == "open_viewer_fov":
+            self._open_tile_viewer(fov_filter=[path])
             return
         self.preview_source_label.set_path(path)
         masks = load_saved_masks(seg_npy_path(path))
@@ -192,31 +197,43 @@ class TileGenerationPage(QWidget):
     # ------------------------------------------------------------------
     # Batch export
 
+    def _update_batch_button_state(self, *_args):
+        paths_root = self.tree_panel.project_paths()
+        source_stage = self.tree_panel.active_2d_stage() if paths_root else None
+        checked = (
+            self.tree_panel.checked_paths_for_stage(source_stage) if source_stage else []
+        )
+        self.export_btn.setEnabled(bool(checked))
+        if not paths_root or not source_stage:
+            self.export_btn.setToolTip(
+                "No 2D images available yet -- run Data Reduction (and Segmentation) first."
+            )
+        elif not checked:
+            self.export_btn.setToolTip("Check at least one file in the tree to export.")
+        else:
+            self.export_btn.setToolTip("")
+
+        self.open_tile_viewer_btn.setText(self._tile_viewer_label(source_stage, checked))
+
+    def _tile_viewer_label(self, source_stage, checked: list[str]) -> str:
+        if not source_stage:
+            return "Open in Tile Viewer"
+        total = len(self.tree_panel.all_paths_for_stage(source_stage))
+        if checked and len(checked) < total:
+            return f"Open in Tile Viewer ({len(checked)} of {total} FOVs)"
+        return "Open in Tile Viewer (all FOVs)"
+
     def _start_batch(self):
         paths_root = self.tree_panel.project_paths()
         source_stage = self.tree_panel.active_2d_stage()
-        if paths_root is None or not source_stage:
-            QMessageBox.warning(
-                self,
-                "yeastprep",
-                "No 2D images available yet -- run Data Reduction (and Segmentation) first.",
-            )
-            return
-
         paths = [Path(p) for p in self.tree_panel.checked_paths_for_stage(source_stage)]
-        if not paths:
-            QMessageBox.warning(self, "yeastprep", "No files checked to export.")
-            return
-
         self._source_stage = source_stage
         outdir = paths_root.tiles
 
         self._batch_thread = QThread()
         self._batch_worker = TileBatchWorker(paths, outdir, self.tile_params_panel.params())
         self._batch_worker.moveToThread(self._batch_thread)
-        self._thread_started_connection = self._batch_thread.started.connect(
-            self._batch_worker.run
-        )
+        self._batch_thread.started.connect(self._batch_worker.run)
         self._batch_worker.progress.connect(self._on_batch_progress)
         self._batch_worker.file_result.connect(self._on_batch_file_result)
         self._batch_worker.finished.connect(self._on_batch_finished)
@@ -246,7 +263,7 @@ class TileGenerationPage(QWidget):
 
     def _on_batch_finished(self):
         self._emit_progress(PageProgress(active=False))
-        self.export_btn.setEnabled(True)
+        self._update_batch_button_state()
         self.status_label.setText("Batch tile export complete.")
         self.tree_panel.refresh()
 
@@ -255,7 +272,14 @@ class TileGenerationPage(QWidget):
         self._batch_thread = None
         self._batch_worker = None
 
-    def _open_tile_viewer(self):
+    def _open_tile_viewer(self, fov_filter: list[str] | None = None):
+        """Launch the standalone tile-annotation viewer as a subprocess,
+        scoped to `fov_filter` if given (a single-FOV selection action --
+        see `load_selection`'s "open_viewer_fov" mode), else to whichever
+        FOVs are currently checked under the active 2D stage -- same scope
+        `open_tile_viewer_btn`'s label already advertises
+        (`_tile_viewer_label`), so what opens always matches what was shown
+        before the click."""
         paths_root = self.tree_panel.project_paths()
         if paths_root is None or not paths_root.tiles.is_dir():
             QMessageBox.warning(self, "yeastprep", "No tiles exported yet.")
@@ -263,19 +287,16 @@ class TileGenerationPage(QWidget):
 
         cmd = [sys.executable, "-m", "tileclass", str(paths_root.tiles)]
 
-        # If the tree's checkboxes exclude some of the active stage's FOVs,
-        # scope the viewer session to just the checked ones -- lets
-        # annotation work be split cleanly by source file, since the tiles
-        # of an unchecked FOV are simply never loaded into this session.
-        # Leaving everything checked (the default) or nothing checked opens
-        # the whole folder, same as before this filter existed.
-        source_stage = self.tree_panel.active_2d_stage()
-        if source_stage:
-            all_paths = self.tree_panel.all_paths_for_stage(source_stage)
-            checked_paths = self.tree_panel.checked_paths_for_stage(source_stage)
-            if checked_paths and len(checked_paths) < len(all_paths):
-                for p in checked_paths:
-                    cmd += ["--fov", Path(p).stem]
+        if fov_filter is None:
+            source_stage = self.tree_panel.active_2d_stage()
+            if source_stage:
+                all_paths = self.tree_panel.all_paths_for_stage(source_stage)
+                checked_paths = self.tree_panel.checked_paths_for_stage(source_stage)
+                if checked_paths and len(checked_paths) < len(all_paths):
+                    fov_filter = [Path(p).stem for p in checked_paths]
+
+        for fov_id in fov_filter or ():
+            cmd += ["--fov", fov_id]
 
         subprocess.Popen(cmd, start_new_session=True)
 

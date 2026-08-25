@@ -22,14 +22,6 @@ PIL_SUFFIXES = (".png", ".jpg", ".jpeg", ".bmp", ".gif")
 SUPPORTED_SUFFIXES = TIFF_SUFFIXES + PIL_SUFFIXES
 
 
-def _is_rgb_image(arr):
-    """``(Y, X, 3|4)`` with spatial dims larger than the color axis."""
-    if arr.ndim == 3 and arr.shape[-1] in (3, 4):
-        if arr.shape[0] > 4 and arr.shape[1] > 4:
-            return True
-    return False
-
-
 def _to_5d(data, dims=None):
     """Reorder/reshape *data* to ``(T, Z, C, Y, X)``.
 

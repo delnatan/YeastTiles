@@ -52,6 +52,7 @@ class SegmentationPage(QWidget):
         self._wire_up()
 
         self.segmentation_params_panel.set_params(settings.get_default_segmentation_params())
+        self._update_batch_button_state()
 
     # ------------------------------------------------------------------
     # UI construction
@@ -101,9 +102,12 @@ class SegmentationPage(QWidget):
     # Wiring
 
     def _wire_up(self):
-        self.tree_panel.file_preview_requested.connect(self._on_file_selected)
         self.tree_panel.segmentation_source_changed.connect(self._on_source_changed)
+        self.tree_panel.segmentation_source_changed.connect(self._update_batch_button_state)
         self.tree_panel.project_root_changed.connect(self._on_project_root_changed)
+        self.tree_panel.project_root_changed.connect(self._update_batch_button_state)
+        self.tree_panel.checked_changed.connect(self._update_batch_button_state)
+        self.tree_panel.refreshed.connect(self._update_batch_button_state)
 
         self.controller = SegmentationController()
         self.controller.result_ready.connect(self._on_result_ready)
@@ -137,9 +141,7 @@ class SegmentationPage(QWidget):
     # File selection -> live preview (from disk, or a saved mask if one
     # already exists)
 
-    def _on_file_selected(self, stage: str, path: str):
-        if stage != self.tree_panel.active_2d_stage():
-            return
+    def load_selection(self, stage: str, path: str, mode: str = "live"):
         self.preview_source_label.set_path(path)
         try:
             image = load_brightfield_channel(path)
@@ -217,33 +219,32 @@ class SegmentationPage(QWidget):
     # ------------------------------------------------------------------
     # Batch segmentation
 
+    def _update_batch_button_state(self, *_args):
+        source_stage = self.tree_panel.active_2d_stage()
+        checked = (
+            self.tree_panel.checked_paths_for_stage(source_stage) if source_stage else []
+        )
+        self.segment_btn.setEnabled(bool(checked))
+        if not source_stage:
+            self.segment_btn.setToolTip(
+                "No 2D images available yet -- run Data Reduction (and optionally "
+                "Denoise/Deconvolve) first."
+            )
+        elif not checked:
+            self.segment_btn.setToolTip("Check at least one file in the tree to segment.")
+        else:
+            self.segment_btn.setToolTip("")
+
     def _start_batch(self):
         source_stage = self.tree_panel.active_2d_stage()
-        if not source_stage:
-            QMessageBox.warning(
-                self,
-                "yeastprep",
-                "No 2D images available yet -- run Data Reduction (and optionally "
-                "Denoise/Deconvolve) first.",
-            )
-            return
-
         paths = [Path(p) for p in self.tree_panel.checked_paths_for_stage(source_stage)]
-        if not paths:
-            QMessageBox.warning(
-                self, "yeastprep", "No files checked -- check at least one file in the tree."
-            )
-            return
-
         self._source_stage = source_stage
         self._batch_thread = QThread()
         self._batch_worker = SegmentationBatchWorker(
             paths, self.segmentation_params_panel.params()
         )
         self._batch_worker.moveToThread(self._batch_thread)
-        self._thread_started_connection = self._batch_thread.started.connect(
-            self._batch_worker.run
-        )
+        self._batch_thread.started.connect(self._batch_worker.run)
         self._batch_worker.progress.connect(self._on_batch_progress)
         self._batch_worker.file_result.connect(self._on_batch_file_result)
         self._batch_worker.finished.connect(self._on_batch_finished)
@@ -273,7 +274,7 @@ class SegmentationPage(QWidget):
 
     def _on_batch_finished(self):
         self._emit_progress(PageProgress(active=False))
-        self.segment_btn.setEnabled(True)
+        self._update_batch_button_state()
         self.status_label.setText("Batch segmentation complete.")
 
         root = self.tree_panel.project_root()

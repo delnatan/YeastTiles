@@ -7,7 +7,6 @@ and axis-reordering machinery that ``TiledViewer`` also carries for
 large multi-dimensional images don't apply here and aren't ported.
 """
 
-import os
 from collections import Counter
 from pathlib import Path
 

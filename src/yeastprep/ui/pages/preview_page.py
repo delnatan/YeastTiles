@@ -7,14 +7,12 @@ per-channel colormap/contrast/histogram controls as the Raw Stack tab
 pyvistra's `CompactHistogramWidget`).
 
 Every one of these stages produces a file that already exists on disk by
-the time you can click it in the tree, so the click means "show me what
-this is," not "take me to the page that makes it" -- that page's params,
-batch button, and live-recompute machinery aren't what looking at a
-finished file calls for. This page is `main_window.py`'s click destination
-for all three stages (raw files still go to Data Reduction, since the
-rawstack viewer there already fills the same "just look at it" role for
-that stage). Denoise/Deconvolve stay one click away in the page sidebar
-for when you actually want to (re)process something, not zero.
+the time it's selectable in the tree, so "Preview" is always one of the
+actions `SelectionActionsPanel` offers for it, alongside whichever
+processing tasks (Denoise/Deconvolve/Segment/...) currently apply -- see
+`ui/selection_actions.py`. Raw files don't offer a Preview action here;
+the rawstack viewer on Data Reduction already fills that role for that
+stage.
 """
 
 from pathlib import Path
@@ -32,7 +30,6 @@ from qtpy.QtWidgets import (
 )
 
 from yeastprep.core.combined_tiff import BRIGHTFIELD_CHANNEL, TARGET_CHANNEL, load_combined_channels
-from yeastprep.core.project import STAGE_DECONVOLVED, STAGE_DENOISED, STAGE_REDUCED
 from yeastprep.core.segmentation import load_saved_masks, seg_npy_path
 
 from .. import settings
@@ -44,7 +41,6 @@ from .page_progress import PageProgress  # noqa: F401 -- shape of progress_chang
 
 _ROLE_BY_CHANNEL = {BRIGHTFIELD_CHANNEL: "brightfield", TARGET_CHANNEL: "target"}
 _LABEL_BY_CHANNEL = {BRIGHTFIELD_CHANNEL: "Brightfield", TARGET_CHANNEL: "Target/fluorescence"}
-_PREVIEWABLE_STAGES = (STAGE_REDUCED, STAGE_DENOISED, STAGE_DECONVOLVED)
 _MASK_OUTLINE_RGBA = (1.0, 0.85, 0.0, 1.0)  # yellow, matches cellpose GUI / SegmentationPreviewPanel
 
 
@@ -90,16 +86,12 @@ class PreviewPage(QWidget):
         splitter.setStretchFactor(0, 1)
 
         self.status_label = QLabel(
-            "Double-click a reduced, denoised, or deconvolved file in the tree to "
-            "preview its brightfield + target/fluorescence overlay."
+            "Select a reduced, denoised, or deconvolved file in the tree and click "
+            "'Preview' to see its brightfield + target/fluorescence overlay."
         )
         layout.addWidget(self.status_label)
 
-        self.tree_panel.file_preview_requested.connect(self._on_file_selected)
-
-    def _on_file_selected(self, stage: str, path: str):
-        if stage not in _PREVIEWABLE_STAGES:
-            return
+    def load_selection(self, stage: str, path: str, mode: str = "live"):
         try:
             brightfield, target = load_combined_channels(path)
         except Exception as exc:

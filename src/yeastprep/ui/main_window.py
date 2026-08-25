@@ -3,27 +3,28 @@ compact stage list (one row per pipeline stage, each showing a small
 progress indicator for that stage's background work) on top of the
 persistent `ProjectTreePanel` -- the single project folder picker +
 checkable batch-selection tree shared by every page (see
-project_tree_panel.py's module docstring) -- rather than putting them in
-two side-by-side columns, so the rest of the window is free for image
-previews. That column drives a QStackedWidget holding the actual pages.
-Switching pages doesn't stop a page's background worker: QStackedWidget
-only hides the widget, so a batch run on a page you've navigated away from
-keeps going and keeps updating its stage-list progress bar.
+project_tree_panel.py's module docstring) -- and the `SelectionActionsPanel`
+below that, rather than putting the tree and page list in two side-by-side
+columns, so the rest of the window is free for image previews. That column
+drives a QStackedWidget holding the actual pages. Switching pages doesn't
+stop a page's background worker: QStackedWidget only hides the widget, so
+a batch run on a page you've navigated away from keeps going and keeps
+updating its stage-list progress bar.
 
 Pages read/write the project's folder tree only through `tree_panel` --
 there's no per-page folder state, and no hand-wired "use X output"
 buttons: every page just asks the shared tree which stage is currently the
 active 2D source.
 
-Clicking a file in the tree also switches the stack to whichever page owns
-that stage (`_stage_pages`) -- raw files go to Data Reduction, since the
-rawstack viewer there already doubles as a passive viewer for that stage.
-01_reduced/02_denoised/03_deconvolved files all go to `PreviewPage`
-instead of their respective processing pages (Denoise, Deconvolve): every
-file under those stages already exists on disk by the time it's clickable,
-so the click means "show me what this is," not "take me to the page that
-(re)produces it" -- that page's params/batch/live-recompute UI is one more
-click away in the sidebar for when reprocessing really is the intent.
+Clicking a file in the tree does not by itself load anything into a page.
+It updates `selection_panel` with the list of tasks valid for that file
+(`selection_actions.actions_for_selection`, e.g. a 01_reduced file offers
+Denoise/Deconvolve/Segment/Preview, filtered to whatever the project's
+current stage-resolution state actually supports) and clicking one of
+those action buttons is what switches the stack to the owning page *and*
+loads the file into it (`_on_action_triggered`) -- one click, and the
+actions panel always shows exactly what a click on the currently-selected
+item can do next.
 """
 
 from qtpy.QtWidgets import (
@@ -38,9 +39,7 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
-from yeastprep.core import project as project_core
-
-from . import settings
+from . import selection_actions, settings
 from .common.stage_breadcrumb import PipelineBreadcrumb
 from .pages.data_reduction_page import DataReductionPage
 from .pages.deconvolve_page import DeconvolvePage
@@ -49,7 +48,8 @@ from .pages.page_progress import PageProgress
 from .pages.preview_page import PreviewPage
 from .pages.segmentation_page import SegmentationPage
 from .pages.tile_generation_page import TileGenerationPage
-from .project_tree_panel import RAW_STAGE, ProjectTreePanel
+from .project_tree_panel import ProjectTreePanel
+from .selection_actions_panel import SelectionActionsPanel
 
 
 class YeastPrepWindow(QMainWindow):
@@ -74,16 +74,16 @@ class YeastPrepWindow(QMainWindow):
             ("Segmentation", self.segmentation_page),
             ("Tile Generation", self.tile_generation_page),
         ]
-        # Tree click -> auto-navigate target, per stage. Denoise/Deconvolve
-        # are deliberately absent here even though they "own" 02_denoised/
-        # 03_deconvolved -- see this module's docstring -- so a click always
-        # lands on a passive viewer; those pages are reachable from the
-        # sidebar list instead.
-        self._stage_pages = {
-            RAW_STAGE: self.data_reduction_page,
-            project_core.STAGE_REDUCED: self.preview_page,
-            project_core.STAGE_DENOISED: self.preview_page,
-            project_core.STAGE_DECONVOLVED: self.preview_page,
+        # page_key (see selection_actions.py) -> page instance, used by
+        # _on_action_triggered to route a SelectionActionsPanel button
+        # click to the page it names.
+        self._page_by_key = {
+            "data_reduction": self.data_reduction_page,
+            "preview": self.preview_page,
+            "denoise": self.denoise_page,
+            "deconvolve": self.deconvolve_page,
+            "segmentation": self.segmentation_page,
+            "tile_generation": self.tile_generation_page,
         }
 
         self._build_ui()
@@ -123,6 +123,9 @@ class YeastPrepWindow(QMainWindow):
         sidebar_layout.addWidget(self.page_list)
 
         sidebar_layout.addWidget(self.tree_panel, 1)
+
+        self.selection_panel = SelectionActionsPanel()
+        sidebar_layout.addWidget(self.selection_panel)
 
         self.stack = QStackedWidget()
         layout.addWidget(self.stack, 1)
@@ -164,20 +167,26 @@ class YeastPrepWindow(QMainWindow):
 
     def _wire_up(self):
         self.page_list.currentRowChanged.connect(self.stack.setCurrentIndex)
-        self.tree_panel.file_selected.connect(self._on_tree_file_selected)
+        self.tree_panel.file_selected.connect(self._on_tree_selection)
+        self.selection_panel.action_triggered.connect(self._on_action_triggered)
 
         for _name, page in self._pages:
             page.progress_changed.connect(
                 lambda p, page=page: self._on_progress_changed(page, p)
             )
 
-    def _on_tree_file_selected(self, stage: str, _path: str):
-        page = self._stage_pages.get(stage)
+    def _on_tree_selection(self, stage: str, path: str):
+        actions = selection_actions.actions_for_selection(stage, path, self.tree_panel)
+        self.selection_panel.set_selection(stage, path, actions)
+
+    def _on_action_triggered(self, page_key: str, stage: str, path: str, mode: str):
+        page = self._page_by_key.get(page_key)
         if page is None:
             return
         index = self.stack.indexOf(page)
         if index >= 0:
             self.page_list.setCurrentRow(index)
+        page.load_selection(stage, path, mode)
 
     def _on_progress_changed(self, page, progress: PageProgress):
         bar = self._progress_bars[id(page)]

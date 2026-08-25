@@ -10,6 +10,14 @@ switching pages. Each page reads/writes through this panel's stage-scoped
 API (`checked_paths_for_stage`, `mark_result`, ...) instead of owning its
 own folder state.
 
+Selecting a leaf (click, or arrow-key nav) only emits `file_selected` --
+cheap, and does not by itself load anything into a page. `main_window.py`
+turns that into a list of valid next actions (see `selection_actions.py`)
+shown in the `SelectionActionsPanel` docked below this tree; a page only
+loads the file when one of those action buttons is clicked. This is the
+only way a file gets loaded into a page -- there is no separate
+double-click behavior.
+
 There is exactly one folder to pick: the project root, which IS the folder
 holding the raw 3D stacks (see core/project.py's module docstring) --
 there's no separate "raw input folder" step. Picking a folder that already
@@ -53,6 +61,7 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
+from yeastprep.core import fs_status as fs_status_core
 from yeastprep.core import project as project_core
 from yeastprep.core import stages as stages_core
 from yeastprep.core import tiles as tiles_core
@@ -95,8 +104,12 @@ def natsort_key(path: Path):
 
 class ProjectTreePanel(QWidget):
     project_root_changed = Signal(str)
-    file_selected = Signal(str, str)  # stage, path -- cheap: drives page auto-switch only
-    file_preview_requested = Signal(str, str)  # stage, path -- explicit: double-click only
+    # stage, path -- fires on click (or arrow-key nav); cheap, just updates
+    # SelectionActionsPanel. Loading a file into a page only happens when
+    # one of that panel's action buttons is clicked, never from this signal
+    # directly -- see main_window.py's _on_tree_selection.
+    file_selected = Signal(str, str)
+    checked_changed = Signal(str)  # stage -- fires when a leaf's checkbox is toggled
     segmentation_source_changed = Signal()
     refreshed = Signal()  # emitted at the end of refresh() -- e.g. for PipelineBreadcrumb
 
@@ -124,8 +137,7 @@ class ProjectTreePanel(QWidget):
         self.tree.setColumnWidth(1, 20)
         self.tree.itemChanged.connect(self._on_item_changed)
         self.tree.currentItemChanged.connect(self._on_current_changed)
-        self.tree.itemDoubleClicked.connect(self._on_item_double_clicked)
-        self.tree.setToolTip("Double-click a file to preview it.")
+        self.tree.setToolTip("Click a file to see available actions below.")
         layout.addWidget(self.tree, 1)
 
         refresh_btn = QPushButton("Refresh")
@@ -295,10 +307,10 @@ class ProjectTreePanel(QWidget):
         return paths.stage_dir(stage)
 
     def _stage_glob_pattern(self, stage: str) -> str:
+        # STAGE_TILES never reaches this -- _refresh_stage short-circuits to
+        # _refresh_tiles_children before calling it (see that branch).
         if stage == RAW_STAGE:
             return self.raw_pattern() or "*.ims"
-        if stage == project_core.STAGE_TILES:
-            return "*.tif"
         return "*.tiff"
 
     def _producer_dir(self, stage: str) -> Path | None:
@@ -338,12 +350,22 @@ class ProjectTreePanel(QWidget):
             top_item.setExpanded(False)
             return
 
-        paths = sorted(folder.glob(self._stage_glob_pattern(stage)), key=natsort_key)
-        top_item.setText(0, f"{_STAGE_LABELS[stage]}{badge}  ({len(paths)} file(s))")
-
         if stage == project_core.STAGE_TILES:
-            self._refresh_tiles_children(top_item, folder, active_2d_stage)
+            # Deliberately never globs 05_tiles/ for its individual crop
+            # files -- a project can have hundreds of thousands of those,
+            # and the per-FOV summary below already gets everything it
+            # needs (count included) from tile_index.csv instead. This is
+            # also why the tree never grows a leaf per tile: the file-level
+            # viewer for these lives in tileclass's page-by-page grid, not
+            # here.
+            self._refresh_tiles_children(top_item, folder, active_2d_stage, badge)
             return
+
+        paths = sorted(
+            fs_status_core.list_visible(folder, self._stage_glob_pattern(stage)),
+            key=natsort_key,
+        )
+        top_item.setText(0, f"{_STAGE_LABELS[stage]}{badge}  ({len(paths)} file(s))")
 
         producer_dir = self._producer_dir(stage) if stage in _2D_STAGES else None
         statuses = project_core.stage_file_status(folder, upstream_dir=producer_dir)
@@ -381,7 +403,16 @@ class ProjectTreePanel(QWidget):
                 if stage in _2D_STAGES:
                     status = statuses.get(path.stem)
                     up_to_date = bool(status and status.up_to_date)
-                    if stage == project_core.STAGE_DENOISED and up_to_date:
+                    upstream_available = bool(status and status.upstream_available)
+                    if not upstream_available:
+                        icon_state = "archived"
+                        leaf.setToolTip(
+                            0,
+                            "Source folder for this stage isn't present on this computer "
+                            "(likely moved to storage) -- can't verify freshness, showing "
+                            "as up to date.",
+                        )
+                    elif stage == project_core.STAGE_DENOISED and up_to_date:
                         n_channels = len(denoise_channels_done.get(path.stem, ()))
                         icon_state = "partial" if n_channels == 1 else "done"
                     else:
@@ -407,14 +438,25 @@ class ProjectTreePanel(QWidget):
             self.tree.blockSignals(False)
         top_item.setExpanded(True)
 
-    def _refresh_tiles_children(self, top_item, folder: Path, active_2d_stage: str | None):
+    def _refresh_tiles_children(
+        self, top_item, folder: Path, active_2d_stage: str | None, badge: str = ""
+    ):
         """Break the "05 · Tiles" summary down into one row per source FOV
         (not per output .tif -- a FOV's cells all export together) --
         reads out_dir's tile_index.csv rather than re-deriving groupings
         from filenames, since that CSV is already the authoritative
-        cell_id/fov_id mapping (see core/tiles.append_tile_index)."""
+        cell_id/fov_id mapping (see core/tiles.append_tile_index). The
+        header count below is likewise summed from these per-FOV statuses,
+        not a folder glob -- see the caller's note on why 05_tiles/ is
+        never listed file-by-file."""
         mask_dir = self._stage_dir(active_2d_stage) if active_2d_stage else None
         fov_statuses = tiles_core.fov_tile_status(folder, mask_dir)
+        n_cells = sum(status.n_cells for status in fov_statuses.values())
+        top_item.setText(
+            0,
+            f"{_STAGE_LABELS[project_core.STAGE_TILES]}{badge}  "
+            f"({len(fov_statuses)} FOV(s), {n_cells} cell(s))",
+        )
 
         self.tree.blockSignals(True)
         try:
@@ -423,8 +465,19 @@ class ProjectTreePanel(QWidget):
                 leaf = QTreeWidgetItem(top_item)
                 n = status.n_cells
                 leaf.setText(0, f"{fov_id}  ({n} cell{'s' if n != 1 else ''})")
-                leaf.setIcon(0, status_icon("done" if status.up_to_date else "stale"))
-                if not status.up_to_date:
+                leaf.setData(0, Qt.UserRole, ("tile_fov", project_core.STAGE_TILES, fov_id))
+                if not status.mask_available:
+                    leaf.setIcon(0, status_icon("archived"))
+                    leaf.setToolTip(
+                        0,
+                        "Source/mask folder for this FOV isn't present on this computer "
+                        "(likely moved to storage) -- can't verify freshness, showing as "
+                        "up to date.",
+                    )
+                elif status.up_to_date:
+                    leaf.setIcon(0, status_icon("done"))
+                else:
+                    leaf.setIcon(0, status_icon("stale"))
                     leaf.setToolTip(
                         0, "Segmentation for this FOV changed since these tiles were exported."
                     )
@@ -435,20 +488,19 @@ class ProjectTreePanel(QWidget):
     # ------------------------------------------------------------------
     # Selection / checkbox API used by pages
 
-    def _on_item_changed(self, _item, _column):
-        pass  # reserved -- checked_paths_for_stage() reads live state on demand
+    def _on_item_changed(self, item, column):
+        if column != 0:
+            return
+        kind, stage, _path = item.data(0, Qt.UserRole) or (None, None, None)
+        if kind == "file":
+            self.checked_changed.emit(stage)
 
     def _on_current_changed(self, current, _previous):
         if current is None:
             return
         kind, stage, path = current.data(0, Qt.UserRole) or (None, None, None)
-        if kind == "file":
+        if kind in ("file", "tile_fov"):
             self.file_selected.emit(stage, path)
-
-    def _on_item_double_clicked(self, item, _column):
-        kind, stage, path = item.data(0, Qt.UserRole) or (None, None, None)
-        if kind == "file":
-            self.file_preview_requested.emit(stage, path)
 
     def all_paths_for_stage(self, stage: str) -> list[str]:
         top_item = self._stage_items.get(stage)

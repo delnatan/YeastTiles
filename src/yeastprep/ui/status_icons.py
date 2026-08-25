@@ -17,6 +17,12 @@ STATUS_COLORS = {
     # not an error state, just incomplete; the half-fill carries the
     # "incomplete" signal instead of a different color.
     "partial": "#4caf50",
+    # Producer/upstream folder is empty or missing -- most likely archived
+    # off this computer (see project.FileStatus.upstream_available), not a
+    # sign anything's wrong. Deliberately neither "done" green (that would
+    # claim freshness we can't verify) nor "stale" amber (that would wrongly
+    # suggest reprocessing is needed).
+    "archived": "#6f9be0",
 }
 _ICON_SIZE = QSize(12, 12)
 

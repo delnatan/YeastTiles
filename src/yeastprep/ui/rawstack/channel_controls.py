@@ -8,7 +8,6 @@ pyvistra's viewer/renderer classes, just numpy + Qt) -- enough for a
 colormap-picker popup).
 """
 
-from qtpy.QtCore import Qt
 from qtpy.QtGui import QColor
 from qtpy.QtWidgets import (
     QCheckBox,
