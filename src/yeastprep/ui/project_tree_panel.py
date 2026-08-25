@@ -42,7 +42,6 @@ module docstring) -- the "Segmentation source" combo picks which of
 a small mask badge for files that already have one.
 """
 
-import re
 from pathlib import Path
 
 from qtpy.QtCore import Qt, Signal
@@ -61,13 +60,12 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
-from yeastprep.core import fs_status as fs_status_core
 from yeastprep.core import project as project_core
 from yeastprep.core import stages as stages_core
-from yeastprep.core import tiles as tiles_core
 
 from . import settings
 from .status_icons import status_icon
+from .worker import ProjectScanController
 
 RAW_STAGE = stages_core.STAGE_RAW
 
@@ -94,13 +92,6 @@ _2D_STAGES = (
     project_core.STAGE_DECONVOLVED,
 )
 
-_DIGITS = re.compile(r"(\d+)")
-
-
-def natsort_key(path: Path):
-    parts = _DIGITS.split(path.name)
-    return [int(p) if p.isdigit() else p.lower() for p in parts]
-
 
 class ProjectTreePanel(QWidget):
     project_root_changed = Signal(str)
@@ -117,6 +108,11 @@ class ProjectTreePanel(QWidget):
         super().__init__(parent)
         self._root = ""
         self._stage_items: dict[str, QTreeWidgetItem] = {}
+        self._last_snapshot = None  # most recent project_scan.ProjectScanSnapshot, or None
+
+        self._scan_controller = ProjectScanController()
+        self._scan_controller.result_ready.connect(self._on_scan_ready)
+        self._scan_controller.error.connect(self._on_scan_error)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
@@ -197,7 +193,6 @@ class ProjectTreePanel(QWidget):
 
     def _on_raw_pattern_changed(self, _pattern):
         self._persist_project_field(raw_pattern=self.raw_pattern())
-        self._rebuild_stage_items()
         self.refresh()
 
     def set_project_root(self, root: str):
@@ -256,7 +251,6 @@ class ProjectTreePanel(QWidget):
 
     def _on_source_combo_changed(self, _index):
         self._persist_project_field(segmentation_source_stage=self.segmentation_source_override())
-        self._rebuild_stage_items()
         self.refresh()
         self.segmentation_source_changed.emit()
 
@@ -298,192 +292,102 @@ class ProjectTreePanel(QWidget):
             self.tree.addTopLevelItem(item)
             self._stage_items[stage] = item
 
-    def _stage_dir(self, stage: str) -> Path | None:
-        if stage == RAW_STAGE:
-            return Path(self._root) if self._root else None
-        paths = self.project_paths()
-        if paths is None:
-            return None
-        return paths.stage_dir(stage)
-
-    def _stage_glob_pattern(self, stage: str) -> str:
-        # STAGE_TILES never reaches this -- _refresh_stage short-circuits to
-        # _refresh_tiles_children before calling it (see that branch).
-        if stage == RAW_STAGE:
-            return self.raw_pattern() or "*.ims"
-        return "*.tiff"
-
-    def _producer_dir(self, stage: str) -> Path | None:
-        """Whichever folder feeds *into* `stage` -- used to flag a leaf as
-        stale (producer changed since this stage last ran) rather than
-        just "exists"."""
-        paths = self.project_paths()
-        if stage == project_core.STAGE_REDUCED:
-            return Path(self._root) if self._root else None
-        if paths is None:
-            return None
-        if stage == project_core.STAGE_DENOISED:
-            return paths.reduced
-        if stage == project_core.STAGE_DECONVOLVED:
-            config = project_core.load_project_config(self._root) if self._root else None
-            override = config.deconvolve_source_stage if config else None
-            return project_core.resolve_deconvolve_source(paths, override)
-        return None
-
     def refresh(self):
-        active_stage = self.active_2d_stage()
+        """Kicks off a background rescan (`core.project_scan.scan_project`,
+        run on `_scan_controller`'s worker thread) and returns immediately
+        -- the tree/breadcrumb are populated later, in `_on_scan_ready`,
+        once that finishes. Globbing every stage folder and `stat()`-ing
+        every file in it used to happen right here, synchronously, on the
+        GUI thread -- fine on a local SSD, but on a slow external/network
+        drive with hundreds of raw files that walk alone could take long
+        enough to make the whole app look hung."""
+        if not self._root:
+            self._apply_scan(None)
+            return
+        self._scan_controller.recompute_now(
+            self._root,
+            self._root,
+            (self.raw_pattern(), self.segmentation_source_override(), _STAGE_ORDER),
+        )
+
+    def _on_scan_ready(self, result):
+        # Discard a scan that's no longer the latest requested (a newer one
+        # is already in flight) or that answers a project we've since
+        # navigated away from.
+        if result.request_id != self._scan_controller.latest_request_id():
+            return
+        if result.payload != self._root:
+            return
+        self._last_snapshot = result.scan
+        self._apply_scan(result.scan)
+
+    def _on_scan_error(self, message: str):
+        self.project_edit.setToolTip(f"{self._root}\n\nLast project scan failed: {message}")
+
+    def _apply_scan(self, snapshot):
+        """Populate the tree from an already-computed `ProjectScanSnapshot`
+        -- pure Qt-widget bookkeeping, no filesystem access, so this is
+        cheap enough to run on the GUI thread. `snapshot` is None only when
+        no project is open yet."""
         for stage in _STAGE_ORDER:
-            self._refresh_stage(stage, active_stage)
+            self._apply_stage(stage, snapshot.stages[stage] if snapshot else None)
         self.refreshed.emit()
 
-    def _refresh_stage(self, stage: str, active_2d_stage: str | None):
+    def _apply_stage(self, stage: str, result):
         top_item = self._stage_items.get(stage)
         if top_item is None:
             return
         top_item.takeChildren()
 
-        folder = self._stage_dir(stage)
-        badge = " \U0001f52c" if stage == active_2d_stage else ""
-        if folder is None or not folder.is_dir():
-            empty_msg = "no project open" if stage == RAW_STAGE else "not created yet"
+        badge = " \U0001f52c" if result is not None and result.is_active_2d else ""
+        if result is None or not result.exists:
+            empty_msg = result.empty_msg if result is not None else "no project open"
             top_item.setText(0, f"{_STAGE_LABELS[stage]}{badge}  ({empty_msg})")
             top_item.setExpanded(False)
             return
 
         if stage == project_core.STAGE_TILES:
-            # Deliberately never globs 05_tiles/ for its individual crop
-            # files -- a project can have hundreds of thousands of those,
-            # and the per-FOV summary below already gets everything it
-            # needs (count included) from tile_index.csv instead. This is
-            # also why the tree never grows a leaf per tile: the file-level
-            # viewer for these lives in tileclass's page-by-page grid, not
-            # here.
-            self._refresh_tiles_children(top_item, folder, active_2d_stage, badge)
-            return
-
-        paths = sorted(
-            fs_status_core.list_visible(folder, self._stage_glob_pattern(stage)),
-            key=natsort_key,
-        )
-        top_item.setText(0, f"{_STAGE_LABELS[stage]}{badge}  ({len(paths)} file(s))")
-
-        producer_dir = self._producer_dir(stage) if stage in _2D_STAGES else None
-        statuses = project_core.stage_file_status(folder, upstream_dir=producer_dir)
-        reduced_dir = self._stage_dir(project_core.STAGE_REDUCED) if stage == RAW_STAGE else None
-
-        denoise_channels_done = {}
-        if stage == project_core.STAGE_DENOISED and self._root:
-            config = project_core.load_project_config(self._root)
-            if config:
-                denoise_channels_done = config.denoise_channels_done
-
-        # Segmentation masks sit directly beside whichever 2D stage is
-        # currently the active segmentation source -- only that stage's
-        # rows get a column-1 status dot; the other two 2D stages show
-        # nothing there, which is itself informative (masks belong to one
-        # stage at a time, never all three).
-        seg_statuses = {}
-        if stage in _2D_STAGES and stage == active_2d_stage:
-            seg_statuses = project_core.segmentation_file_status(folder)
+            top_item.setText(
+                0,
+                f"{_STAGE_LABELS[stage]}{badge}  ({result.count} FOV(s){result.extra_count_text})",
+            )
+        else:
+            top_item.setText(0, f"{_STAGE_LABELS[stage]}{badge}  ({result.count} file(s))")
 
         self.tree.blockSignals(True)
         try:
-            for path in paths:
+            for leaf_info in result.leaves:
                 leaf = QTreeWidgetItem(top_item)
-                leaf.setText(0, path.name)
-                leaf.setData(0, Qt.UserRole, ("file", stage, str(path)))
-                leaf.setFlags(leaf.flags() | Qt.ItemIsUserCheckable)
-                # Checked by default: batch actions only ever touch checked
-                # files (see checked_paths_for_stage), so defaulting to
-                # unchecked-means-everything would make "process everything"
-                # an invisible fallback rather than something the tree
-                # actually shows you're about to do.
-                leaf.setCheckState(0, Qt.Checked)
-
-                if stage in _2D_STAGES:
-                    status = statuses.get(path.stem)
-                    up_to_date = bool(status and status.up_to_date)
-                    upstream_available = bool(status and status.upstream_available)
-                    if not upstream_available:
-                        icon_state = "archived"
-                        leaf.setToolTip(
-                            0,
-                            "Source folder for this stage isn't present on this computer "
-                            "(likely moved to storage) -- can't verify freshness, showing "
-                            "as up to date.",
-                        )
-                    elif stage == project_core.STAGE_DENOISED and up_to_date:
-                        n_channels = len(denoise_channels_done.get(path.stem, ()))
-                        icon_state = "partial" if n_channels == 1 else "done"
-                    else:
-                        icon_state = "done" if up_to_date else "stale"
-                elif stage == RAW_STAGE:
-                    produced = reduced_dir is not None and (reduced_dir / f"{path.stem}.tiff").exists()
-                    icon_state = "done" if produced else "unprocessed"
-                else:
-                    icon_state = "done"
-                leaf.setIcon(0, status_icon(icon_state))
-
-                seg_status = seg_statuses.get(path.stem)
-                if seg_status is not None:
-                    seg_icon_state = "done" if seg_status.up_to_date else "stale"
-                    leaf.setIcon(1, status_icon(seg_icon_state))
-                    leaf.setToolTip(
-                        1,
-                        "Segmented, up to date"
-                        if seg_status.up_to_date
-                        else "Segmented, but the source file changed since",
-                    )
+                leaf.setText(0, leaf_info.display_name)
+                leaf.setData(0, Qt.UserRole, (leaf_info.kind, leaf_info.stage, leaf_info.path))
+                if leaf_info.kind == "file":
+                    leaf.setFlags(leaf.flags() | Qt.ItemIsUserCheckable)
+                    # Checked by default: batch actions only ever touch
+                    # checked files (see checked_paths_for_stage), so
+                    # defaulting to unchecked-means-everything would make
+                    # "process everything" an invisible fallback rather
+                    # than something the tree actually shows you're about
+                    # to do.
+                    leaf.setCheckState(0, Qt.Checked)
+                leaf.setIcon(0, status_icon(leaf_info.icon_state))
+                if leaf_info.tooltip:
+                    leaf.setToolTip(0, leaf_info.tooltip)
+                if leaf_info.seg_icon_state is not None:
+                    leaf.setIcon(1, status_icon(leaf_info.seg_icon_state))
+                    leaf.setToolTip(1, leaf_info.seg_tooltip)
         finally:
             self.tree.blockSignals(False)
-        top_item.setExpanded(True)
+        # Mirrors the old synchronous behavior: every 2D-stage/raw node
+        # auto-expands, the tiles summary stays collapsed (it's a per-FOV
+        # rollup, not something you page through leaf by leaf).
+        top_item.setExpanded(stage != project_core.STAGE_TILES)
 
-    def _refresh_tiles_children(
-        self, top_item, folder: Path, active_2d_stage: str | None, badge: str = ""
-    ):
-        """Break the "05 · Tiles" summary down into one row per source FOV
-        (not per output .tif -- a FOV's cells all export together) --
-        reads out_dir's tile_index.csv rather than re-deriving groupings
-        from filenames, since that CSV is already the authoritative
-        cell_id/fov_id mapping (see core/tiles.append_tile_index). The
-        header count below is likewise summed from these per-FOV statuses,
-        not a folder glob -- see the caller's note on why 05_tiles/ is
-        never listed file-by-file."""
-        mask_dir = self._stage_dir(active_2d_stage) if active_2d_stage else None
-        fov_statuses = tiles_core.fov_tile_status(folder, mask_dir)
-        n_cells = sum(status.n_cells for status in fov_statuses.values())
-        top_item.setText(
-            0,
-            f"{_STAGE_LABELS[project_core.STAGE_TILES]}{badge}  "
-            f"({len(fov_statuses)} FOV(s), {n_cells} cell(s))",
-        )
-
-        self.tree.blockSignals(True)
-        try:
-            for fov_id in sorted(fov_statuses, key=lambda stem: natsort_key(Path(stem))):
-                status = fov_statuses[fov_id]
-                leaf = QTreeWidgetItem(top_item)
-                n = status.n_cells
-                leaf.setText(0, f"{fov_id}  ({n} cell{'s' if n != 1 else ''})")
-                leaf.setData(0, Qt.UserRole, ("tile_fov", project_core.STAGE_TILES, fov_id))
-                if not status.mask_available:
-                    leaf.setIcon(0, status_icon("archived"))
-                    leaf.setToolTip(
-                        0,
-                        "Source/mask folder for this FOV isn't present on this computer "
-                        "(likely moved to storage) -- can't verify freshness, showing as "
-                        "up to date.",
-                    )
-                elif status.up_to_date:
-                    leaf.setIcon(0, status_icon("done"))
-                else:
-                    leaf.setIcon(0, status_icon("stale"))
-                    leaf.setToolTip(
-                        0, "Segmentation for this FOV changed since these tiles were exported."
-                    )
-        finally:
-            self.tree.blockSignals(False)
-        top_item.setExpanded(False)
+    def last_scan_snapshot(self):
+        """Most recent completed `project_scan.ProjectScanSnapshot`, or
+        None if no scan for the current project has finished yet -- lets
+        `PipelineBreadcrumb` reuse this panel's scan instead of redoing its
+        own (see that module)."""
+        return self._last_snapshot
 
     # ------------------------------------------------------------------
     # Selection / checkbox API used by pages
@@ -546,3 +450,6 @@ class ProjectTreePanel(QWidget):
         combo.addItem(placeholder)
         combo.addItems(entries)
         combo.blockSignals(False)
+
+    def shutdown(self):
+        self._scan_controller.shutdown()

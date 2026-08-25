@@ -49,6 +49,7 @@ from yeastprep.core.pipeline import (
     load_volume,
     process_and_save,
 )
+from yeastprep.core.project_scan import ProjectScanSnapshot, scan_project
 from yeastprep.core.segmentation import (
     SegmentationParams,
     SegmentationResult,
@@ -162,6 +163,37 @@ class SimplePipelineWorker(QObject):
             self.result_ready.emit(self._result_cls(request_id, source_id, payload, computed))
         except Exception as exc:
             self.error.emit(str(exc))
+
+
+@dataclass
+class ProjectScanResult:
+    request_id: int
+    source_id: str
+    payload: str  # project root
+    scan: ProjectScanSnapshot
+
+
+def _run_project_scan(root: str, params) -> ProjectScanSnapshot:
+    raw_pattern, segmentation_override, stage_keys = params
+    return scan_project(root, raw_pattern, segmentation_override, stage_keys)
+
+
+class ProjectScanController(DebouncedController):
+    """Debounced controller for `ProjectTreePanel`'s background project
+    scan (`core.project_scan.scan_project`) -- keeps the glob+stat walk of
+    every stage folder off the GUI thread, since on a slow external/network
+    drive with hundreds of raw files that walk alone can take long enough
+    to make the app look hung (and get force-killed as "not responding").
+    `dedupe_key_fn` collapses back-to-back triggers for the same project
+    with unchanged params (e.g. `set_project_root` immediately writing a
+    default raw pattern) into a single scan."""
+
+    def __init__(self):
+        super().__init__(
+            SimplePipelineWorker(_run_project_scan, ProjectScanResult),
+            debounce_ms=150,
+            dedupe_key_fn=lambda payload, source_id, params: (payload, params),
+        )
 
 
 @dataclass

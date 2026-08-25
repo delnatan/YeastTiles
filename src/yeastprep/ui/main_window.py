@@ -204,4 +204,5 @@ class YeastPrepWindow(QMainWindow):
         settings.save_window_geometry(self)
         for _name, page in self._pages:
             page.shutdown()
+        self.tree_panel.shutdown()
         super().closeEvent(event)
