@@ -224,11 +224,21 @@ class FovTileStatus:
 def fov_tile_status(out_dir, mask_dir=None) -> dict[str, FovTileStatus]:
     """Per-source-FOV tile summary, read from `out_dir`'s tile_index.csv --
     the one place that already tracks which cell_id/crop_path came from
-    which fov_id (see append_tile_index). A FOV counts as up to date if its
-    newest surviving tile file is no older than its `_seg.npy` sidecar in
+    which fov_id (see append_tile_index). A FOV counts as up to date if a
+    surviving tile file is no older than its `_seg.npy` sidecar in
     `mask_dir` (tiles are cropped straight from that saved mask), so a mask
     re-run since the last export shows up as stale without re-reading any
-    image data."""
+    image data.
+
+    Deliberately touches disk at most once per FOV (one `stat()` on the
+    first crop we find still present), not once per crop: a FOV's cells
+    all export together in one `export_tiles()` batch, so any surviving
+    crop's mtime is as good a freshness signal as the oldest code's
+    max-over-every-crop, and a project can have orders of magnitude more
+    individual cell crops than FOVs -- stat-ing every single one just to
+    render this summary was the actual reason project-open scans could
+    still take a long time even after that scan was moved off the GUI
+    thread (see core/project_scan.py)."""
     index_path = tile_index_path(out_dir)
     if not index_path.exists():
         return {}
@@ -249,15 +259,24 @@ def fov_tile_status(out_dir, mask_dir=None) -> dict[str, FovTileStatus]:
 
     statuses: dict[str, FovTileStatus] = {}
     for fov_id, crop_paths in by_fov.items():
-        existing = [p for p in crop_paths if p.exists()]
-        if not existing:
-            continue
-        newest_tile_mtime = max(p.stat().st_mtime for p in existing)
+        newest_tile_mtime = None
+        for crop_path in crop_paths:
+            try:
+                newest_tile_mtime = crop_path.stat().st_mtime
+                break
+            except OSError:
+                continue
+        if newest_tile_mtime is None:
+            continue  # none of this FOV's recorded crops still exist on disk
+
         up_to_date = True
         if mask_dir is not None and mask_available:
             seg_path = mask_dir / f"{fov_id}_seg.npy"
-            up_to_date = seg_path.exists() and newest_tile_mtime >= seg_path.stat().st_mtime
+            try:
+                up_to_date = newest_tile_mtime >= seg_path.stat().st_mtime
+            except OSError:
+                up_to_date = False
         statuses[fov_id] = FovTileStatus(
-            n_cells=len(existing), up_to_date=up_to_date, mask_available=mask_available
+            n_cells=len(crop_paths), up_to_date=up_to_date, mask_available=mask_available
         )
     return statuses
