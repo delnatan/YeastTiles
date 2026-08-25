@@ -15,27 +15,28 @@ This project uses [uv](https://docs.astral.sh/uv/) for environment management.
 uv sync
 ```
 
-### Local path dependencies
+### Third-party packages
 
-`pyvistra`, `resolvde`, and `psfkit` are pulled in as editable local path
-dependencies (see `[tool.uv.sources]` in `pyproject.toml`) rather than from
-PyPI or a uv workspace. Before `uv sync` will succeed on a new machine, clone
-them to matching paths:
-
-```bash
-mkdir -p ~/CustomPythonPackages
-git clone https://github.com/delnatan/pyvistra ~/CustomPythonPackages/pyvistra
-# resolvde and psfkit currently have no git remote — copy them over manually
-```
-
-If you clone/copy them elsewhere, update the paths in `[tool.uv.sources]`
-in `pyproject.toml` to match.
+`jssl-denoise`, `pyvistra`, and `psfkit` are listed directly as git-URL
+dependencies in `pyproject.toml`'s `dependencies` list -- `uv sync` clones
+them itself; no manual cloning or local path setup needed. `resolvde` isn't
+a dependency at all: its deconvolution code is vendored directly into
+`src/yeastprep/core/deconvolution/` (see that package's docstring).
 
 ### GPU / PyTorch
 
-`pyproject.toml` pins `torch` to a CUDA 13.2 build for Linux via the
-`pytorch-cu132` index. Adjust `[[tool.uv.index]]` if the target machine has a
+`pyproject.toml` pins `torch`/`torchvision` to a CUDA 13.2 build on Linux
+(and Windows) via the `pytorch-cu132` index in `[tool.uv.sources]` /
+`[[tool.uv.index]]`. Adjust `[[tool.uv.index]]` if the target machine has a
 different CUDA version or no GPU.
+
+This only works through `uv sync` (or `uv lock`/`uv add`) -- `[tool.uv.sources]`
+is a uv-project-workflow feature, not something `pip install` or
+`uv pip install` reads, so either of those would fall back to a plain PyPI
+`torch` wheel (CPU-only on Linux) instead of the pinned CUDA build. Since
+`uv.lock` is committed, plain `uv sync` on a new machine reproduces the
+exact same resolved versions (including the CUDA wheel and the pinned git
+commits above) without needing to re-resolve anything.
 
 ## Data model
 
