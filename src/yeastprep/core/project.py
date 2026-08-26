@@ -10,7 +10,7 @@ output" buttons in ui/main_window.py.
       01_reduced/        <stem>.tiff   16-bit, 2ch (CYX): [brightfield, target]
       02_denoised/       <stem>.tiff   16-bit, 2ch          -- optional stage
       03_deconvolved/    <stem>.tiff   16-bit, 2ch          -- optional stage
-      05_tiles/          <fov>_cell#####.tif  8-bit, 3ch + tile_index.csv
+      05_tiles/          <fov>/<fov>_cell#####.tif  8-bit, 3ch + tile_index.csv
 
 Segmentation has no numbered folder of its own: cellpose's own GUI needs
 `_seg.npy` sitting directly next to the image it corrects

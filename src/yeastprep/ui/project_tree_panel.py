@@ -31,7 +31,7 @@ Tree shape:
       01 - Reduced (2D)         (01_reduced/*.tiff)
       02 - Denoised             (02_denoised/*.tiff, optional stage)
       03 - Deconvolved          (03_deconvolved/*.tiff, optional stage)
-      05 - Tiles                (05_tiles/*.tif -- summary only, no
+      05 - Tiles                (05_tiles/<fov>/*.tif -- summary only, no
                                  checkboxes: Tile Generation reads its
                                  input from whichever of 01/02/03 is the
                                  active segmentation source, not from here)

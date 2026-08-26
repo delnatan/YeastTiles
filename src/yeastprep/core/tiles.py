@@ -140,7 +140,10 @@ def export_tiles(
     path, out_dir, params: TileParams = TileParams()
 ) -> TileExportResult:
     """Crop every cell in one combined-channel tiff's saved segmentation and
-    write each as its own (3, size, size) tiff under `out_dir`. Catches any
+    write each as its own (3, size, size) tiff under `out_dir/<fov_id>/` --
+    one subfolder per FOV, so each FOV's annotation sidecar (a `tileclass`
+    concept: one text file per folder) stays separate and combining several
+    FOVs' annotations later is just pooling their subfolders. Catches any
     exception so a batch run over many files doesn't abort on the first bad
     one (matches core/segmentation.py's `segment_and_save`). Requires a
     saved `_seg.npy` sidecar to already exist next to `path` (from the
@@ -158,15 +161,17 @@ def export_tiles(
 
         brightfield, target = load_combined_channels(path)
         out_dir = Path(out_dir)
-        out_dir.mkdir(parents=True, exist_ok=True)
 
         fov_id = path.stem
+        fov_dir = out_dir / fov_id
+        fov_dir.mkdir(parents=True, exist_ok=True)
+
         records = []
         for geom in cell_geometry(masks, params.size):
             cell_id = f"{fov_id}_cell{geom.label:05d}"
             crop = crop_cell(masks, brightfield, target, geom, params)
 
-            crop_path = out_dir / f"{cell_id}.tif"
+            crop_path = fov_dir / f"{cell_id}.tif"
             tifffile.imwrite(
                 crop_path,
                 crop,

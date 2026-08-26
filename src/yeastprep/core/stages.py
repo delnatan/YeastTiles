@@ -13,6 +13,7 @@ from pathlib import Path
 
 from . import project
 from .fs_status import dir_has_files
+from .tiles import tile_index_path
 
 STAGE_RAW = "raw"
 # Virtual stage: segmentation writes `_seg.npy` sidecars in place next to
@@ -109,7 +110,10 @@ def pipeline_status(
             has_masks = mask_dir is not None and _has_any(mask_dir, "*_seg.npy")
             status = "done" if has_masks else "empty"
         elif spec.key == project.STAGE_TILES:
-            status = "done" if _has_any(paths.tiles, "*.tif") else "empty"
+            # Crops live one level deeper now (05_tiles/<fov_id>/*.tif), so
+            # the tile index -- always written alongside them -- is a
+            # cheaper and layout-agnostic "done" signal than a recursive glob.
+            status = "done" if tile_index_path(paths.tiles).exists() else "empty"
         else:
             status = _folder_stage_status(paths, spec.key, config)
 

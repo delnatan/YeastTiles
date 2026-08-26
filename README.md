@@ -51,7 +51,7 @@ the raw files:
   01_reduced/       <stem>.tiff   2-channel 2D: [brightfield, target]
   02_denoised/      <stem>.tiff   optional
   03_deconvolved/   <stem>.tiff   optional
-  05_tiles/         <fov>_cell#####.tif + tile_index.csv
+  05_tiles/         <fov>/<fov>_cell#####.tif + tile_index.csv
   .yeastprep_project.json   per-project params, run history, source-stage choices
 ```
 
@@ -72,9 +72,11 @@ Pipeline, in order (see [design.md](design.md) for the full rationale):
    rather than into a folder of their own, so the real Cellpose GUI can
    open that folder directly for manual correction.
 5. **Tile (05_tiles)**: crops every segmented cell into a fixed-size
-   3-channel tile (brightfield, target, mask). **Tiles are the project's
-   primary data** -- what gets pooled across experiments, annotated, and
-   used for classification; everything upstream exists to produce them
+   3-channel tile (brightfield, target, mask), written into a subfolder per
+   FOV (`05_tiles/<fov>/`) so each FOV keeps its own annotation sidecar
+   file. **Tiles are the project's primary data** -- what gets pooled
+   across experiments, annotated, and used for classification; everything
+   upstream exists to produce them
    reproducibly, not as an end in itself.
 
 Since Denoise/Deconvolve are optional, "the source stage" for Segmentation

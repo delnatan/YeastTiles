@@ -103,7 +103,12 @@ def test_pipeline_status_segmentation_and_tiles(tmp_path):
     _write_fake_seg_npy(reduced_path)
 
     paths.tiles.mkdir()
-    (paths.tiles / "sample_cell00001.tif").write_bytes(b"")
+    (paths.tiles / "sample").mkdir()
+    (paths.tiles / "sample" / "sample_cell00001.tif").write_bytes(b"")
+    (paths.tiles / "tile_index.csv").write_text(
+        "cell_id,fov_id,label,crop_path\nsample_cell00001,sample,1,"
+        f"{paths.tiles / 'sample' / 'sample_cell00001.tif'}\n"
+    )
 
     states = {s.key: s for s in stages.pipeline_status(paths)}
     assert states[stages.STAGE_SEGMENTATION].status == "done"

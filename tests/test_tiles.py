@@ -97,7 +97,7 @@ def test_export_tiles_writes_one_crop_per_cell(tmp_path):
     assert set(result.records["label"].to_list()) == {1, 2}
 
     for row in result.records.iter_rows(named=True):
-        crop_path = out_dir / f"{row['cell_id']}.tif"
+        crop_path = out_dir / row["fov_id"] / f"{row['cell_id']}.tif"
         assert crop_path.exists()
         crop = tifffile.imread(crop_path)
         assert crop.shape == (3, 32, 32)
@@ -133,7 +133,7 @@ def test_append_tile_index_dedupes_by_cell_id_keeping_latest(tmp_path):
             "cell_id": ["fov1_cell00001"],
             "fov_id": ["fov1"],
             "label": [1],
-            "crop_path": [str(out_dir / "fov1_cell00001.tif")],
+            "crop_path": [str(out_dir / "fov1" / "fov1_cell00001.tif")],
         }
     )
     append_tile_index(out_dir, first)
@@ -144,8 +144,8 @@ def test_append_tile_index_dedupes_by_cell_id_keeping_latest(tmp_path):
             "fov_id": ["fov1", "fov1"],
             "label": [1, 2],
             "crop_path": [
-                str(out_dir / "fov1_cell00001.tif"),
-                str(out_dir / "fov1_cell00002.tif"),
+                str(out_dir / "fov1" / "fov1_cell00001.tif"),
+                str(out_dir / "fov1" / "fov1_cell00002.tif"),
             ],
         }
     )

@@ -279,13 +279,18 @@ class TileGenerationPage(QWidget):
         FOVs are currently checked under the active 2D stage -- same scope
         `open_tile_viewer_btn`'s label already advertises
         (`_tile_viewer_label`), so what opens always matches what was shown
-        before the click."""
+        before the click.
+
+        Each FOV's crops live in their own `05_tiles/<fov_id>/` subfolder
+        (see core/tiles.py's `export_tiles`), so every target FOV is passed
+        to tileclass as its own positional folder rather than as a `--fov`
+        filter on the shared root -- tileclass's `PooledAnnotations` then
+        gives each FOV its own annotation sidecar file instead of one
+        shared file covering every FOV."""
         paths_root = self.tree_panel.project_paths()
         if paths_root is None or not paths_root.tiles.is_dir():
             QMessageBox.warning(self, "yeastprep", "No tiles exported yet.")
             return
-
-        cmd = [sys.executable, "-m", "tileclass", str(paths_root.tiles)]
 
         if fov_filter is None:
             source_stage = self.tree_panel.active_2d_stage()
@@ -295,9 +300,17 @@ class TileGenerationPage(QWidget):
                 if checked_paths and len(checked_paths) < len(all_paths):
                     fov_filter = [Path(p).stem for p in checked_paths]
 
-        for fov_id in fov_filter or ():
-            cmd += ["--fov", fov_id]
+        if fov_filter:
+            fov_dirs = [paths_root.tiles / fov_id for fov_id in fov_filter]
+        else:
+            fov_dirs = sorted(p for p in paths_root.tiles.iterdir() if p.is_dir())
+        fov_dirs = [d for d in fov_dirs if d.is_dir()]
 
+        if not fov_dirs:
+            QMessageBox.warning(self, "yeastprep", "No tiles exported yet.")
+            return
+
+        cmd = [sys.executable, "-m", "tileclass", *[str(d) for d in fov_dirs]]
         subprocess.Popen(cmd, start_new_session=True)
 
     # ------------------------------------------------------------------
