@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Minimal, fast tile-grid viewer for browsing and classifying folders of small microscopy/image tiles."
 requires-python = ">=3.11"
 dependencies = [
-    "cellpose",
+    "cellpose[gui]",
     "ipykernel",
     "jupyter",
     "matplotlib",

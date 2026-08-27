@@ -297,11 +297,23 @@ class SegmentationPage(QWidget):
         if not source_stage or paths_root is None:
             QMessageBox.warning(self, "yeastprep", "No 2D images folder available yet.")
             return
-        folder = str(paths_root.stage_dir(source_stage))
-        subprocess.Popen(
-            [sys.executable, "-m", "cellpose", "--dir", folder],
-            start_new_session=True,
+        folder = paths_root.stage_dir(source_stage)
+        # Cellpose 4.x's CLI runs a *headless* batch job whenever --dir/
+        # --image_path is given -- passing --dir no longer opens the GUI
+        # like it did pre-4.0. Drive cellpose.gui.gui.run() directly
+        # instead, preloading the first tiff (and its _seg.npy sidecar, if
+        # any); the GUI's own next/prev navigation then covers the rest of
+        # the folder.
+        images = sorted(folder.glob("*.tiff"))
+        launcher = (
+            "from cellpose.gui import gui\n"
+            "import sys\n"
+            "gui.run(image=sys.argv[1] if len(sys.argv) > 1 else None)\n"
         )
+        args = [sys.executable, "-c", launcher]
+        if images:
+            args.append(str(images[0]))
+        subprocess.Popen(args, start_new_session=True)
 
     # ------------------------------------------------------------------
 
