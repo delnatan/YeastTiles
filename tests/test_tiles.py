@@ -32,7 +32,9 @@ def _write_synthetic_combined_tiff(path, Ny=128, Nx=128) -> tuple[np.ndarray, np
 
 
 def _write_synthetic_masks(image_path, masks: np.ndarray):
-    np.save(seg_npy_path(image_path), {"masks": masks}, allow_pickle=True)
+    seg_path = seg_npy_path(image_path)
+    seg_path.parent.mkdir(parents=True, exist_ok=True)
+    np.save(seg_path, {"masks": masks}, allow_pickle=True)
 
 
 def _two_cell_mask(Ny=128, Nx=128) -> np.ndarray:

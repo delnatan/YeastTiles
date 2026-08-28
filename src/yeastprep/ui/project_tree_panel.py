@@ -123,6 +123,13 @@ class ProjectTreePanel(QWidget):
         self.tree = QTreeWidget()
         self.tree.setHeaderHidden(True)
         self.tree.setColumnCount(2)
+        # Every row is a single line of text plus a small fixed-size icon --
+        # true everywhere in this tree -- so this is safe, and without it Qt
+        # only discovers row heights lazily as they're painted. Leaves get
+        # torn down and rebuilt on every refresh() (see _apply_stage), so
+        # that stale height cache is exactly what made clicking any item
+        # jump the whole tree back to the top.
+        self.tree.setUniformRowHeights(True)
         # Column 1 is a narrow "Seg" status dot -- a 2D-stage file's own
         # processing state (column 0) and whether it's been segmented are
         # two independent facts about the same row, so they get separate

@@ -140,6 +140,10 @@ class TrainDenoisePage(QWidget):
 
         self.pool_tree = QTreeWidget()
         self.pool_tree.setHeaderHidden(True)
+        # Rows are a single line of text, and leaves get rebuilt on every
+        # add/remove -- without this, Qt's lazily-cached row heights go
+        # stale and clicking an item can snap the tree back to the top.
+        self.pool_tree.setUniformRowHeights(True)
         # Capped rather than left to expand freely: pooled frame lists are
         # usually short, and letting this grow unbounded starves the
         # hyperparameter form below of the vertical space it needs.

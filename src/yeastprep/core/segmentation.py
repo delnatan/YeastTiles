@@ -9,10 +9,14 @@ Restructures notebooks/02_cookie_cut.ipynb's model-load + `.eval(...)` +
 directly affects segmentation quality) and from a batch runner.
 
 Mask correction itself is *not* reimplemented here: `segment_and_save`
-writes cellpose's own `_seg.npy` sidecar next to each focal-slice tiff
-(via `cellpose.io.masks_flows_to_seg`, the same helper the Cellpose GUI's
-"save" action uses), so the real Cellpose GUI can open that folder
-directly for manual correction, per design.md.
+writes cellpose's own `_seg.npy` sidecar next to each FOV's brightfield-only
+companion tiff (`combined_tiff.write_brightfield_tiff`; via
+`cellpose.io.masks_flows_to_seg`, the same helper the Cellpose GUI's "save"
+action uses), so the real Cellpose GUI can open that companion file
+directly for manual correction, per design.md. Cellpose 4's SAM model
+dropped channel selection, so the GUI needs a real single-channel file --
+opening the 2-channel combined tiff directly would segment/train on the
+target channel too.
 """
 
 from dataclasses import dataclass
@@ -26,7 +30,7 @@ from cellpose.models import CellposeModel
 
 from tileclass.classifiers.device import select_device
 
-from .combined_tiff import load_brightfield_channel
+from .combined_tiff import brightfield_tiff_path, load_brightfield_channel, write_brightfield_tiff
 
 DEFAULT_MODEL_PATH: str | None = None  # None -> cellpose's built-in default (cpsam)
 
@@ -98,24 +102,41 @@ def seg_npy_path(image_path) -> Path:
     """Where cellpose's `_seg.npy` sidecar lives for a given focal-slice
     tiff -- the one place this naming convention is defined, shared by
     `segment_and_save` (which writes it) and the UI's fast-inspect path
-    (which reads it back via `load_saved_masks`)."""
+    (which reads it back via `load_saved_masks`).
+
+    Sidecars now live next to the brightfield-only companion tiff (see
+    `combined_tiff.write_brightfield_tiff`), not the 2-channel combined
+    tiff itself, so the real Cellpose GUI's own Save/Train read and write
+    the same file our batch path does. Falls back to the pre-existing
+    (combined-tiff-adjacent) location if only that one exists, so masks
+    saved before this convention changed aren't orphaned."""
     image_path = Path(image_path)
-    return image_path.with_name(f"{image_path.stem}_seg.npy")
+    bf_path = brightfield_tiff_path(image_path)
+    bf_seg_path = bf_path.with_name(f"{bf_path.stem}_seg.npy")
+    if bf_seg_path.exists():
+        return bf_seg_path
+    legacy_seg_path = image_path.with_name(f"{image_path.stem}_seg.npy")
+    if legacy_seg_path.exists():
+        return legacy_seg_path
+    return bf_seg_path
 
 
 def segment_and_save(
     path: Path, model: CellposeModel, params: SegmentationParams = SegmentationParams()
 ) -> SegmentProcessResult:
     """Segment one combined-channel tiff (brightfield channel only) and
-    write cellpose's `<stem>_seg.npy` next to it. Catches any exception so
-    a batch run doesn't abort on the first bad file (matches
-    core/pipeline.py's process_and_save)."""
+    write cellpose's `<stem>_seg.npy` next to the brightfield-only
+    companion tiff (generating it first if missing/stale) -- so the real
+    Cellpose GUI, opened on that same companion file, sees these masks for
+    correction. Catches any exception so a batch run doesn't abort on the
+    first bad file (matches core/pipeline.py's process_and_save)."""
     path = Path(path)
     try:
         image = load_brightfield_channel(path)
         result = run_segmentation(model, image, params)
+        bf_path = write_brightfield_tiff(path)
         cp_io.masks_flows_to_seg(
-            [image], [result.masks], [result.flows], [str(path)], channels=[0, 0]
+            [image], [result.masks], [result.flows], [str(bf_path)], channels=[0, 0]
         )
         return SegmentProcessResult(
             path=path, success=True, seg_path=seg_npy_path(path), n_cells=result.n_cells

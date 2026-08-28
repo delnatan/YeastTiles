@@ -3,8 +3,9 @@ whichever 2D stage folder is currently the project's active segmentation
 source (01_reduced/, 02_denoised/, or 03_deconvolved/ -- see the
 "Segmentation / Tile Generation source" control on the shared
 ProjectTreePanel). Writes cellpose's native `_seg.npy` sidecar next to each
-source tiff, so the real Cellpose GUI can open that same folder directly
-for manual correction.
+FOV's brightfield-only companion tiff (`combined_tiff.write_brightfield_tiff`),
+so the real Cellpose GUI can open that same folder directly for manual
+correction.
 """
 
 import subprocess
@@ -22,7 +23,7 @@ from qtpy.QtWidgets import (
 )
 
 from yeastprep.core import project as project_core
-from yeastprep.core.combined_tiff import load_brightfield_channel
+from yeastprep.core.combined_tiff import load_brightfield_channel, write_brightfield_tiff
 from yeastprep.core.segmentation import SegmentationParams, load_saved_masks, seg_npy_path
 
 from .. import settings
@@ -304,7 +305,14 @@ class SegmentationPage(QWidget):
         # instead, preloading the first tiff (and its _seg.npy sidecar, if
         # any); the GUI's own next/prev navigation then covers the rest of
         # the folder.
-        images = sorted(folder.glob("*.tiff"))
+        #
+        # Cellpose 4's SAM model also dropped channel selection, so opening
+        # the 2-channel combined tiffs directly would segment/train on the
+        # target channel too -- open the brightfield-only companion tiffs
+        # instead (generated here if missing/stale; they live in
+        # combined_tiff.CELLPOSE_GUI_SUBDIR, so this glob never sees them).
+        combined_images = sorted(folder.glob("*.tiff"))
+        images = [write_brightfield_tiff(p) for p in combined_images]
         launcher = (
             "from cellpose.gui import gui\n"
             "import sys\n"

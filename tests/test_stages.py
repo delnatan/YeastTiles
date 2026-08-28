@@ -30,7 +30,9 @@ def _write_combined_tiff(path, seed=0):
 def _write_fake_seg_npy(image_path):
     """A cellpose-shaped `_seg.npy` sidecar without running an actual
     model -- pipeline_status only checks for the sidecar's presence."""
-    np.save(seg_npy_path(image_path), {"masks": np.zeros((4, 4), dtype=np.int32)})
+    seg_path = seg_npy_path(image_path)
+    seg_path.parent.mkdir(parents=True, exist_ok=True)
+    np.save(seg_path, {"masks": np.zeros((4, 4), dtype=np.int32)})
 
 
 def test_pipeline_order_and_labels():

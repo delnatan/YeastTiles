@@ -22,6 +22,7 @@ from pathlib import Path
 from . import project as project_core
 from . import stages as stages_core
 from . import tiles as tiles_core
+from .combined_tiff import CELLPOSE_GUI_SUBDIR
 from .fs_status import list_visible
 
 STAGE_RAW = stages_core.STAGE_RAW
@@ -144,7 +145,9 @@ def _scan_stage(
 
     seg_statuses = {}
     if stage in _2D_STAGES and is_active:
-        seg_statuses = project_core.segmentation_file_status(folder)
+        # _seg.npy sidecars live in the brightfield-companion subfolder,
+        # not flat in `folder` -- see combined_tiff.CELLPOSE_GUI_SUBDIR.
+        seg_statuses = project_core.segmentation_file_status(folder / CELLPOSE_GUI_SUBDIR)
 
     leaves = []
     for path in file_paths:
@@ -199,7 +202,10 @@ def _scan_stage(
 
 
 def _scan_tiles(root: Path, folder: Path, active_2d_stage: str | None) -> StageScanResult:
-    mask_dir = _stage_dir(root, active_2d_stage) if active_2d_stage else None
+    stage_dir = _stage_dir(root, active_2d_stage) if active_2d_stage else None
+    # _seg.npy sidecars live in the brightfield-companion subfolder, not
+    # flat in stage_dir -- see combined_tiff.CELLPOSE_GUI_SUBDIR.
+    mask_dir = stage_dir / CELLPOSE_GUI_SUBDIR if stage_dir is not None else None
     fov_statuses = tiles_core.fov_tile_status(folder, mask_dir)
     n_cells = sum(status.n_cells for status in fov_statuses.values())
 

@@ -7,7 +7,7 @@ real dependency rather than stubbing it.
 import numpy as np
 from pyvistra.io import save_tiff
 
-from yeastprep.core.combined_tiff import combine_channels
+from yeastprep.core.combined_tiff import CELLPOSE_GUI_SUBDIR, combine_channels
 from yeastprep.core.segmentation import (
     SegmentationParams,
     get_model,
@@ -60,7 +60,7 @@ def test_segment_and_save_writes_readable_seg_npy(tmp_path):
     result = segment_and_save(path, model, SegmentationParams(diameter=30.0))
 
     assert result.success, result.error
-    assert result.seg_path == tmp_path / "sample_seg.npy"
+    assert result.seg_path == tmp_path / CELLPOSE_GUI_SUBDIR / "sample_seg.npy"
     assert result.seg_path.exists()
 
     dat = np.load(result.seg_path, allow_pickle=True).item()

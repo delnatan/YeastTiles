@@ -203,6 +203,15 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/cc/20/d9d1fa1abffc8dab4381116ea0d91e8f8e4315acc038b76679608c097649/cellpose-4.2.1.1-py3-none-any.whl", hash = "sha256:6c5c5159fd459115bee390ffb01d94d5e1006b97c211bf3c1a7b37d5395a1a13", size = 203334, upload-time = "2026-06-14T14:25:13.797Z" },
 ]
 
+[package.optional-dependencies]
+gui = [
+    { name = "pyqt6" },
+    { name = "pyqt6-sip" },
+    { name = "pyqtgraph" },
+    { name = "qtpy" },
+    { name = "superqt" },
+]
+
 [[package]]
 name = "certifi"
 version = "2026.7.22"
@@ -2699,6 +2708,19 @@ wheels = [
 ]
 
 [[package]]
+name = "pyqtgraph"
+version = "0.14.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "colorama" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "numpy", version = "2.5.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/32/36/4c242f81fdcbfa4fb62a5645f6af79191f4097a0577bd5460c24f19cc4ef/pyqtgraph-0.14.0-py3-none-any.whl", hash = "sha256:7abb7c3e17362add64f8711b474dffac5e7b0e9245abdf992e9a44119b7aa4f5", size = 1924755, upload-time = "2025-11-16T19:43:22.251Z" },
+]
+
+[[package]]
 name = "pytest"
 version = "9.1.1"
 source = { registry = "https://pypi.org/simple" }
@@ -3499,7 +3521,7 @@ name = "tileclass"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
-    { name = "cellpose" },
+    { name = "cellpose", extra = ["gui"] },
     { name = "ipykernel" },
     { name = "jssl-denoise" },
     { name = "jupyter" },
@@ -3530,7 +3552,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "cellpose" },
+    { name = "cellpose", extras = ["gui"] },
     { name = "ipykernel" },
     { name = "jssl-denoise", git = "https://github.com/delnatan/jssl_denoise.git" },
     { name = "jupyter" },

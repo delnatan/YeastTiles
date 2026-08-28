@@ -15,11 +15,14 @@ output" buttons in ui/main_window.py.
 Segmentation has no numbered folder of its own: cellpose's own GUI needs
 `_seg.npy` sitting directly next to the image it corrects
 (core/segmentation.py's `seg_npy_path`), so masks are always written in
-place next to whichever stage folder is currently the segmentation source
--- see `resolve_2d_source`/`segmentation_mask_dir`. The numbering
-deliberately skips "04" so the visible numbering still communicates that
-there's a 4th conceptual stage even though it produces no folder of its
-own.
+the `.cellpose_bf/` subfolder of whichever stage folder is currently the
+segmentation source, alongside the brightfield-only companion tiffs
+cellpose's GUI actually opens (core/combined_tiff.py's
+`write_brightfield_tiff` -- cellpose 4's SAM model dropped channel
+selection, so it can't be pointed at the 2-channel tiffs directly) -- see
+`resolve_2d_source`/`segmentation_mask_dir`. The numbering deliberately
+skips "04" so the visible numbering still communicates that there's a 4th
+conceptual stage even though it produces no folder of its own.
 """
 
 from __future__ import annotations
@@ -30,6 +33,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .channels import ChannelSelection
+from .combined_tiff import CELLPOSE_GUI_SUBDIR
 from .deconvolve import DeconvolveParams
 from .denoise import DenoiseParams
 from .fs_status import is_hidden, list_visible
@@ -125,12 +129,15 @@ def resolve_deconvolve_source(paths: ProjectPaths, override: str | None = None) 
 def segmentation_mask_dir(
     paths: ProjectPaths, segmentation_source_stage: str | None
 ) -> Path | None:
-    """Whichever stage folder currently holds (or should hold) `_seg.npy`
-    sidecars: the project config's recorded `segmentation_source_stage` if
-    set, else whichever folder `resolve_2d_source` would currently pick."""
+    """Whichever `.cellpose_bf/` subfolder currently holds (or should hold)
+    `_seg.npy` sidecars: inside the project config's recorded
+    `segmentation_source_stage` if set, else inside whichever folder
+    `resolve_2d_source` would currently pick."""
     if segmentation_source_stage is not None:
-        return paths.stage_dir(segmentation_source_stage)
-    return resolve_2d_source(paths)
+        stage_dir = paths.stage_dir(segmentation_source_stage)
+    else:
+        stage_dir = resolve_2d_source(paths)
+    return stage_dir / CELLPOSE_GUI_SUBDIR if stage_dir is not None else None
 
 
 @dataclass
