@@ -1,25 +1,31 @@
 """EfficientNet-B0 with a stem modified for 2-channel (brightfield +
 fluorescence) crops, stride=1 so 64x64 spatial resolution survives the
-first conv. Shared by both training (`training/supervised.py`) and
-inference (`classifiers/yeast_efficientnet.py`) so the two can never
-architecturally drift apart -- a training run producing weights the
-inference side can't load would otherwise be a silent, late-discovered
-bug.
+first conv. Shared by training (`training/supervised.py`,
+`training/vicreg.py`) and inference (`classifiers/yeast_efficientnet.py`)
+so they can never architecturally drift apart -- a training run
+producing weights the inference side can't load would otherwise be a
+silent, late-discovered bug.
 
-Ported from NN_workflow/yeastVIC.py's `get_modified_efficientnet`, minus
-the `num_classes=None` -> `nn.Identity()` branch that function also
-supported for VICReg's headless feature extraction -- not needed until
-VICReg pretraining itself is formalized (see training/__init__.py).
+Ported from NN_workflow/yeastVIC.py's `get_modified_efficientnet`,
+including its `num_classes=None` -> `nn.Identity()` branch: VICReg
+pretraining (`training/vicreg.py`) needs the raw 1280-dim feature vector
+with no classification head at all, since that head only exists once
+supervised training builds one on top of the pretrained backbone.
 """
 
 
-def build_yeast_efficientnet(num_classes: int, pretrained: bool = True):
+def build_yeast_efficientnet(num_classes: int | None, pretrained: bool = True):
     """`pretrained=True` starts from ImageNet weights (only the stem's
     first conv is hand-modified for 2 input channels; see below) --
     appropriate for a cold start with no existing checkpoint. Training
     that warm-starts from an existing checkpoint should build with
     `pretrained=False` and then call `.load_state_dict(...)` itself, since
-    the ImageNet init would just be immediately overwritten anyway."""
+    the ImageNet init would just be immediately overwritten anyway.
+
+    `num_classes=None` strips the classifier entirely (`nn.Identity()`),
+    returning the raw 1280-dim pooled feature vector -- used for VICReg
+    pretraining, which projects that feature vector itself rather than
+    classifying it."""
     import torch.nn as nn
     import torchvision.models as models
 
@@ -51,5 +57,8 @@ def build_yeast_efficientnet(num_classes: int, pretrained: bool = True):
                 new_conv.bias.copy_(old_conv.bias)
 
     model.features[0][0] = new_conv
-    model.classifier[1] = nn.Linear(model.classifier[1].in_features, num_classes)
+    if num_classes is None:
+        model.classifier = nn.Identity()
+    else:
+        model.classifier[1] = nn.Linear(model.classifier[1].in_features, num_classes)
     return model

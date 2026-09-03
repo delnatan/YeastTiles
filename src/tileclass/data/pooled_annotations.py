@@ -25,13 +25,32 @@ generous than "this one folder only".
 
 import os
 
-from .annotations import TileAnnotations
+from .annotations import TileAnnotations, normalized_category_key
 
 
 class PooledAnnotations:
     def __init__(self, folders):
         self.folders = [os.path.normpath(os.path.abspath(f)) for f in folders]
         self._stores = {folder: TileAnnotations(folder) for folder in self.folders}
+
+    def add_folders(self, folders):
+        """Extend the pool at runtime with newly chosen folder(s) -- for the
+        tiled-viewer GUI's "Add Project Folder(s)..." action, so a
+        newly-annotated project can be pooled in without relaunching.
+        Idempotent: a folder already pooled is skipped. Returns the folders
+        actually added (as normalized absolute paths), for the caller's
+        confirmation/summary message. Deliberately doesn't touch anything
+        about which images are browsable/annotatable in a given window --
+        purely extends what `tagged_items()`/`categories()`/`values()` see."""
+        added = []
+        for folder in folders:
+            norm = os.path.normpath(os.path.abspath(folder))
+            if norm in self._stores:
+                continue
+            self.folders.append(norm)
+            self._stores[norm] = TileAnnotations(norm)
+            added.append(norm)
+        return added
 
     # ------------------------------------------------------------------
     # Per-tile: keyed by absolute path (see module docstring)
@@ -87,6 +106,13 @@ class PooledAnnotations:
         for owner, triples in by_owner.values():
             owner.update_with_confidence(triples)
 
+    def clear_unconfirmed(self):
+        """Remove every unreviewed AI prediction across the whole pool,
+        leaving human-confirmed tags untouched (see
+        `TileAnnotations.clear_unconfirmed`). Returns the total number of
+        tags removed."""
+        return sum(store.clear_unconfirmed() for store in self._stores.values())
+
     def tagged_items(self):
         """Every (abs_path, category, confidence) currently tagged across
         the whole pool -- confidence is None for a human-set/confirmed
@@ -109,12 +135,33 @@ class PooledAnnotations:
     # Folder vocabulary -- propagated to every pooled folder
 
     def categories(self):
-        seen = []
+        """Union of every pooled store's vocabulary, deduped case/whitespace
+        -insensitively (see `normalized_category_key`) so e.g. one project's
+        "two" and another's " two"/"Two" collapse into a single displayed
+        entry -- whichever spelling is seen first. This is a display-level
+        collapse only; the underlying sidecar files still hold whatever
+        spelling was actually stored until `rename_category` is called on
+        them (see `ManageCategoriesDialog`'s "Find Duplicates..." tool)."""
+        seen, seen_keys = [], set()
         for store in self._stores.values():
             for name in store.categories():
-                if name not in seen:
+                key = normalized_category_key(name)
+                if key not in seen_keys:
                     seen.append(name)
+                    seen_keys.add(key)
         return seen
+
+    def raw_category_names(self):
+        """Every category string across all pooled stores' vocabularies and
+        in-use tags, *without* `categories()`'s case/whitespace collapsing --
+        for `ManageCategoriesDialog`'s "Find Duplicates..." tool, which needs
+        to see the divergence `categories()` now hides in order to fix it on
+        disk."""
+        names = set()
+        for store in self._stores.values():
+            names.update(store.categories())
+            names.update(store.values())
+        return sorted(names)
 
     def add_category(self, name):
         for store in self._stores.values():

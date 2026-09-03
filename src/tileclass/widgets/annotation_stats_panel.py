@@ -25,8 +25,8 @@ class AnnotationStatsPanel(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(6, 6, 6, 6)
 
-        self.table = QTableWidget(0, 3)
-        self.table.setHorizontalHeaderLabels(["Category", "Count", "%"])
+        self.table = QTableWidget(0, 4)
+        self.table.setHorizontalHeaderLabels(["Category", "Count", "%", "VICReg Pairing"])
         self.table.verticalHeader().setVisible(False)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         # Selectable (not the prior NoSelection) so a user can grab just
@@ -79,7 +79,12 @@ class AnnotationStatsPanel(QWidget):
         """Rebuild the table from `annotations` (a TileAnnotations) against
         `total_count` images total (un-annotated = total_count - tagged).
         Percentages are of the tagged (classified) total, not of
-        `total_count` — the "Un-annotated" row has no percentage."""
+        `total_count` — the "Un-annotated" row has no percentage.
+
+        The "VICReg Pairing" column flags categories with fewer than 2
+        examples: `training.vicreg.ClassPairDataset` can't draw two distinct
+        crops from a singleton category, so it falls back to pairing that
+        category's one crop with itself -- worth knowing before pretraining."""
         counts = {}
         for category in annotations.values():
             counts[category] = counts.get(category, 0) + 1
@@ -113,3 +118,13 @@ class AnnotationStatsPanel(QWidget):
             pct_item = QTableWidgetItem(pct_text)
             pct_item.setTextAlignment(Qt.AlignCenter)
             self.table.setItem(r, 2, pct_item)
+
+            if not has_pct:
+                pairing_text = ""
+            elif count < 2:
+                pairing_text = "singleton (same-crop pair)"
+            else:
+                pairing_text = "ready"
+            pairing_item = QTableWidgetItem(pairing_text)
+            pairing_item.setTextAlignment(Qt.AlignCenter)
+            self.table.setItem(r, 3, pairing_item)

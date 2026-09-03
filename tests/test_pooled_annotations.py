@@ -110,6 +110,86 @@ def test_tagged_items_returns_absolute_paths_with_confidence(tmp_path):
     assert items == {("a.tif", "single", None), ("b.tif", "junk", 0.42)}
 
 
+def test_clear_unconfirmed_drops_ai_tags_but_keeps_human_tags(tmp_path):
+    folder1 = _make_folder(tmp_path, "expA")
+    folder2 = _make_folder(tmp_path, "expB")
+    pool = PooledAnnotations([folder1, folder2])
+
+    pool.update([(str(folder1 / "a.tif"), "single")])
+    pool.update_with_confidence(
+        [
+            (str(folder1 / "b.tif"), "junk", 0.42),
+            (str(folder2 / "a.tif"), "tetrad", 0.91),
+        ]
+    )
+
+    removed = pool.clear_unconfirmed()
+
+    assert removed == 2
+    assert pool.get(str(folder1 / "a.tif")) == "single"
+    assert pool.get(str(folder1 / "b.tif")) is None
+    assert pool.get(str(folder2 / "a.tif")) is None
+    # Reload from disk to confirm the removal was actually persisted.
+    reloaded = PooledAnnotations([folder1, folder2])
+    assert reloaded.get(str(folder1 / "a.tif")) == "single"
+    assert reloaded.get(str(folder1 / "b.tif")) is None
+
+
+def test_categories_collapses_case_and_whitespace_variants(tmp_path):
+    from tileclass.data.annotations import TileAnnotations
+
+    folder1 = _make_folder(tmp_path, "expA")
+    folder2 = _make_folder(tmp_path, "expB")
+
+    TileAnnotations(str(folder1)).add_category("two")
+    TileAnnotations(str(folder2)).add_category(" Two ")
+
+    pool = PooledAnnotations([folder1, folder2])
+    assert pool.categories() == ["two"]  # first-seen spelling wins
+
+
+def test_add_category_no_ops_for_existing_case_or_whitespace_variant(tmp_path):
+    from tileclass.data.annotations import TileAnnotations
+
+    folder = _make_folder(tmp_path, "expA")
+    store = TileAnnotations(str(folder))
+    store.add_category("two")
+    store.add_category(" TWO")
+
+    assert store.categories() == ["two"]
+
+
+def test_raw_category_names_surfaces_divergence_categories_hides(tmp_path):
+    from tileclass.data.annotations import TileAnnotations
+
+    folder1 = _make_folder(tmp_path, "expA")
+    folder2 = _make_folder(tmp_path, "expB")
+
+    TileAnnotations(str(folder1)).add_category("two")
+    TileAnnotations(str(folder2)).add_category(" Two ")
+
+    pool = PooledAnnotations([folder1, folder2])
+    assert pool.categories() == ["two"]
+    assert pool.raw_category_names() == ["Two", "two"]
+
+
+def test_add_folders_extends_pool_and_skips_already_pooled(tmp_path):
+    import os
+
+    folder1 = _make_folder(tmp_path, "expA")
+    folder2 = _make_folder(tmp_path, "expB")
+    pool = PooledAnnotations([folder1])
+
+    added = pool.add_folders([folder1, folder2])
+
+    norm_folder2 = os.path.normpath(os.path.abspath(str(folder2)))
+    assert added == [norm_folder2]  # folder1 skipped, already pooled
+    assert norm_folder2 in pool.folders
+
+    pool.update([(str(folder2 / "a.tif"), "single")])
+    assert pool.get(str(folder2 / "a.tif")) == "single"
+
+
 def test_single_folder_pool_matches_plain_tile_annotations_behavior(tmp_path):
     folder = _make_folder(tmp_path, "solo")
     pool = PooledAnnotations([folder])

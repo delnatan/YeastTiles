@@ -62,7 +62,10 @@ def actions_for_selection(stage: str, path: str, tree_panel: ProjectTreePanel) -
     if stage == project_core.STAGE_TILES:
         # `path` here is a FOV id, not a file path (see
         # ProjectTreePanel._refresh_tiles_children / _on_current_changed).
-        return [Action("Open in Tile Viewer (this FOV)", "tile_generation", "open_viewer_fov")]
+        return [
+            Action("Open in Tile Viewer (this FOV)", "tile_generation", "open_viewer_fov"),
+            Action("Train Classifier...", "classifier_training", "open_viewer_fov"),
+        ]
 
     if stage == stages_core.STAGE_RAW:
         return [Action("Reduce this file", "data_reduction", "live")]

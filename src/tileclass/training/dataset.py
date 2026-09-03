@@ -67,12 +67,26 @@ class ClassificationTransform:
         return self._transform(x)
 
 
+def load_masked_crop(path):
+    """Read a (brightfield, fluorescence, mask) crop TIFF into a (2, H, W)
+    float32 array in [0, 1], zeroing pixels outside the mask (255 =
+    valid). Shared by `MaskedMicroscopyDataset`,
+    `classifiers.yeast_efficientnet`, and `vicreg.ClassPairDataset` so
+    the three can't silently diverge on how a crop is decoded."""
+    img = tifffile.imread(path)
+    if img.shape[-1] == 3:
+        img = img.transpose(2, 0, 1)
+
+    brightfield, fluorescence, mask = img[0], img[1], img[2]
+    valid = mask == 255
+    bf = np.where(valid, brightfield, 0.0)
+    fl = np.where(valid, fluorescence, 0.0)
+    return np.stack([bf, fl], axis=0).astype(np.float32) / 255.0
+
+
 class MaskedMicroscopyDataset(Dataset):
-    """Reads a (brightfield, fluorescence, mask) crop TIFF into a (2, H, W)
-    float32 tensor in [0, 1], zeroing pixels outside the mask (255 =
-    valid) -- matches `classifiers/yeast_efficientnet.py`'s
-    `_load_masked_crop` (kept separate/lightweight there since inference
-    doesn't need Dataset/DataLoader machinery)."""
+    """Wraps `load_masked_crop` in the `Dataset` interface, optionally
+    paired with per-item labels and a transform."""
 
     def __init__(self, file_paths, labels=None, transform=None):
         self.file_paths = file_paths
@@ -85,16 +99,7 @@ class MaskedMicroscopyDataset(Dataset):
     def __getitem__(self, idx):
         import torch
 
-        img = tifffile.imread(self.file_paths[idx])
-        if img.shape[-1] == 3:
-            img = img.transpose(2, 0, 1)
-
-        brightfield, fluorescence, mask = img[0], img[1], img[2]
-        valid = mask == 255
-        bf = np.where(valid, brightfield, 0.0)
-        fl = np.where(valid, fluorescence, 0.0)
-        img_2ch = np.stack([bf, fl], axis=0).astype(np.float32) / 255.0
-        tensor_img = torch.from_numpy(img_2ch)
+        tensor_img = torch.from_numpy(load_masked_crop(self.file_paths[idx]))
 
         if self.transform:
             tensor_img = self.transform(tensor_img)

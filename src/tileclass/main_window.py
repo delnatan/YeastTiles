@@ -7,10 +7,9 @@ and axis-reordering machinery that ``TiledViewer`` also carries for
 large multi-dimensional images don't apply here and aren't ported.
 """
 
-from collections import Counter
 from pathlib import Path
 
-from qtpy.QtCore import Qt, QThread
+from qtpy.QtCore import Qt
 from qtpy.QtGui import QImage, QPixmap
 from qtpy.QtWidgets import (
     QApplication,
@@ -18,6 +17,7 @@ from qtpy.QtWidgets import (
     QComboBox,
     QDialog,
     QDockWidget,
+    QFileDialog,
     QHBoxLayout,
     QInputDialog,
     QLabel,
@@ -37,14 +37,11 @@ from .data.palette import category_color
 from .data.pooled_annotations import PooledAnnotations
 from .data.visual_state import VisualState
 from .load_thumbnail import load_plane
-from .training.supervised import TrainingParams, resolve_target_categories
 from .widgets.annotation_stats_panel import AnnotationStatsPanel
 from .widgets.manage_categories_dialog import ManageCategoriesDialog
 from .widgets.thumbnail_colors_panel import ThumbnailColorsPanel
 from .widgets.thumbnail_grid import ThumbnailGridWidget
 from .widgets.tiled_display_settings_dialog import TiledDisplaySettingsDialog
-from .widgets.training_progress_dialog import TrainingProgressDialog
-from .workers import TrainingWorker
 
 
 class MainWindow(QMainWindow):
@@ -79,9 +76,6 @@ class MainWindow(QMainWindow):
         self._category_colors = {}
         for category in self.annotations.categories():
             self._category_color(category)
-
-        self._training_thread = None
-        self._training_worker = None
 
         self._classifier_instances = {}  # name -> loaded TileClassifier
 
@@ -272,6 +266,58 @@ class MainWindow(QMainWindow):
         ):
             self.annotation_stats_panel.refresh(self.annotations, len(self.image_paths))
 
+    def add_project_folders(self):
+        """Pool in more already-annotated project folders at runtime, so
+        VICReg pretraining / classifier training / stats can see them
+        without relaunching with different command-line arguments.
+
+        Deliberately annotations-pool-only: newly-added folders' tiles are
+        NOT added to this window's browsable thumbnail grid. `image_paths`
+        is built once in `__main__.py` before this window exists, and
+        `PooledAnnotations.dims` is a single value shared by the whole grid
+        -- extending the grid at runtime would need per-tile axis-order
+        handling this app doesn't have. Open a folder directly
+        (`tiled_viewer <folder>`) to browse/annotate it.
+        """
+        dirs = []
+        start_dir = self.annotations.folders[-1] if self.annotations.folders else ""
+        while True:
+            d = QFileDialog.getExistingDirectory(self, "Add Project Folder", start_dir)
+            if not d:
+                break
+            dirs.append(d)
+            start_dir = d
+            if (
+                QMessageBox.question(self, "Add Project Folder(s)", "Add another folder?")
+                != QMessageBox.Yes
+            ):
+                break
+        if not dirs:
+            return
+
+        added = self.annotations.add_folders(dirs)
+        if not added:
+            QMessageBox.information(
+                self, "Add Project Folder(s)", "Already pooled -- nothing to add."
+            )
+            return
+
+        self._category_colors = {}
+        for category in self.annotations.categories():
+            self._category_color(category)
+        self._refresh_badges()
+        self._refresh_annotation_stats()
+        self._refresh_category_filter_combo()
+
+        QMessageBox.information(
+            self,
+            "Add Project Folder(s)",
+            f"Added {len(added)} folder(s) to the annotation pool for stats, "
+            "category management, and training. Their tiles are NOT shown in "
+            "this window's grid -- open them directly (tiled_viewer <folder>) "
+            "to browse/annotate them.",
+        )
+
     def annotate_selected_tiles(self):
         """Prompt for a category and apply it to every selected tile.
 
@@ -417,102 +463,6 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self, "Auto-Annotate", message)
 
     # ------------------------------------------------------------------
-    # Training
-
-    def train_classifier(self):
-        """Fine-tune the deployed classifier on every human-confirmed tag
-        across the pooled folders (see training/supervised.py). If a run
-        is already in progress, just re-show its dialog instead of
-        starting a second one."""
-        if self._training_thread is not None:
-            self._training_dialog.show()
-            self._training_dialog.raise_()
-            return
-
-        # Unreviewed AI predictions are excluded -- training on the
-        # model's own unconfirmed guesses would just reinforce whatever
-        # mistakes it's currently making.
-        items = [
-            (path, category)
-            for path, category, confidence in self.annotations.tagged_items()
-            if confidence is None
-        ]
-        if not items:
-            QMessageBox.information(
-                self,
-                "Train Classifier",
-                "No human-confirmed annotations found across the pooled folders yet.",
-            )
-            return
-
-        target_categories = resolve_target_categories(items)
-        unknown = sorted({c for _, c in items if c not in target_categories})
-        if unknown:
-            ret = QMessageBox.question(
-                self,
-                "Train Classifier",
-                f"{len(unknown)} category name(s) aren't in the trained vocabulary "
-                f"and will be skipped: {', '.join(unknown)}.\n\nContinue?",
-            )
-            if ret != QMessageBox.Yes:
-                return
-            items = [(p, c) for p, c in items if c in target_categories]
-            if not items:
-                QMessageBox.information(
-                    self, "Train Classifier", "No usable annotations left after filtering."
-                )
-                return
-
-        counts = Counter(c for _, c in items)
-        summary = "\n".join(f"  {c}: {n}" for c, n in sorted(counts.items()))
-        ret = QMessageBox.question(
-            self,
-            "Train Classifier",
-            f"Fine-tune the classifier on {len(items)} confirmed tile(s)?\n\n{summary}\n\n"
-            "This overwrites the deployed classifier weights (the current ones are "
-            "backed up first).",
-        )
-        if ret != QMessageBox.Yes:
-            return
-
-        params = TrainingParams()
-        self._training_thread = QThread()
-        self._training_worker = TrainingWorker(items, params)
-        self._training_worker.moveToThread(self._training_thread)
-        self._training_thread.started.connect(self._training_worker.run)
-
-        self._training_dialog = TrainingProgressDialog(
-            params.probe_epochs + params.finetune_epochs, parent=self
-        )
-        self._training_worker.progress.connect(self._training_dialog.on_progress)
-        self._training_worker.finished.connect(self._on_training_finished)
-        self._training_worker.error.connect(self._on_training_error)
-        self._training_worker.cancelled.connect(self._on_training_cancelled)
-        self._training_dialog.cancel_requested.connect(self._training_worker.cancel)
-
-        self._training_thread.start()
-        self._training_dialog.show()
-
-    def _on_training_finished(self, result):
-        self._training_dialog.on_finished(result)
-        # Cached classifier instances hold the *old* weights in memory --
-        # drop them so the next Auto-Annotate reloads what was just saved.
-        self._classifier_instances.clear()
-        self._teardown_training_thread()
-
-    def _on_training_error(self, message):
-        self._training_dialog.on_error(message)
-        self._teardown_training_thread()
-
-    def _on_training_cancelled(self):
-        self._training_dialog.on_cancelled()
-        self._teardown_training_thread()
-
-    def _teardown_training_thread(self):
-        self._training_thread.quit()
-        self._training_thread.wait()
-        self._training_thread = None
-        self._training_worker = None
 
     def _refresh_category_filter_combo(self):
         current = self._category_filter
@@ -683,9 +633,6 @@ class MainWindow(QMainWindow):
         auto_annotate_action.setShortcut("Shift+T")
         auto_annotate_action.triggered.connect(self.auto_annotate_page)
 
-        train_action = annotate_menu.addAction("Train Classifier...")
-        train_action.triggered.connect(self.train_classifier)
-
         group_action = annotate_menu.addAction("Group by Category")
         group_action.setShortcut("G")
         group_action.triggered.connect(self.sort_by_annotation)
@@ -697,6 +644,9 @@ class MainWindow(QMainWindow):
 
         stats_action = annotate_menu.addAction("Annotation Stats...")
         stats_action.triggered.connect(self.show_annotation_stats)
+
+        add_folders_action = annotate_menu.addAction("Add Project Folder(s)...")
+        add_folders_action.triggered.connect(self.add_project_folders)
 
     def show_display_limits_dialog(self):
         dlg = TiledDisplaySettingsDialog(
@@ -866,16 +816,5 @@ class MainWindow(QMainWindow):
             super().keyPressEvent(event)
 
     def closeEvent(self, event):
-        if self._training_thread is not None:
-            ret = QMessageBox.question(
-                self, "tileclass", "A training run is in progress. Cancel it and close?"
-            )
-            if ret != QMessageBox.Yes:
-                event.ignore()
-                return
-            self._training_worker.cancel()
-            self._training_thread.quit()
-            self._training_thread.wait()
-
         self.thumbnail_grid.close()
         super().closeEvent(event)

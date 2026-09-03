@@ -1,5 +1,7 @@
 """Dialog for managing a folder's predefined tile annotation categories."""
 
+from collections import defaultdict
+
 from qtpy.QtCore import Qt
 from qtpy.QtWidgets import (
     QAbstractItemView,
@@ -13,6 +15,8 @@ from qtpy.QtWidgets import (
     QPushButton,
     QVBoxLayout,
 )
+
+from ..data.annotations import normalized_category_key
 
 
 class ManageCategoriesDialog(QDialog):
@@ -41,13 +45,16 @@ class ManageCategoriesDialog(QDialog):
         self.add_btn = QPushButton("Add...")
         self.rename_btn = QPushButton("Rename...")
         self.delete_btn = QPushButton("Delete")
+        self.find_duplicates_btn = QPushButton("Find Duplicates...")
         self.add_btn.clicked.connect(self._add)
         self.rename_btn.clicked.connect(self._rename)
         self.delete_btn.clicked.connect(self._delete)
+        self.find_duplicates_btn.clicked.connect(self._find_duplicates)
         button_row.addWidget(self.add_btn)
         button_row.addWidget(self.rename_btn)
         button_row.addWidget(self.delete_btn)
         button_row.addStretch(1)
+        button_row.addWidget(self.find_duplicates_btn)
         layout.addLayout(button_row)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Close)
@@ -69,7 +76,7 @@ class ManageCategoriesDialog(QDialog):
         return item.text() if item is not None else None
 
     def _existing_names_ci(self):
-        return {name.lower() for name in self.annotations.categories()}
+        return {normalized_category_key(name) for name in self.annotations.categories()}
 
     def _add(self):
         name, ok = QInputDialog.getText(self, "Add Category", "Category name:")
@@ -78,7 +85,7 @@ class ManageCategoriesDialog(QDialog):
         name = name.strip()
         if not name:
             return
-        if name.lower() in self._existing_names_ci():
+        if normalized_category_key(name) in self._existing_names_ci():
             QMessageBox.information(
                 self, "Add Category", f"'{name}' already exists."
             )
@@ -98,13 +105,49 @@ class ManageCategoriesDialog(QDialog):
         new = new.strip()
         if not new or new == old:
             return
-        if new.lower() in self._existing_names_ci():
+        if normalized_category_key(new) in self._existing_names_ci():
             QMessageBox.information(
                 self, "Rename Category", f"'{new}' already exists."
             )
             return
         self.annotations.rename_category(old, new)
         self._refresh_list(select=new)
+
+    def _find_duplicates(self):
+        """Scan every pooled folder's raw category strings (not just the
+        already-collapsed `categories()` view -- see
+        `PooledAnnotations.raw_category_names`) for case/whitespace variants
+        of the same category, and let the user pick a canonical spelling to
+        rewrite them to via `rename_category` (which persists to every
+        pooled folder's sidecar file)."""
+        groups = defaultdict(list)
+        for name in self.annotations.raw_category_names():
+            groups[normalized_category_key(name)].append(name)
+        duplicate_groups = [variants for variants in groups.values() if len(variants) > 1]
+
+        if not duplicate_groups:
+            QMessageBox.information(
+                self, "Find Duplicates", "No near-duplicate categories found."
+            )
+            return
+
+        for variants in duplicate_groups:
+            canonical, ok = QInputDialog.getItem(
+                self,
+                "Merge Duplicate Categories",
+                "These look like the same category (case/whitespace differs):\n"
+                f"{', '.join(variants)}\n\nMerge into which spelling?",
+                variants,
+                0,
+                editable=False,
+            )
+            if not ok:
+                continue
+            for variant in variants:
+                if variant != canonical:
+                    self.annotations.rename_category(variant, canonical)
+
+        self._refresh_list()
 
     def _delete(self):
         name = self._selected_name()

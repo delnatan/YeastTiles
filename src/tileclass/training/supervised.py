@@ -11,13 +11,20 @@ Differences from the original script, both deliberate:
 - Records come from `PooledAnnotations.tagged_items()` in-process (a list
   of already-resolved (path, label) pairs), not by re-parsing
   `crops_F*.txt` files off disk -- tileclass already has this data loaded.
-- The backbone starts from whatever's currently deployed
-  (`classifiers/yeast_efficientnet.py`'s `weights.pth`) if present, rather
-  than requiring a separate VICReg-only checkpoint -- this is continual
-  fine-tuning of the production classifier, not a from-scratch retrain
-  each time, and VICReg pretraining isn't wired into this app yet (see
-  training/__init__.py). Falls back to an ImageNet-pretrained stem for a
-  first-ever training run with nothing deployed yet.
+- Every run trains from scratch -- an ImageNet-pretrained stem (or a
+  VICReg backbone via `backbone_weights_path`) with a freshly initialized
+  head, never a warm start from whatever's currently deployed. This is a
+  deliberate correctness choice, not an efficiency one: `train_classifier`
+  recomputes the train/val split fresh from whatever's currently annotated
+  every run (see `stratified_split` below), and annotations accumulate
+  between runs in this app's annotate-and-retrain loop. A crop that landed
+  in *train* last run can land in *val* this run once the pool has grown
+  -- if the model were warm-started from last run's weights, that crop's
+  validation accuracy this run would be silently optimistic, since the
+  model already trained on it. Retraining from scratch every time keeps
+  each run's validation split honestly held-out. (VICReg pretraining, in
+  `training/vicreg.py`, has no such split and is warm-started deliberately
+  -- see that module's docstring.)
 """
 
 import json
@@ -27,7 +34,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from ..classifiers.device import select_device
-from ..classifiers.yeast_efficientnet import META_PATH, WEIGHTS_DIR, WEIGHTS_PATH
+from ..classifiers.yeast_efficientnet import WEIGHTS_DIR, WEIGHTS_PATH
 from .dataset import (
     ClassificationTransform,
     MaskedMicroscopyDataset,
@@ -74,13 +81,12 @@ class TrainingResult:
 
 
 def resolve_target_categories(records) -> list[str]:
-    """The fixed label vocabulary this training run will use: the
-    currently deployed classifier's categories if one exists (so the
-    classifier head can be warm-started), else every distinct category
-    name present in `records` (a first-ever training run, nothing
-    deployed yet)."""
-    if META_PATH.exists():
-        return json.loads(META_PATH.read_text())["categories"]
+    """The label vocabulary this training run will use: every distinct
+    category name present in `records`. Every run trains a freshly
+    initialized head (see module docstring), so there's no existing
+    classifier vocabulary to match shapes against -- pass an explicit
+    `categories` to `train_classifier` instead if a run needs a fixed
+    vocabulary wider than what's currently annotated."""
     return sorted({label for _, label in records})
 
 
@@ -150,44 +156,77 @@ def _run_stage(
     return val_acc, per_class_acc
 
 
-def _init_model(num_classes, categories, device):
-    """Warm-start from the currently deployed classifier if its category
-    vocabulary matches exactly (so the head's shape lines up); otherwise
-    cold-start from an ImageNet-pretrained stem with a fresh random head."""
+def _init_model(num_classes, device, backbone_weights_path=None):
+    """Every run starts from a freshly initialized classifier head (see
+    module docstring) -- never warm-started from whatever's currently
+    deployed. Two starting points for the backbone itself:
+
+    1. `backbone_weights_path`, if given -- a headless (no classifier
+       head) backbone checkpoint such as `training.vicreg.pretrain_vicreg`
+       produces. A fresh, randomly-initialized head is attached, since a
+       VICReg backbone was never trained with one.
+    2. Cold-start from an ImageNet-pretrained stem with a fresh random
+       head, if `backbone_weights_path` isn't given (or doesn't exist).
+    """
     import torch
 
-    if WEIGHTS_PATH.exists() and META_PATH.exists():
-        deployed_categories = json.loads(META_PATH.read_text())["categories"]
-        if deployed_categories == categories:
-            model = build_yeast_efficientnet(num_classes, pretrained=False)
-            model.load_state_dict(torch.load(WEIGHTS_PATH, map_location=device))
-            return model.to(device)
+    if backbone_weights_path is not None and Path(backbone_weights_path).exists():
+        model = build_yeast_efficientnet(num_classes, pretrained=False)
+        backbone_state = torch.load(backbone_weights_path, map_location=device)
+        missing, unexpected = model.load_state_dict(backbone_state, strict=False)
+        expected_missing = {"classifier.1.weight", "classifier.1.bias"}
+        if set(missing) != expected_missing or unexpected:
+            raise ValueError(
+                f"Backbone checkpoint at {backbone_weights_path} doesn't match "
+                f"this model's architecture (missing={missing}, "
+                f"unexpected={unexpected})"
+            )
+        return model.to(device)
+
     return build_yeast_efficientnet(num_classes, pretrained=True).to(device)
 
 
-def _save_weights(model, categories: list[str]):
-    """Back up whatever's currently deployed (if anything) before
-    overwriting -- a bad training run shouldn't be able to destroy the
-    last good model irreversibly."""
+def _save_weights(
+    model, categories: list[str], trained_on_paths, output_dir: Path | None = None
+) -> Path:
+    """Write `weights.pth`/`meta.json` into `output_dir` if given, else
+    into the live inference slot (`WEIGHTS_DIR`) -- backing up whatever's
+    already there first, so a bad training run can't destroy the last good
+    model irreversibly. Returns the directory written to, so callers that
+    default to `output_dir=None` can still report where the result landed.
+
+    `trained_on_paths`: the crop paths this run actually trained on (the
+    train split, not val) -- recorded in meta.json as provenance. Every
+    supervised run starts from scratch, so nothing here needs to *warn*
+    about repeat exposure the way `training/vicreg.py`'s equivalent field
+    does for its warm-startable backbone; this is just an honest record of
+    what went into this specific checkpoint.
+    """
     import torch
 
-    WEIGHTS_DIR.mkdir(parents=True, exist_ok=True)
-    if WEIGHTS_PATH.exists():
+    weights_dir = Path(output_dir) if output_dir is not None else WEIGHTS_DIR
+    weights_path = weights_dir / "weights.pth"
+    meta_path = weights_dir / "meta.json"
+
+    weights_dir.mkdir(parents=True, exist_ok=True)
+    if weights_path.exists():
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        backup_path = WEIGHTS_DIR / f"weights.pth.bak-{stamp}"
-        shutil.copy2(WEIGHTS_PATH, backup_path)
+        backup_path = weights_dir / f"weights.pth.bak-{stamp}"
+        shutil.copy2(weights_path, backup_path)
 
-    torch.save(model.state_dict(), WEIGHTS_PATH)
+    torch.save(model.state_dict(), weights_path)
 
-    meta = json.loads(META_PATH.read_text()) if META_PATH.exists() else {}
+    meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
     meta["categories"] = categories
+    meta["trained_on_paths"] = sorted(str(p) for p in trained_on_paths)
     meta["last_trained"] = datetime.now(timezone.utc).isoformat()
     meta.setdefault(
         "description",
         "Yeast cell-crop classifier (brightfield + fluorescence + mask, "
         "EfficientNet-B0 stem modified for 2 input channels).",
     )
-    META_PATH.write_text(json.dumps(meta, indent=2))
+    meta_path.write_text(json.dumps(meta, indent=2))
+    return weights_dir
 
 
 def train_classifier(
@@ -195,18 +234,42 @@ def train_classifier(
     params: TrainingParams = TrainingParams(),
     progress_callback=None,
     cancel_check=None,
+    backbone_weights_path=None,
+    categories=None,
+    output_dir: Path | None = None,
 ) -> TrainingResult:
     """`records`: list of (crop_path, category) pairs -- typically
     `PooledAnnotations.tagged_items()` filtered to human-confirmed tags
     only (see `workers.TrainingWorker`; training on the model's own
     unreviewed predictions would just reinforce its current mistakes).
-    Raises `ValueError` for too little data or an unrecognized category,
-    `TrainingCancelled` if `cancel_check()` goes true between epochs."""
+    `backbone_weights_path`: optional headless VICReg backbone checkpoint
+    (see `training.vicreg.pretrain_vicreg`) to start from instead of an
+    ImageNet-pretrained stem -- see `_init_model`. The classifier head
+    itself is always freshly initialized either way (module docstring).
+    `categories`: explicit target vocabulary, overriding
+    `resolve_target_categories`'s records-derived one -- for training a
+    classifier over a wider/different vocabulary than what's currently
+    annotated (e.g. matching a deployed classifier's category list even
+    though this run's records don't cover every one of them). Pass
+    `sorted(set(label for _, label in records))` for "just use whatever
+    categories these records contain" (the default).
+    `output_dir`: where to write the resulting `weights.pth`/`meta.json`.
+    Defaults to the live inference slot (today's behavior: training
+    auto-deploys). Callers that want an explicit, reviewable deploy step
+    instead (e.g. yeastprep's Classifier Training page, which always
+    trains on a pooled multi-project dataset that shouldn't silently
+    overwrite tileclass's currently deployed model) should pass a
+    project-local session folder here and promote it later via
+    `tileclass.checkpoint_import.import_checkpoint`.
+    Raises `ValueError` for too little data, an unrecognized category, or
+    a `backbone_weights_path` that doesn't match this model's
+    architecture; `TrainingCancelled` if `cancel_check()` goes true
+    between epochs."""
     import torch
     import torch.nn as nn
     from torch.utils.data import DataLoader
 
-    categories = resolve_target_categories(records)
+    categories = categories if categories is not None else resolve_target_categories(records)
     label_to_idx = {name: i for i, name in enumerate(categories)}
 
     unknown = sorted({label for _, label in records if label not in label_to_idx})
@@ -256,7 +319,7 @@ def train_classifier(
     )
 
     num_classes = len(categories)
-    model = _init_model(num_classes, categories, device)
+    model = _init_model(num_classes, device, backbone_weights_path=backbone_weights_path)
 
     weights = class_weights(train_labels, num_classes).to(device)
     criterion = nn.CrossEntropyLoss(weight=weights)
@@ -309,7 +372,7 @@ def train_classifier(
         cancel_check,
     )
 
-    _save_weights(model, categories)
+    weights_dir = _save_weights(model, categories, train_paths, output_dir=output_dir)
 
     return TrainingResult(
         val_accuracy=val_acc,
@@ -319,5 +382,5 @@ def train_classifier(
         categories=categories,
         train_count=len(train_idx),
         val_count=len(val_idx),
-        weights_path=WEIGHTS_PATH,
+        weights_path=weights_dir / "weights.pth",
     )

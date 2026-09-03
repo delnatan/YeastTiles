@@ -51,10 +51,25 @@ tagging this" API) drops any existing confidence for the relpaths it
 touches. Only `update_with_confidence()` (used by auto-annotation) sets
 one. This is how the two are told apart on reload, without a separate
 sidecar file or a fourth "reviewed" state to track.
+
+`clear_unconfirmed()` is the inverse of `update_with_confidence()`: it
+drops every tag that still carries a confidence, leaving human-set tags
+alone -- for wiping stale predictions from an older model before
+re-running a newer one over the same folder.
 """
 
 import os
 from collections.abc import MutableMapping
+
+
+def normalized_category_key(name):
+    """Case/whitespace-insensitive identity for a category name -- shared by
+    `TileAnnotations.add_category`, `PooledAnnotations.categories`, and
+    `ManageCategoriesDialog`'s duplicate-detection, so all three agree on
+    what counts as "the same category" instead of drifting independently
+    (the concrete failure this prevents: pooling one project's "two" with
+    another's " two" or "Two" as three distinct vocabulary entries)."""
+    return name.strip().casefold()
 
 
 class TileAnnotations(MutableMapping):
@@ -266,6 +281,21 @@ class TileAnnotations(MutableMapping):
                 self.confidences.pop(relpath, None)
         self.save()
 
+    def clear_unconfirmed(self):
+        """Remove every tag that's still an unreviewed AI prediction
+        (confidence is not None), leaving human-set/confirmed tags
+        untouched. Saves once (no-op if nothing to remove). Returns the
+        number of tags removed -- for a classifier to be able to
+        re-predict a folder after a new training run without disturbing
+        anything a human has already confirmed."""
+        stale = list(self.confidences)
+        for relpath in stale:
+            self._categories.pop(relpath, None)
+            self.confidences.pop(relpath, None)
+        if stale:
+            self.save()
+        return len(stale)
+
     def categories(self):
         """Predefined category vocabulary, if one has been set; otherwise
         the sorted list of distinct category names currently in use."""
@@ -278,16 +308,21 @@ class TileAnnotations(MutableMapping):
 
         On first use (vocabulary still empty), seeds the vocabulary with
         whatever category names are already in use so existing tags don't
-        silently drop out of the picker.
+        silently drop out of the picker. No-ops if a case/whitespace variant
+        of `name` is already present -- see `normalized_category_key`. This
+        only ever appends to (or skips adding to) the `#categories` header
+        line; it never touches existing per-tile tags.
         """
         name = name.strip()
         if not name:
             return
         if not self._category_vocab:
             self._category_vocab = self.categories()
-        if name not in self._category_vocab:
-            self._category_vocab.append(name)
-            self.save()
+        key = normalized_category_key(name)
+        if any(normalized_category_key(existing) == key for existing in self._category_vocab):
+            return
+        self._category_vocab.append(name)
+        self.save()
 
     def usage_count(self, name):
         """Number of tiles currently tagged with category `name`."""

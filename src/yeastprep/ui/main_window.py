@@ -41,6 +41,7 @@ from qtpy.QtWidgets import (
 
 from . import selection_actions, settings
 from .common.stage_breadcrumb import PipelineBreadcrumb
+from .pages.classifier_training_page import ClassifierTrainingPage
 from .pages.data_reduction_page import DataReductionPage
 from .pages.deconvolve_page import DeconvolvePage
 from .pages.denoise_page import DenoisePage
@@ -66,6 +67,7 @@ class YeastPrepWindow(QMainWindow):
         self.deconvolve_page = DeconvolvePage(self.tree_panel)
         self.segmentation_page = SegmentationPage(self.tree_panel)
         self.tile_generation_page = TileGenerationPage(self.tree_panel)
+        self.classifier_training_page = ClassifierTrainingPage(self.tree_panel)
         self._pages = [
             ("Data Reduction", self.data_reduction_page),
             ("Preview", self.preview_page),
@@ -73,6 +75,7 @@ class YeastPrepWindow(QMainWindow):
             ("Deconvolve", self.deconvolve_page),
             ("Segmentation", self.segmentation_page),
             ("Tile Generation", self.tile_generation_page),
+            ("Classifier Training", self.classifier_training_page),
         ]
         # page_key (see selection_actions.py) -> page instance, used by
         # _on_action_triggered to route a SelectionActionsPanel button
@@ -84,6 +87,7 @@ class YeastPrepWindow(QMainWindow):
             "deconvolve": self.deconvolve_page,
             "segmentation": self.segmentation_page,
             "tile_generation": self.tile_generation_page,
+            "classifier_training": self.classifier_training_page,
         }
 
         self._build_ui()

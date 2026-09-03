@@ -21,8 +21,11 @@ from pathlib import Path
 from jssl_denoise.training import Trainer
 
 from qtpy.QtCore import QObject, QThread, QTimer, Signal
+from tileclass.training.supervised import TrainingCancelled, TrainingParams, train_classifier
+from tileclass.training.vicreg import VICRegParams, pretrain_vicreg
 
 from yeastprep.core.channels import ChannelSelection
+from yeastprep.core.classify import classify_pool
 from yeastprep.core.deconvolve import (
     DeconvolveParams,
     DeconvolveProcessResult,
@@ -675,3 +678,122 @@ class TrainingWorker(QObject):
             self.cancelled.emit(checkpoint)
         else:
             self.finished.emit(checkpoint)
+
+
+class ClassifierTrainingWorker(QObject):
+    """Wraps `tileclass.training.supervised.train_classifier` -- ported
+    from tileclass's own `workers.TrainingWorker` (now removed there, see
+    the Classifier Training page) verbatim except for the added
+    `output_dir`: a yeastprep-driven run always writes its resulting
+    checkpoint to a project-local session folder rather than tileclass's
+    live inference slot (see `core.classify.supervised_output_dir` and
+    `train_classifier`'s `output_dir` docstring) -- promoting it there is
+    a separate, explicit "Deploy to Tile Classifier" step."""
+
+    progress = Signal(object)  # tileclass.training.supervised.TrainingProgress
+    finished = Signal(object)  # tileclass.training.supervised.TrainingResult
+    error = Signal(str)
+    cancelled = Signal()
+
+    def __init__(
+        self,
+        records,
+        params: TrainingParams = TrainingParams(),
+        output_dir: Path | None = None,
+        backbone_weights_path=None,
+        categories=None,
+    ):
+        super().__init__()
+        self._records = list(records)
+        self._params = params
+        self._output_dir = output_dir
+        self._backbone_weights_path = backbone_weights_path
+        self._categories = categories
+        self._cancel_requested = False
+
+    def cancel(self):
+        self._cancel_requested = True
+
+    def run(self):
+        try:
+            result = train_classifier(
+                self._records,
+                params=self._params,
+                progress_callback=self.progress.emit,
+                cancel_check=lambda: self._cancel_requested,
+                backbone_weights_path=self._backbone_weights_path,
+                categories=self._categories,
+                output_dir=self._output_dir,
+            )
+        except TrainingCancelled:
+            self.cancelled.emit()
+            return
+        except Exception as exc:
+            self.error.emit(str(exc))
+            return
+        self.finished.emit(result)
+
+
+class ClassifierInferenceWorker(QObject):
+    """Runs `core.classify.classify_pool` off the GUI thread -- a pooled
+    inference pass over every tile crop under the checked FOV folders can
+    be thousands of tiles across several projects, unlike tileclass's own
+    per-page Auto-Annotate (a single page, blocking is fine there). Only a
+    finished/error signal, no epoch-by-epoch progress -- inference has no
+    natural per-item checkpoint to report through, and no cancel: a batched
+    forward pass isn't interruptible mid-flight the way a training loop's
+    per-epoch boundary is."""
+
+    finished = Signal(object)  # core.classify.ClassifyPoolResult
+    error = Signal(str)
+
+    def __init__(self, pooled, classifier):
+        super().__init__()
+        self._pooled = pooled
+        self._classifier = classifier
+
+    def run(self):
+        try:
+            result = classify_pool(self._pooled, self._classifier)
+        except Exception as exc:
+            self.error.emit(str(exc))
+            return
+        self.finished.emit(result)
+
+
+class ClassifierVicregWorker(QObject):
+    """Wraps `tileclass.training.vicreg.pretrain_vicreg` -- ported from
+    tileclass's own `workers.VICRegWorker` (now removed there), with the
+    same `output_dir` addition as `ClassifierTrainingWorker` above."""
+
+    progress = Signal(object)  # tileclass.training.vicreg.VICRegProgress
+    finished = Signal(object)  # tileclass.training.vicreg.VICRegResult
+    error = Signal(str)
+    cancelled = Signal()
+
+    def __init__(self, records, params: VICRegParams = VICRegParams(), output_dir: Path | None = None):
+        super().__init__()
+        self._records = list(records)
+        self._params = params
+        self._output_dir = output_dir
+        self._cancel_requested = False
+
+    def cancel(self):
+        self._cancel_requested = True
+
+    def run(self):
+        try:
+            result = pretrain_vicreg(
+                self._records,
+                params=self._params,
+                progress_callback=self.progress.emit,
+                cancel_check=lambda: self._cancel_requested,
+                output_dir=self._output_dir,
+            )
+        except TrainingCancelled:
+            self.cancelled.emit()
+            return
+        except Exception as exc:
+            self.error.emit(str(exc))
+            return
+        self.finished.emit(result)
