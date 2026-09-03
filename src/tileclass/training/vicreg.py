@@ -222,12 +222,12 @@ class VICRegModel(nn.Module):
 
 @dataclass
 class VICRegParams:
-    epochs: int = 50
+    epochs: int = 1000
     batch_size: int = 128
     epoch_length: int | None = None  # None -> one pair per tile per epoch
     balanced_sampling: bool = True
-    lr: float = 1e-3
-    weight_decay: float = 1e-4
+    lr: float = 1e-4
+    weight_decay: float = 5e-5
     proj_dim: int = 1024
     sim_coeff: float = 25.0
     std_coeff: float = 25.0

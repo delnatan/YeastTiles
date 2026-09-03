@@ -44,6 +44,7 @@ from tileclass.checkpoint_import import import_checkpoint
 from tileclass.classifiers.yeast_efficientnet import META_PATH as LIVE_CLASSIFIER_META_PATH
 from tileclass.classifiers.yeast_efficientnet import WEIGHTS_PATH as LIVE_CLASSIFIER_WEIGHTS_PATH
 from tileclass.classifiers.yeast_efficientnet import YeastEfficientNetClassifier
+from tileclass.main_window import MainWindow
 from tileclass.training.linear_probe import extract_embeddings, knn_accuracy, tsne_2d
 from tileclass.training.vicreg import VICREG_META_PATH as LIVE_VICREG_META_PATH
 from tileclass.training.vicreg import VICREG_WEIGHTS_PATH as LIVE_VICREG_WEIGHTS_PATH
@@ -95,6 +96,7 @@ class _BaseTrainingTab(QWidget):
         self._worker = None
         self._checkpoint_path_is_default = True
         self._last_checkpoint_dir: Path | None = None
+        self._embedding_viewer_windows: list[MainWindow] = []
 
         self._build_ui()
         self._wire_up()
@@ -228,11 +230,32 @@ class _BaseTrainingTab(QWidget):
         self.start_btn.clicked.connect(self._start_training)
         self.cancel_btn.clicked.connect(self._cancel_training)
         self.deploy_btn.clicked.connect(self._deploy_to_tile_classifier)
+        self.monitor_panel.pointsSelected.connect(self._open_viewer_for_selection)
 
     def refresh_dataset_summary(self):
         pooled = self.pool_widget.pooled_annotations()
         if pooled is not None:
             self.monitor_panel.set_dataset_summary(pooled)
+
+    def _open_viewer_for_selection(self, paths: list[str]) -> None:
+        """Opens tiles lasso-selected on the embedding scatter
+        (`ClassifierTrainingMonitorPanel.pointsSelected`) in an in-process
+        tileclass viewer window, scoped to the currently checked FOV
+        folders -- the same folders the embeddings themselves were pulled
+        from -- so an unexpected cluster or an outlier sitting with the
+        wrong label can be checked against its actual image and annotation.
+        Each selection opens its own window (rather than reusing one), kept
+        alive here since a parentless QMainWindow with no other reference
+        would otherwise be garbage-collected out from under Qt."""
+        folders = self.pool_widget.checked_fov_dirs()
+        if not folders or not paths:
+            return
+        window = MainWindow(folders, paths, tiles_per_page=len(paths))
+        window.show()
+        self._embedding_viewer_windows.append(window)
+        window.destroyed.connect(
+            lambda: self._embedding_viewer_windows.remove(window)
+        )
 
     # ------------------------------------------------------------------
     # Checkpoint output path -- defaults into the first pooled project's
@@ -751,7 +774,7 @@ class _VicregTrainingTab(_BaseTrainingTab):
                 embeddings = extract_embeddings(paths, backbone, device)
             xy = tsne_2d(embeddings)
             acc = knn_accuracy(embeddings, labels) if len(set(labels)) > 1 else None
-            self.monitor_panel.show_embedding_scatter(xy, labels, knn_acc=acc)
+            self.monitor_panel.show_embedding_scatter(xy, labels, paths=paths, knn_acc=acc)
         except Exception as exc:
             self.monitor_panel.log(f"embedding evaluation failed: {exc}")
 

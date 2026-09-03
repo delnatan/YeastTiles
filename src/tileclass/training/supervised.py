@@ -53,9 +53,9 @@ class TrainingParams:
     val_frac: float = 0.2
     seed: int = 0
     batch_size: int = 64
-    probe_epochs: int = 10
-    finetune_epochs: int = 20
-    probe_lr: float = 1e-3
+    probe_epochs: int = 100
+    finetune_epochs: int = 500
+    probe_lr: float = 5e-4
     finetune_backbone_lr: float = 1e-5
     finetune_head_lr: float = 1e-4
     weight_decay: float = 1e-4

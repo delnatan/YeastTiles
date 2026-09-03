@@ -11,7 +11,9 @@ after a run finishes -- there's no per-epoch embedding to plot).
 
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
-from qtpy.QtCore import Qt
+from matplotlib.path import Path as MplPath
+from matplotlib.widgets import LassoSelector
+from qtpy.QtCore import Qt, Signal
 from qtpy.QtWidgets import (
     QHeaderView,
     QPlainTextEdit,
@@ -25,12 +27,21 @@ from qtpy.QtWidgets import (
 
 
 class ClassifierTrainingMonitorPanel(QWidget):
+    # Emitted with the list of tile paths lasso-selected on the embedding
+    # scatter, so the owning page can open them in a tile viewer.
+    pointsSelected = Signal(list)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self._epochs: list[int] = []
         self._losses: list[float] = []
         self._secondary: list[float] = []  # val_accuracy (supervised) -- unused for VICReg
         self._secondary_label = "val accuracy"
+
+        self._embedding_xy = None
+        self._embedding_paths = None
+        self._lasso = None  # kept alive here -- LassoSelector drops its
+        # event connections if its only reference is garbage collected
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(2, 2, 2, 2)
@@ -194,17 +205,23 @@ class ClassifierTrainingMonitorPanel(QWidget):
         tab_layout.addWidget(self.embedding_canvas)
         return tab
 
-    def show_embedding_scatter(self, xy, labels, knn_acc: float | None = None) -> None:
+    def show_embedding_scatter(
+        self, xy, labels, paths: list[str] | None = None, knn_acc: float | None = None
+    ) -> None:
         """`xy`: (N, 2) array from `tileclass.training.linear_probe.tsne_2d`.
         `labels`: length-N category names, colored by matplotlib's default
-        cycle. `knn_acc`: optional `knn_accuracy` result, shown in the
-        title as a quick separability readout -- t-SNE and kNN are both
-        local-neighborhood notions of separability, so the plot and the
-        number tell a consistent story (see `tsne_2d`'s docstring for why
-        this replaced a PCA projection). Axes are unitless/unlabeled by
-        design: unlike PCA's PC1/PC2, t-SNE coordinates and inter-cluster
-        distances aren't meaningful on their own -- only which points
-        cluster together is."""
+        cycle. `paths`: parallel length-N list of each point's tile path --
+        when given, enables lasso-selecting a region of points and emitting
+        their paths via `pointsSelected`, so a suspicious cluster (or an
+        outlier sitting with the wrong category) can be checked against its
+        actual image, not just its label. `knn_acc`: optional `knn_accuracy`
+        result, shown in the title as a quick separability readout -- t-SNE
+        and kNN are both local-neighborhood notions of separability, so the
+        plot and the number tell a consistent story (see `tsne_2d`'s
+        docstring for why this replaced a PCA projection). Axes are
+        unitless/unlabeled by design: unlike PCA's PC1/PC2, t-SNE
+        coordinates and inter-cluster distances aren't meaningful on their
+        own -- only which points cluster together is."""
         self.embedding_ax.clear()
         for category in sorted(set(labels)):
             mask = [label == category for label in labels]
@@ -217,4 +234,21 @@ class ClassifierTrainingMonitorPanel(QWidget):
             title += f"  --  kNN accuracy: {knn_acc:.2f}"
         self.embedding_ax.set_title(title)
         self.embedding_ax.legend(loc="best", fontsize="small")
+
+        self._embedding_xy = xy
+        self._embedding_paths = paths
+        if self._lasso is not None:
+            self._lasso.disconnect_events()
+            self._lasso = None
+        if paths is not None:
+            self._lasso = LassoSelector(self.embedding_ax, onselect=self._on_lasso_select)
+
         self.embedding_canvas.draw_idle()
+
+    def _on_lasso_select(self, vertices) -> None:
+        if self._embedding_paths is None or self._embedding_xy is None:
+            return
+        selected_mask = MplPath(vertices).contains_points(self._embedding_xy)
+        selected = [p for p, keep in zip(self._embedding_paths, selected_mask) if keep]
+        if selected:
+            self.pointsSelected.emit(selected)

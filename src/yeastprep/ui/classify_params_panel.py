@@ -9,6 +9,7 @@ from qtpy.QtWidgets import (
     QDoubleSpinBox,
     QFormLayout,
     QGroupBox,
+    QLabel,
     QSpinBox,
     QVBoxLayout,
     QWidget,
@@ -50,17 +51,50 @@ class SupervisedTrainParamsPanel(QWidget):
         form.setVerticalSpacing(8)
         defaults = TrainingParams()
 
+        description = QLabel(
+            "Two stages, run back to back: <b>Probe</b> freezes the backbone "
+            "(including any deployed VICReg-pretrained weights) and trains only "
+            "the classifier head; <b>Finetune</b> then unfreezes the whole "
+            "network and trains end-to-end, with the backbone at a lower "
+            "learning rate than the head."
+        )
+        description.setWordWrap(True)
+        form.addRow(description)
+
         self.val_frac_spin = _dspin(defaults.val_frac, 0.05, 0.9, 0.05, decimals=2)
         self.seed_spin = _ispin(defaults.seed, 0, 999999)
         self.batch_size_spin = _ispin(defaults.batch_size, 1, 1024)
         self.probe_epochs_spin = _ispin(defaults.probe_epochs, 0, 2000)
+        self.probe_epochs_spin.setToolTip(
+            "Number of epochs for the probe stage, during which the backbone "
+            "is frozen (requires_grad=False) and only the classifier head "
+            "trains."
+        )
         self.finetune_epochs_spin = _ispin(defaults.finetune_epochs, 0, 2000)
+        self.finetune_epochs_spin.setToolTip(
+            "Number of epochs for the finetune stage, during which the entire "
+            "network -- backbone included -- is unfrozen (requires_grad=True) "
+            "and trained end-to-end."
+        )
         self.probe_lr_spin = _dspin(defaults.probe_lr, 1e-6, 1.0, 1e-4, decimals=6)
+        self.probe_lr_spin.setToolTip(
+            "Learning rate for the classifier head during the probe stage. "
+            "The backbone is frozen and unaffected by this value."
+        )
         self.finetune_backbone_lr_spin = _dspin(
             defaults.finetune_backbone_lr, 1e-8, 1.0, 1e-6, decimals=8
         )
+        self.finetune_backbone_lr_spin.setToolTip(
+            "Learning rate applied to the backbone once it's unfrozen in the "
+            "finetune stage. Kept low to avoid destroying the VICReg-pretrained "
+            "features."
+        )
         self.finetune_head_lr_spin = _dspin(
             defaults.finetune_head_lr, 1e-6, 1.0, 1e-5, decimals=6
+        )
+        self.finetune_head_lr_spin.setToolTip(
+            "Learning rate applied to the classifier head during the finetune "
+            "stage."
         )
         self.weight_decay_spin = _dspin(defaults.weight_decay, 0.0, 1.0, 1e-4, decimals=6)
 
