@@ -3,28 +3,65 @@ name = "tileclass"
 version = "0.1.0"
 description = "Minimal, fast tile-grid viewer for browsing and classifying folders of small microscopy/image tiles."
 requires-python = ">=3.11"
+# Base install: just the tile-grid viewer/annotator (`tiled_viewer`), no
+# classification and no FOV-processing pipeline. Light enough for a Windows
+# tablet or any modest laptop -- browsing and hand-annotating tiles never
+# needs torch or the cellpose/pyvistra stack (see the extras below, and the
+# lazy torch imports in classifiers/yeast_efficientnet.py and
+# classifiers/__init__.py that let `tiled_viewer` start up and list
+# classifiers without any extra installed).
 dependencies = [
-    "cellpose[gui]",
-    "ipykernel",
-    "jupyter",
-    "matplotlib",
     "numpy",
     "Pillow",
-    "polars",
-    "psfkit",
     "PyQt6",
-    "jssl-denoise @ https://github.com/delnatan/jssl_denoise.git",
-    "pyvistra @ git+https://github.com/delnatan/pyvistra.git",
-    "psfkit @ git+https://github.com/delnatan/psfkit.git",
     "qtpy",
-    "scipy",
     "tifffile",
+]
+
+[project.optional-dependencies]
+# Run/fine-tune the tile classifier (Auto-Annotate, Train in `tiled_viewer`;
+# also NN_workflow's classification/training scripts). Combined with the
+# base install this is the "classification-only" profile -- what a less
+# powerful machine can still handle for inference and light fine-tuning.
+# VICReg pretraining is compute-heavy but needs no extra packages beyond
+# this, just more time/a GPU, so it isn't a separate extra.
+classification = [
     "torch",
     "torchvision",
-    "vispy",
-    "seaborn>=0.13.2",
-    "pyarrow>=25.0.1",
     "scikit-learn>=1.9.0",
+]
+# yeastprep's raw-stack-to-tiles pipeline (Data Reduction, Denoise,
+# Deconvolve, Segmentation, Tile Generation) -- the heavy, GPU-segmentation
+# stack. Only needed on the machine doing FOV processing, not on one that
+# just annotates/classifies already-generated tiles. Deconvolution itself
+# only needs a PSF tiff file, not psfkit -- see the separate `psf` extra.
+prep = [
+    "cellpose[gui]",
+    "pyvistra @ git+https://github.com/delnatan/pyvistra.git",
+    "jssl-denoise @ https://github.com/delnatan/jssl_denoise.git",
+    "scipy",
+    "vispy",
+    "matplotlib",
+    "polars",
+]
+# PSF Calculator convenience tab on the Deconvolve page (computes a
+# synthetic widefield PSF from optical parameters). Deconvolution itself
+# works fine without this if you already have a PSF tiff file -- the tab
+# just degrades to a friendly error if psfkit isn't installed.
+psf = [
+    "psfkit @ git+https://github.com/delnatan/psfkit.git",
+]
+# The exploratory notebooks/ workbooks (field-flattening, cookie-cutting).
+# These also use pyvistra/cellpose, so pair with `prep`.
+notebooks = [
+    "jupyter",
+    "ipykernel",
+]
+# Everything: the full raw-stacks-through-classification pipeline.
+full = [
+    "tileclass[classification]",
+    "tileclass[prep]",
+    "tileclass[psf]",
 ]
 
 [project.scripts]

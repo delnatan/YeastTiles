@@ -8,7 +8,7 @@ machinery those scripts also carry.
 
 torch/torchvision are imported lazily (inside methods, not at module
 scope) so listing available classifiers never requires them -- only
-actually running one does. See the ``ai`` extra in pyproject.toml.
+actually running one does. See the ``classification`` extra in pyproject.toml.
 """
 
 import json

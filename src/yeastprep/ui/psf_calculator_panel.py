@@ -200,6 +200,13 @@ class PSFCalculatorPanel(QWidget):
             self._show_preview(psf[0])
             self.save_btn.setEnabled(True)
             self.status_label.setText(f"Done. Shape {psf.shape}, spacing {spacing} um.")
+        except ImportError as exc:
+            self.status_label.setText(
+                "PSF Calculator needs psfkit, which isn't installed "
+                f"({exc}). Install with: pip install -e '.[psf]' -- or skip "
+                "this tab and point Deconvolve at a PSF tiff file you "
+                "already have."
+            )
         except Exception as exc:
             self.status_label.setText(f"Error: {exc}")
         finally:

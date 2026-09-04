@@ -11,15 +11,74 @@ Two installable packages live under `src/`:
 
 This project uses [uv](https://docs.astral.sh/uv/) for environment management.
 
-```bash
-uv sync
-```
+The two packages have very different weight, and installs are split to match:
+
+- **Just classifying/annotating tiles** (`tileclass` / `tiled_viewer`) --
+  light enough for a Windows tablet or any modest laptop. The base install
+  is just the Qt viewer (no torch, no GPU-segmentation stack); add the
+  `classification` extra for running or fine-tuning the classifier:
+
+  ```bash
+  uv sync --extra classification
+  ```
+
+  A project can consist of nothing but a folder of tiles -- `tiled_viewer`
+  has no notion of FOVs, raw stacks, or a `yeastprep` project at all, so
+  there's nothing to remove: point it at tile folders directly (see
+  "Using tileclass" below) and it works the same whether or not any
+  upstream FOV data exists on the machine. This is the intended workflow
+  for fixing annotations and running the classifier day-to-day, keeping
+  the (much heavier) VICReg/full-network training for a more capable
+  machine.
+
+- **Full pipeline, raw stacks through tiles** (`yeastprep`) -- needs both
+  `prep` (cellpose, pyvistra, jssl-denoise) and `classification` (torch):
+  yeastprep's own Classifier Training page is the main entry point for
+  batch-wise annotation/fine-tuning across a pooled project (not just
+  `tiled_viewer`'s per-page Auto-Annotate), and it's wired into the main
+  window unconditionally, so both extras are required just to launch it.
+
+  ```bash
+  uv sync --extra classification --extra prep
+  ```
+
+  Running `uv run yeastprep` without the `prep` extra installed shows a
+  dialog naming the missing packages instead of crashing outright. `psf`
+  is a further, separate extra -- it's only `psfkit`, used by the PSF
+  Calculator convenience tab on the Deconvolve page. Deconvolution itself
+  just needs a PSF tiff file, so skipping `psf` doesn't block it; that tab
+  just shows a friendly message instead of computing a PSF for you.
+
+  ```bash
+  uv sync --extra classification --extra prep --extra psf   # + PSF Calculator
+  ```
+
+  Equivalently, `uv sync --extra full` bundles `classification` + `prep` + `psf`.
+
+- **Development / running the test suite** needs both extras plus the dev
+  group:
+
+  ```bash
+  uv sync --extra classification --extra prep --extra psf --group dev
+  ```
+
+- **Notebooks** under `notebooks/` (field-flattening, cookie-cutting) need
+  `prep` (pyvistra/cellpose) plus:
+
+  ```bash
+  uv sync --extra notebooks
+  ```
+
+Within `tiled_viewer` itself, selecting a classifier (Auto-Annotate, Train)
+is what actually imports torch -- if the `classification` extra isn't installed, that
+surfaces as a dialog rather than a crash, so the base install stays usable
+purely for browsing/annotating tiles even without deciding on `classification` up front.
 
 ### Third-party packages
 
-`jssl-denoise`, `pyvistra`, and `psfkit` are listed directly as git-URL
-dependencies in `pyproject.toml`'s `dependencies` list -- `uv sync` clones
-them itself; no manual cloning or local path setup needed. `resolvde` isn't
+`jssl-denoise`, `pyvistra` (`prep` extra), and `psfkit` (`psf` extra) are
+listed directly as git-URL dependencies in `pyproject.toml` -- `uv sync`
+clones them itself; no manual cloning or local path setup needed. `resolvde` isn't
 a dependency at all: its deconvolution code is vendored directly into
 `src/yeastprep/core/deconvolution/` (see that package's docstring).
 

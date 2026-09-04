@@ -376,7 +376,7 @@ class MainWindow(QMainWindow):
 
         Instantiating is what actually imports torch/torchvision (see
         ``classifiers/yeast_efficientnet.py``) -- so this is also where a
-        missing ``[ai]`` extra install surfaces, as a friendly dialog
+        missing ``[classification]`` extra install surfaces, as a friendly dialog
         rather than a crash.
         """
         if name not in self._classifier_instances:
@@ -388,7 +388,7 @@ class MainWindow(QMainWindow):
                     "Auto-Annotate",
                     "This classifier needs extra packages that aren't "
                     f"installed:\n{exc}\n\nInstall with:\n"
-                    "  pip install -e '.[ai]'",
+                    "  pip install -e '.[classification]'",
                 )
                 return None
         return self._classifier_instances[name]

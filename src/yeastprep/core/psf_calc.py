@@ -16,7 +16,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
-from psfkit import Optics, compute_widefield_psf, nyquist_lateral
 from pyvistra.io import save_tiff
 
 
@@ -42,7 +41,14 @@ def compute_2d_psf(params: PSFCalcParams) -> tuple[np.ndarray, tuple[float, floa
     aberration options.
 
     Returns the PSF as (1, nxy, nxy) and its (dz, dy, dx) spacing in um.
+
+    Imports psfkit lazily -- this is the only function in the module that
+    needs it (see the `psf` extra in pyproject.toml), so the rest of the
+    Deconvolve page keeps working with a user-supplied PSF tiff even if
+    psfkit isn't installed.
     """
+    from psfkit import Optics, compute_widefield_psf, nyquist_lateral
+
     optics = Optics(wavelength=params.wavelength_um, na=params.na, ni=params.ni, ns=params.ns)
     dxy = params.dxy_um or nyquist_lateral(optics)
     nz = max(1, round(params.axial_range_um / params.dz_um))
