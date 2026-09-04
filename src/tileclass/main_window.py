@@ -492,15 +492,24 @@ class MainWindow(QMainWindow):
     def sort_by_annotation(self):
         """Rearrange the current page's tiles so tiles sharing the same
         category -- including un-annotated, grouped first -- sit in one
-        contiguous block (stable order within each group)."""
+        contiguous block, and within each block AI-predicted tiles sort by
+        ascending confidence with manually-annotated/confirmed tiles
+        (no confidence score) pushed to the end -- so the network's least
+        confident calls for a given category surface first and its
+        human-reviewed ground truth for that category is easy to compare
+        against at a glance."""
         paths = self.thumbnail_grid.paths
         if not paths:
             return
 
-        def path_category_key(path):
-            return self.annotations.get(self.annotations.relpath(path)) or ""
+        def path_sort_key(path):
+            relpath = self.annotations.relpath(path)
+            category = self.annotations.get(relpath) or ""
+            confidence = self.annotations.confidence(relpath)
+            confidence_key = (1, 0.0) if confidence is None else (0, confidence)
+            return (category, confidence_key)
 
-        new_order = sorted(paths, key=path_category_key)
+        new_order = sorted(paths, key=path_sort_key)
         if new_order != paths:
             self.thumbnail_grid.set_order(new_order)
 

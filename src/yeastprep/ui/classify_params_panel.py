@@ -53,12 +53,23 @@ class SupervisedTrainParamsPanel(QWidget):
 
         description = QLabel(
             "Two stages, run back to back: <b>Probe</b> freezes the backbone "
-            "(including any deployed VICReg-pretrained weights) and trains only "
-            "the classifier head; <b>Finetune</b> then unfreezes the whole "
-            "network and trains end-to-end, with the backbone at a lower "
-            "learning rate than the head."
+            "and trains only the classifier head; <b>Finetune</b> then "
+            "unfreezes the whole network and trains end-to-end, with the "
+            "backbone at a lower learning rate than the head. See the "
+            "'Starting point' panel below to choose the backbone's initial "
+            "weights -- a VICReg-pretrained backbone is recommended over "
+            "generic ImageNet weights whenever one is available."
         )
         description.setWordWrap(True)
+        description.setToolTip(
+            "The classifier head is always freshly initialized and never "
+            "warm-started from a deployed classifier, regardless of the "
+            "backbone starting point chosen below: the train/validation "
+            "split is recomputed fresh from whatever's currently annotated "
+            "every run, so warm-starting the head would let a crop that "
+            "trained last run land in this run's validation split and look "
+            "artificially accurate."
+        )
         form.addRow(description)
 
         self.val_frac_spin = _dspin(defaults.val_frac, 0.05, 0.9, 0.05, decimals=2)
@@ -155,6 +166,21 @@ class VicregTrainParamsPanel(QWidget):
         form = QFormLayout(group)
         form.setVerticalSpacing(8)
         defaults = VICRegParams()
+
+        description = QLabel(
+            "Self-supervised backbone pretraining: learns an embedding space "
+            "directly from tile crops, no annotations required. Always "
+            "starts from an ImageNet-pretrained stem; optionally warm-starts "
+            "from the deployed backbone (see below) to keep building on what "
+            "a prior run already learned. Deploying a backbone from this tab "
+            "feeds both <i>future VICReg runs</i> here and Supervised "
+            "Training's 'Starting Point' backbone picker on that tab -- "
+            "pretrain and deploy a backbone here first if you want "
+            "Supervised Training to build on it instead of generic "
+            "ImageNet weights."
+        )
+        description.setWordWrap(True)
+        form.addRow(description)
 
         self.epochs_spin = _ispin(defaults.epochs, 1, 2000)
         self.batch_size_spin = _ispin(defaults.batch_size, 1, 1024)

@@ -15,8 +15,10 @@ from matplotlib.path import Path as MplPath
 from matplotlib.widgets import LassoSelector
 from qtpy.QtCore import Qt, Signal
 from qtpy.QtWidgets import (
+    QHBoxLayout,
     QHeaderView,
     QPlainTextEdit,
+    QPushButton,
     QSplitter,
     QTableWidget,
     QTableWidgetItem,
@@ -42,6 +44,7 @@ class ClassifierTrainingMonitorPanel(QWidget):
         self._embedding_paths = None
         self._lasso = None  # kept alive here -- LassoSelector drops its
         # event connections if its only reference is garbage collected
+        self._selection_highlight = None  # scatter artist ringing selected points
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(2, 2, 2, 2)
@@ -203,6 +206,18 @@ class ClassifierTrainingMonitorPanel(QWidget):
         self.embedding_canvas = FigureCanvasQTAgg(self.embedding_figure)
         self.embedding_ax = self.embedding_figure.add_subplot(111)
         tab_layout.addWidget(self.embedding_canvas)
+
+        toolbar = QHBoxLayout()
+        toolbar.addStretch(1)
+        self.clear_selection_btn = QPushButton("Clear Selection")
+        self.clear_selection_btn.setEnabled(False)
+        self.clear_selection_btn.setToolTip(
+            "Clear the ringed lasso selection above (does not close any "
+            "tile viewer windows already opened from it)."
+        )
+        self.clear_selection_btn.clicked.connect(self.clear_selection)
+        toolbar.addWidget(self.clear_selection_btn)
+        tab_layout.addLayout(toolbar)
         return tab
 
     def show_embedding_scatter(
@@ -237,6 +252,8 @@ class ClassifierTrainingMonitorPanel(QWidget):
 
         self._embedding_xy = xy
         self._embedding_paths = paths
+        self._selection_highlight = None  # ax.clear() above already dropped the artist
+        self.clear_selection_btn.setEnabled(False)
         if self._lasso is not None:
             self._lasso.disconnect_events()
             self._lasso = None
@@ -250,5 +267,31 @@ class ClassifierTrainingMonitorPanel(QWidget):
             return
         selected_mask = MplPath(vertices).contains_points(self._embedding_xy)
         selected = [p for p, keep in zip(self._embedding_paths, selected_mask) if keep]
-        if selected:
-            self.pointsSelected.emit(selected)
+        if not selected:
+            return
+
+        if self._selection_highlight is not None:
+            self._selection_highlight.remove()
+        points = self._embedding_xy[selected_mask]
+        self._selection_highlight = self.embedding_ax.scatter(
+            points[:, 0],
+            points[:, 1],
+            s=80,
+            facecolors="none",
+            edgecolors="black",
+            linewidths=1.5,
+            zorder=5,
+        )
+        self.clear_selection_btn.setEnabled(True)
+        self.embedding_canvas.draw_idle()
+        self.pointsSelected.emit(selected)
+
+    def clear_selection(self) -> None:
+        """Removes the ringed highlight left by the last lasso selection.
+        Purely cosmetic -- any tile viewer windows already opened from that
+        selection are unaffected."""
+        if self._selection_highlight is not None:
+            self._selection_highlight.remove()
+            self._selection_highlight = None
+            self.embedding_canvas.draw_idle()
+        self.clear_selection_btn.setEnabled(False)
