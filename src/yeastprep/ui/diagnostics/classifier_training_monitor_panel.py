@@ -32,6 +32,11 @@ class ClassifierTrainingMonitorPanel(QWidget):
     # Emitted with the list of tile paths lasso-selected on the embedding
     # scatter, so the owning page can open them in a tile viewer.
     pointsSelected = Signal(list)
+    # Emitted whenever the Dataset tab becomes the visible one -- annotations
+    # can change on disk from outside this page entirely (a separately
+    # opened tile viewer, another yeastprep window), so the owning page uses
+    # this to pull a fresh summary rather than relying only on pool changes.
+    datasetTabActivated = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -53,8 +58,13 @@ class ClassifierTrainingMonitorPanel(QWidget):
         layout.addWidget(self.tabs)
 
         self.tabs.addTab(self._build_progress_tab(), "Progress")
-        self.tabs.addTab(self._build_dataset_tab(), "Dataset")
+        self._dataset_tab_index = self.tabs.addTab(self._build_dataset_tab(), "Dataset")
         self.tabs.addTab(self._build_embeddings_tab(), "Embeddings")
+        self.tabs.currentChanged.connect(self._on_current_tab_changed)
+
+    def _on_current_tab_changed(self, index: int) -> None:
+        if index == self._dataset_tab_index:
+            self.datasetTabActivated.emit()
 
     # ------------------------------------------------------------------
     # Progress tab: loss (+ optional secondary metric) vs epoch, plus a log

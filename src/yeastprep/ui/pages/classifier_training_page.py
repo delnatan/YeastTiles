@@ -423,6 +423,7 @@ class _BaseTrainingTab(QWidget):
         self.cancel_btn.clicked.connect(self._cancel_training)
         self.deploy_btn.clicked.connect(self._deploy_to_tile_classifier)
         self.monitor_panel.pointsSelected.connect(self._open_viewer_for_selection)
+        self.monitor_panel.datasetTabActivated.connect(self.refresh_dataset_summary)
 
     def refresh_dataset_summary(self):
         pooled = self.pool_widget.pooled_annotations()
