@@ -718,9 +718,15 @@ class _SupervisedTrainingTab(_BaseTrainingTab):
             meta = {}
         last_trained = meta.get("last_trained", "unknown")
         categories = meta.get("categories") or []
+        counts = meta.get("category_counts") or {}
+        categories_str = (
+            ", ".join(f"{c} ({counts[c]})" if c in counts else c for c in categories)
+            if categories
+            else "n/a"
+        )
         self.backbone_status_label.setText(
             f"{text}\ntrained: {last_trained}\n"
-            f"categories seen: {', '.join(categories) if categories else 'n/a'}"
+            f"categories seen: {categories_str}"
         )
 
     def _pre_start_check(self) -> bool:

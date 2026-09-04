@@ -29,6 +29,7 @@ Differences from the original script, both deliberate:
 
 import json
 import shutil
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -187,7 +188,11 @@ def _init_model(num_classes, device, backbone_weights_path=None):
 
 
 def _save_weights(
-    model, categories: list[str], trained_on_paths, output_dir: Path | None = None
+    model,
+    categories: list[str],
+    trained_on_paths,
+    category_counts: dict[str, int] | None = None,
+    output_dir: Path | None = None,
 ) -> Path:
     """Write `weights.pth`/`meta.json` into `output_dir` if given, else
     into the live inference slot (`WEIGHTS_DIR`) -- backing up whatever's
@@ -201,6 +206,13 @@ def _save_weights(
     about repeat exposure the way `training/vicreg.py`'s equivalent field
     does for its warm-startable backbone; this is just an honest record of
     what went into this specific checkpoint.
+
+    `category_counts`: number of annotated crops per category across this
+    run's whole pool (train + val, unlike `trained_on_paths`) -- lets
+    someone peeking at meta.json later (see `_CheckpointFilePicker`'s
+    "View Metadata..." in yeastprep's Classifier Training page) see how
+    lopsided the training data was without cross-referencing
+    `trained_on_paths` by hand.
     """
     import torch
 
@@ -218,6 +230,8 @@ def _save_weights(
 
     meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
     meta["categories"] = categories
+    if category_counts is not None:
+        meta["category_counts"] = {c: category_counts.get(c, 0) for c in categories}
     meta["trained_on_paths"] = sorted(str(p) for p in trained_on_paths)
     meta["last_trained"] = datetime.now(timezone.utc).isoformat()
     meta.setdefault(
@@ -372,7 +386,10 @@ def train_classifier(
         cancel_check,
     )
 
-    weights_dir = _save_weights(model, categories, train_paths, output_dir=output_dir)
+    category_counts = Counter(label for _, label in records)
+    weights_dir = _save_weights(
+        model, categories, train_paths, category_counts=category_counts, output_dir=output_dir
+    )
 
     return TrainingResult(
         val_accuracy=val_acc,

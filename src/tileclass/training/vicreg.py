@@ -276,6 +276,7 @@ def _save_backbone(
     singleton_categories,
     params: VICRegParams,
     trained_on_paths,
+    category_counts: dict[str, int] | None = None,
     output_dir: Path | None = None,
 ) -> Path:
     """Write `backbone.pth`/`meta.json` into `output_dir` if given, else
@@ -289,7 +290,11 @@ def _save_backbone(
     in meta.json as `trained_on_paths` so a later run can tell (via
     `warm_start_overlap`) how much of a newly pooled dataset this backbone
     has already been exposed to before deciding whether/how hard to
-    warm-start from it again."""
+    warm-start from it again.
+
+    `category_counts`: number of annotated crops per category that fed
+    this run's pairing -- see `training/supervised.py`'s `_save_weights`
+    for the matching field on the classifier side."""
     import json
     import shutil
 
@@ -307,6 +312,11 @@ def _save_backbone(
 
     meta = {
         "categories": categories,
+        "category_counts": (
+            {c: category_counts.get(c, 0) for c in categories}
+            if category_counts is not None
+            else {}
+        ),
         "singleton_categories": singleton_categories,
         "pairing": "class-conditioned (different crops, same category)",
         "trained_on_paths": sorted(str(p) for p in trained_on_paths),
@@ -496,8 +506,15 @@ def pretrain_vicreg(
             )
 
     categories = dataset.classes
+    category_counts = {c: len(idxs) for c, idxs in dataset.by_class.items()}
     weights_dir = _save_backbone(
-        vicreg, categories, dataset.singleton_classes, params, paths, output_dir=output_dir
+        vicreg,
+        categories,
+        dataset.singleton_classes,
+        params,
+        paths,
+        category_counts=category_counts,
+        output_dir=output_dir,
     )
 
     return VICRegResult(
