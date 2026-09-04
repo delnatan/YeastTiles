@@ -12,6 +12,8 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
+from .tile_container import container_and_cell, get_container, is_container_ref
+
 TARGET_ORDER = "tzcyx"
 
 TIFF_SUFFIXES = (".tif", ".tiff")
@@ -62,13 +64,17 @@ def load_plane(path, dims=None):
     file -- callers (``ThumbnailDecodeWorker``) already treat decode
     failure as skip-and-continue.
     """
-    suffix = Path(path).suffix.lower()
-    if suffix in TIFF_SUFFIXES:
-        import tifffile
-
-        arr = tifffile.imread(path)
+    if is_container_ref(path):
+        container_path, cell_id = container_and_cell(path)
+        arr = get_container(container_path).read(cell_id)
     else:
-        arr = np.asarray(Image.open(path))
+        suffix = Path(path).suffix.lower()
+        if suffix in TIFF_SUFFIXES:
+            import tifffile
+
+            arr = tifffile.imread(path)
+        else:
+            arr = np.asarray(Image.open(path))
 
     data = _to_5d(arr, dims=dims)
     _T, Z, _C, _H, _W = data.shape

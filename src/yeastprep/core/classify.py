@@ -19,7 +19,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from tileclass.scan import scan_folder
+from tileclass.scan import scan_container
 
 from .fs_status import list_visible
 from .project import STAGE_TILES
@@ -28,11 +28,11 @@ CHECKPOINT_STAGE = "06_classifier"
 
 
 def discover_fov_dirs(project_root) -> list[Path]:
-    """FOV subfolders under `project_root/05_tiles/`, one per exported field
+    """FOV containers under `project_root/05_tiles/`, one per exported field
     of view (see `core/tiles.py`'s `export_tiles`) -- the checkable leaves
     a pool tree offers for a given pooled project."""
     tiles_dir = Path(project_root) / STAGE_TILES
-    return sorted(p for p in list_visible(tiles_dir) if p.is_dir())
+    return sorted(p for p in list_visible(tiles_dir, "*.tiles") if p.is_file())
 
 
 def checkpoint_dir_for_project(project_root) -> Path:
@@ -122,7 +122,7 @@ def classify_pool(pooled, classifier) -> ClassifyPoolResult:
     """
     paths = []
     for folder in pooled.folders:
-        paths.extend(scan_folder(folder))
+        paths.extend(scan_container(folder))
     # PooledAnnotations dispatches per-tile calls by exact string match
     # against its own normalized folder roots -- see its module docstring.
     paths = [os.path.normpath(os.path.abspath(p)) for p in paths]

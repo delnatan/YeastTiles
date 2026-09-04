@@ -19,7 +19,7 @@ from typing import NamedTuple
 import numpy as np
 import polars as pl
 import scipy.ndimage as ndi
-import tifffile
+from tileclass.tile_container import TileContainer, write_container
 
 from .combined_tiff import load_combined_channels
 from .fs_status import dir_has_files
@@ -140,15 +140,16 @@ def export_tiles(
     path, out_dir, params: TileParams = TileParams()
 ) -> TileExportResult:
     """Crop every cell in one combined-channel tiff's saved segmentation and
-    write each as its own (3, size, size) tiff under `out_dir/<fov_id>/` --
-    one subfolder per FOV, so each FOV's annotation sidecar (a `tileclass`
-    concept: one text file per folder) stays separate and combining several
-    FOVs' annotations later is just pooling their subfolders. Catches any
-    exception so a batch run over many files doesn't abort on the first bad
-    one (matches core/segmentation.py's `segment_and_save`). Requires a
-    saved `_seg.npy` sidecar to already exist next to `path` (from the
-    Segmentation stage's batch run, or corrected in the real Cellpose GUI);
-    tile export never runs segmentation itself."""
+    pack them into a single `out_dir/<fov_id>.tiles` container (see
+    `tileclass.tile_container`) -- one container per FOV, so each FOV's
+    annotation sidecar (a `tileclass` concept: one text file per container)
+    stays separate and combining several FOVs' annotations later is just
+    pooling their containers. Catches any exception so a batch run over
+    many files doesn't abort on the first bad one (matches
+    core/segmentation.py's `segment_and_save`). Requires a saved `_seg.npy`
+    sidecar to already exist next to `path` (from the Segmentation stage's
+    batch run, or corrected in the real Cellpose GUI); tile export never
+    runs segmentation itself."""
     path = Path(path)
     try:
         masks = load_saved_masks(seg_npy_path(path))
@@ -161,31 +162,30 @@ def export_tiles(
 
         brightfield, target = load_combined_channels(path)
         out_dir = Path(out_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
 
         fov_id = path.stem
-        fov_dir = out_dir / fov_id
-        fov_dir.mkdir(parents=True, exist_ok=True)
+        container_path = out_dir / f"{fov_id}.tiles"
 
         records = []
+        cells = []
         for geom in cell_geometry(masks, params.size):
             cell_id = f"{fov_id}_cell{geom.label:05d}"
             crop = crop_cell(masks, brightfield, target, geom, params)
-
-            crop_path = fov_dir / f"{cell_id}.tif"
-            tifffile.imwrite(
-                crop_path,
-                crop,
-                photometric="minisblack",
-                metadata={"axes": "CYX", "channels": list(CHANNEL_NAMES)},
-            )
+            cells.append((cell_id, geom.label, crop))
             records.append(
                 {
                     "cell_id": cell_id,
                     "fov_id": fov_id,
                     "label": geom.label,
-                    "crop_path": str(crop_path),
+                    # Virtual reference, not a real path on disk -- see
+                    # tile_container.py's module docstring. Every consumer
+                    # of this column already treats it as an opaque string.
+                    "crop_path": f"{container_path}/{cell_id}.tif",
                 }
             )
+
+        write_container(container_path, cells)
 
         df = pl.DataFrame(records) if records else _empty_index()
         return TileExportResult(path=path, success=True, n_cells=len(records), records=df)
@@ -227,35 +227,18 @@ class FovTileStatus:
 
 
 def fov_tile_status(out_dir, mask_dir=None) -> dict[str, FovTileStatus]:
-    """Per-source-FOV tile summary, read from `out_dir`'s tile_index.csv --
-    the one place that already tracks which cell_id/crop_path came from
-    which fov_id (see append_tile_index). A FOV counts as up to date if a
-    surviving tile file is no older than its `_seg.npy` sidecar in
+    """Per-source-FOV tile summary, read straight from each
+    `out_dir/<fov_id>.tiles` container's own index. A FOV counts as up to
+    date if its container is no older than its `_seg.npy` sidecar in
     `mask_dir` (tiles are cropped straight from that saved mask), so a mask
     re-run since the last export shows up as stale without re-reading any
     image data.
 
-    Deliberately touches disk at most once per FOV (one `stat()` on the
-    first crop we find still present), not once per crop: a FOV's cells
-    all export together in one `export_tiles()` batch, so any surviving
-    crop's mtime is as good a freshness signal as the oldest code's
-    max-over-every-crop, and a project can have orders of magnitude more
-    individual cell crops than FOVs -- stat-ing every single one just to
-    render this summary was the actual reason project-open scans could
-    still take a long time even after that scan was moved off the GUI
-    thread (see core/project_scan.py)."""
-    index_path = tile_index_path(out_dir)
-    if not index_path.exists():
-        return {}
-    try:
-        df = pl.read_csv(index_path)
-    except Exception:
-        return {}
-
-    by_fov: dict[str, list[Path]] = {}
-    for row in df.iter_rows(named=True):
-        by_fov.setdefault(row["fov_id"], []).append(Path(row["crop_path"]))
-
+    One container = one file, so this is one `stat()` (freshness) plus one
+    small index parse (cell count) per FOV, not per cell -- unlike the
+    former one-tif-per-cell layout, there's no "does this FOV's crop still
+    exist" ambiguity to resolve by scanning individual files."""
+    out_dir = Path(out_dir)
     mask_dir = Path(mask_dir) if mask_dir else None
     # Narrowed to `*_seg.npy` sidecars specifically (not "any file") --
     # mask_dir is a 2D-stage folder that can also hold incidental files
@@ -263,25 +246,22 @@ def fov_tile_status(out_dir, mask_dir=None) -> dict[str, FovTileStatus]:
     mask_available = mask_dir is None or dir_has_files(mask_dir, "*_seg.npy")
 
     statuses: dict[str, FovTileStatus] = {}
-    for fov_id, crop_paths in by_fov.items():
-        newest_tile_mtime = None
-        for crop_path in crop_paths:
-            try:
-                newest_tile_mtime = crop_path.stat().st_mtime
-                break
-            except OSError:
-                continue
-        if newest_tile_mtime is None:
-            continue  # none of this FOV's recorded crops still exist on disk
+    for container_path in sorted(out_dir.glob("*.tiles")):
+        fov_id = container_path.stem
+        try:
+            n_cells = len(TileContainer(container_path))
+            container_mtime = container_path.stat().st_mtime
+        except OSError:
+            continue
 
         up_to_date = True
         if mask_dir is not None and mask_available:
             seg_path = mask_dir / f"{fov_id}_seg.npy"
             try:
-                up_to_date = newest_tile_mtime >= seg_path.stat().st_mtime
+                up_to_date = container_mtime >= seg_path.stat().st_mtime
             except OSError:
                 up_to_date = False
         statuses[fov_id] = FovTileStatus(
-            n_cells=len(crop_paths), up_to_date=up_to_date, mask_available=mask_available
+            n_cells=n_cells, up_to_date=up_to_date, mask_available=mask_available
         )
     return statuses

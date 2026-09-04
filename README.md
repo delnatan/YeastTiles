@@ -22,11 +22,12 @@ The two packages have very different weight, and installs are split to match:
   uv sync --extra classification
   ```
 
-  A project can consist of nothing but a folder of tiles -- `tiled_viewer`
-  has no notion of FOVs, raw stacks, or a `yeastprep` project at all, so
-  there's nothing to remove: point it at tile folders directly (see
-  "Using tileclass" below) and it works the same whether or not any
-  upstream FOV data exists on the machine. This is the intended workflow
+  A project can consist of nothing but its packed `.tiles` containers --
+  `tiled_viewer` has no notion of FOVs, raw stacks, or a `yeastprep`
+  project at all, so there's nothing to remove: point it at container
+  files directly (see "Using tileclass" below) and it works the same
+  whether or not any upstream FOV data exists on the machine. This is the
+  intended workflow
   for fixing annotations and running the classifier day-to-day, keeping
   the (much heavier) VICReg/full-network training for a more capable
   machine.
@@ -110,7 +111,7 @@ the raw files:
   01_reduced/       <stem>.tiff   2-channel 2D: [brightfield, target]
   02_denoised/      <stem>.tiff   optional
   03_deconvolved/   <stem>.tiff   optional
-  05_tiles/         <fov>/<fov>_cell#####.tif + tile_index.csv
+  05_tiles/         <fov>.tiles (packed cell crops) + tile_index.csv
   .yeastprep_project.json   per-project params, run history, source-stage choices
 ```
 
@@ -131,9 +132,11 @@ Pipeline, in order (see [design.md](design.md) for the full rationale):
    rather than into a folder of their own, so the real Cellpose GUI can
    open that folder directly for manual correction.
 5. **Tile (05_tiles)**: crops every segmented cell into a fixed-size
-   3-channel tile (brightfield, target, mask), written into a subfolder per
-   FOV (`05_tiles/<fov>/`) so each FOV keeps its own annotation sidecar
-   file. **Tiles are the project's primary data** -- what gets pooled
+   3-channel tile (brightfield, target, mask), packed into one compressed
+   container per FOV (`05_tiles/<fov>.tiles`, see
+   `tileclass/tile_container.py`) so each FOV keeps its own annotation
+   sidecar file without needing thousands of loose per-cell files on disk.
+   **Tiles are the project's primary data** -- what gets pooled
    across experiments, annotated, and used for classification; everything
    upstream exists to produce them
    reproducibly, not as an end in itself.
@@ -175,7 +178,7 @@ processes; batch buttons enable only once there's something valid to run.
 ## Using tileclass (tile viewer / annotation)
 
 ```bash
-uv run tiled_viewer <tiles-folder> [<more-folders>...] [--fov NAME ...]
+uv run tiled_viewer <fov>.tiles [<more>.tiles ...] [--fov NAME ...]
 ```
 
 Also reachable from yeastprep's Tile Generation page ("Open in Tile
@@ -183,7 +186,10 @@ Viewer"). Browses cropped cell tiles in a grid, lets you annotate/label
 them, and fine-tune an EfficientNet classifier (frozen-backbone probe, then
 full unfreeze) on the labeled set -- starting from whatever's currently
 deployed, or an ImageNet-pretrained stem for a first run. Pass multiple
-folders to pool tiles from several experiments into one session. Note: the
+`.tiles` containers to pool tiles from several experiments into one
+session. An already-exported project with loose per-cell tifs from before
+the packed-container format can be converted with
+`uv run yeastprep-pack-tiles <project_root>`. Note: the
 self-supervised VICReg embedding-pretraining step described in design.md
 isn't wired into this app yet -- classifier training/fine-tuning doesn't
 depend on it.

@@ -16,6 +16,7 @@ dependencies = [
     "PyQt6",
     "qtpy",
     "tifffile",
+    "scikit-learn"
 ]
 
 [project.optional-dependencies]
@@ -68,6 +69,7 @@ full = [
 tiled_viewer = "tileclass.__main__:main"
 yeastprep = "yeastprep.__main__:main"
 yeastprep-batch = "yeastprep.core.cli:main"
+yeastprep-pack-tiles = "yeastprep.core.pack_tiles_cli:main"
 
 [build-system]
 requires = ["setuptools>=61.0"]

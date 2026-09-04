@@ -4,10 +4,12 @@ needed (masks are written directly as a `_seg.npy` sidecar, the same file
 `segment_and_save` produces), matching test_segmentation.py's convention.
 """
 
+import os
+
 import numpy as np
 import polars as pl
-import tifffile
 from pyvistra.io import save_tiff
+from tileclass.tile_container import TileContainer, write_container
 
 from yeastprep.core.combined_tiff import combine_channels
 from yeastprep.core.segmentation import seg_npy_path
@@ -17,6 +19,7 @@ from yeastprep.core.tiles import (
     axis_slices,
     cell_geometry,
     export_tiles,
+    fov_tile_status,
     tile_index_path,
     to_uint8,
 )
@@ -85,7 +88,7 @@ def test_to_uint8_flat_image_returns_zeros():
     assert np.all(out == 0)
 
 
-def test_export_tiles_writes_one_crop_per_cell(tmp_path):
+def test_export_tiles_writes_one_container_with_one_entry_per_cell(tmp_path):
     image_path = tmp_path / "fov1.tiff"
     _write_synthetic_combined_tiff(image_path)
     mask = _two_cell_mask()
@@ -98,10 +101,13 @@ def test_export_tiles_writes_one_crop_per_cell(tmp_path):
     assert result.n_cells == 2
     assert set(result.records["label"].to_list()) == {1, 2}
 
+    container_path = out_dir / f"{image_path.stem}.tiles"
+    assert container_path.exists()
+    container = TileContainer(container_path)
+    assert len(container) == 2
+
     for row in result.records.iter_rows(named=True):
-        crop_path = out_dir / row["fov_id"] / f"{row['cell_id']}.tif"
-        assert crop_path.exists()
-        crop = tifffile.imread(crop_path)
+        crop = container.read(row["cell_id"])
         assert crop.shape == (3, 32, 32)
         assert crop.dtype == np.uint8
         # Mask channel is binary (0 or 255) and non-empty for this cell.
@@ -155,3 +161,68 @@ def test_append_tile_index_dedupes_by_cell_id_keeping_latest(tmp_path):
 
     index = pl.read_csv(tile_index_path(out_dir))
     assert sorted(index["cell_id"].to_list()) == ["fov1_cell00001", "fov1_cell00002"]
+
+
+def _write_fov_container(out_dir, fov_id, n_cells=2):
+    cells = [
+        (f"{fov_id}_cell{label:05d}", label, np.zeros((3, 4, 4), dtype=np.uint8))
+        for label in range(1, n_cells + 1)
+    ]
+    write_container(out_dir / f"{fov_id}.tiles", cells)
+
+
+def test_fov_tile_status_reads_container_directly(tmp_path):
+    out_dir = tmp_path / "tiles"
+    out_dir.mkdir()
+    _write_fov_container(out_dir, "fov1", n_cells=3)
+    _write_fov_container(out_dir, "fov2", n_cells=1)
+
+    statuses = fov_tile_status(out_dir)
+
+    assert statuses["fov1"].n_cells == 3
+    assert statuses["fov2"].n_cells == 1
+    assert statuses["fov1"].up_to_date
+    assert statuses["fov1"].mask_available
+
+
+def test_fov_tile_status_survives_a_moved_project(tmp_path):
+    """A container's freshness/count comes from its own file, not a
+    recorded absolute path -- so this still works after `out_dir` itself
+    is renamed/moved, unlike the old crop_path-in-tile_index.csv scheme
+    this replaced."""
+    original = tmp_path / "original_location"
+    original.mkdir()
+    _write_fov_container(original, "fov1", n_cells=5)
+
+    moved = tmp_path / "moved_location"
+    original.rename(moved)
+
+    statuses = fov_tile_status(moved)
+    assert statuses["fov1"].n_cells == 5
+
+
+def test_fov_tile_status_stale_when_mask_newer_than_container(tmp_path):
+    out_dir = tmp_path / "tiles"
+    out_dir.mkdir()
+    _write_fov_container(out_dir, "fov1")
+
+    mask_dir = tmp_path / "masks"
+    mask_dir.mkdir()
+    seg_path = mask_dir / "fov1_seg.npy"
+    seg_path.write_bytes(b"")
+    # Make the mask newer than the container we just wrote.
+    future = os.stat(out_dir / "fov1.tiles").st_mtime + 10
+    os.utime(seg_path, (future, future))
+
+    statuses = fov_tile_status(out_dir, mask_dir)
+    assert statuses["fov1"].up_to_date is False
+
+
+def test_fov_tile_status_missing_mask_dir_marks_unavailable(tmp_path):
+    out_dir = tmp_path / "tiles"
+    out_dir.mkdir()
+    _write_fov_container(out_dir, "fov1")
+
+    statuses = fov_tile_status(out_dir, mask_dir=tmp_path / "does_not_exist")
+    assert statuses["fov1"].mask_available is False
+    assert statuses["fov1"].up_to_date  # can't verify freshness -> assume up to date

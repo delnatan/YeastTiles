@@ -267,38 +267,32 @@ class MainWindow(QMainWindow):
             self.annotation_stats_panel.refresh(self.annotations, len(self.image_paths))
 
     def add_project_folders(self):
-        """Pool in more already-annotated project folders at runtime, so
+        """Pool in more already-annotated tile containers at runtime, so
         VICReg pretraining / classifier training / stats can see them
         without relaunching with different command-line arguments.
 
-        Deliberately annotations-pool-only: newly-added folders' tiles are
-        NOT added to this window's browsable thumbnail grid. `image_paths`
-        is built once in `__main__.py` before this window exists, and
-        `PooledAnnotations.dims` is a single value shared by the whole grid
-        -- extending the grid at runtime would need per-tile axis-order
-        handling this app doesn't have. Open a folder directly
-        (`tiled_viewer <folder>`) to browse/annotate it.
+        Deliberately annotations-pool-only: newly-added containers' tiles
+        are NOT added to this window's browsable thumbnail grid.
+        `image_paths` is built once in `__main__.py` before this window
+        exists, and `PooledAnnotations.dims` is a single value shared by
+        the whole grid -- extending the grid at runtime would need
+        per-tile axis-order handling this app doesn't have. Open a
+        container directly (`tiled_viewer <fov_id>.tiles`) to browse/
+        annotate it.
         """
-        dirs = []
-        start_dir = self.annotations.folders[-1] if self.annotations.folders else ""
-        while True:
-            d = QFileDialog.getExistingDirectory(self, "Add Project Folder", start_dir)
-            if not d:
-                break
-            dirs.append(d)
-            start_dir = d
-            if (
-                QMessageBox.question(self, "Add Project Folder(s)", "Add another folder?")
-                != QMessageBox.Yes
-            ):
-                break
-        if not dirs:
+        paths, _filter = QFileDialog.getOpenFileNames(
+            self,
+            "Add Tile Container(s)",
+            self.annotations.folders[-1] if self.annotations.folders else "",
+            "Tile containers (*.tiles)",
+        )
+        if not paths:
             return
 
-        added = self.annotations.add_folders(dirs)
+        added = self.annotations.add_folders(paths)
         if not added:
             QMessageBox.information(
-                self, "Add Project Folder(s)", "Already pooled -- nothing to add."
+                self, "Add Tile Container(s)", "Already pooled -- nothing to add."
             )
             return
 
@@ -311,10 +305,10 @@ class MainWindow(QMainWindow):
 
         QMessageBox.information(
             self,
-            "Add Project Folder(s)",
-            f"Added {len(added)} folder(s) to the annotation pool for stats, "
+            "Add Tile Container(s)",
+            f"Added {len(added)} container(s) to the annotation pool for stats, "
             "category management, and training. Their tiles are NOT shown in "
-            "this window's grid -- open them directly (tiled_viewer <folder>) "
+            "this window's grid -- open them directly (tiled_viewer <fov_id>.tiles) "
             "to browse/annotate them.",
         )
 
@@ -654,7 +648,7 @@ class MainWindow(QMainWindow):
         stats_action = annotate_menu.addAction("Annotation Stats...")
         stats_action.triggered.connect(self.show_annotation_stats)
 
-        add_folders_action = annotate_menu.addAction("Add Project Folder(s)...")
+        add_folders_action = annotate_menu.addAction("Add Tile Container(s)...")
         add_folders_action.triggered.connect(self.add_project_folders)
 
     def show_display_limits_dialog(self):

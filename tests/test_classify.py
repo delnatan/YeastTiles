@@ -1,7 +1,9 @@
 """Tests for yeastprep.core.classify's pure filesystem-convention helpers
 and its pooled-inference driver."""
 
+import numpy as np
 from tileclass.data.pooled_annotations import PooledAnnotations
+from tileclass.tile_container import write_container
 
 from yeastprep.core.classify import (
     ClassifyPoolResult,
@@ -14,14 +16,18 @@ from yeastprep.core.classify import (
 )
 
 
-def test_discover_fov_dirs_lists_only_visible_subdirs(tmp_path):
+def test_discover_fov_dirs_lists_only_visible_containers(tmp_path):
     tiles_dir = tmp_path / "05_tiles"
-    (tiles_dir / "fov_001").mkdir(parents=True)
-    (tiles_dir / "fov_002").mkdir(parents=True)
-    (tiles_dir / ".hidden_fov").mkdir(parents=True)
+    tiles_dir.mkdir(parents=True)
+    (tiles_dir / "fov_001.tiles").write_bytes(b"")
+    (tiles_dir / "fov_002.tiles").write_bytes(b"")
+    (tiles_dir / ".hidden_fov.tiles").write_bytes(b"")
     (tiles_dir / "tile_index.csv").write_text("")
 
-    assert discover_fov_dirs(tmp_path) == [tiles_dir / "fov_001", tiles_dir / "fov_002"]
+    assert discover_fov_dirs(tmp_path) == [
+        tiles_dir / "fov_001.tiles",
+        tiles_dir / "fov_002.tiles",
+    ]
 
 
 def test_discover_fov_dirs_missing_tiles_stage_returns_empty(tmp_path):
@@ -82,11 +88,14 @@ class _FakeClassifier:
 
 
 def _make_fov(tmp_path, n_tiles=4):
-    fov = tmp_path / "proj1" / "05_tiles" / "fov_001"
-    fov.mkdir(parents=True)
-    for i in range(n_tiles):
-        (fov / f"fov_001_cell{i:05d}.tif").write_bytes(b"fake")
-    return fov
+    tiles_dir = tmp_path / "proj1" / "05_tiles"
+    tiles_dir.mkdir(parents=True)
+    container = tiles_dir / "fov_001.tiles"
+    cells = [
+        (f"fov_001_cell{i:05d}", i, np.zeros((3, 4, 4), dtype=np.uint8)) for i in range(n_tiles)
+    ]
+    write_container(container, cells)
+    return container
 
 
 def test_classify_pool_tags_only_untagged_tiles(tmp_path):
@@ -105,10 +114,10 @@ def test_classify_pool_tags_only_untagged_tiles(tmp_path):
     assert result.n_total == 4
     assert result.n_newly_tagged == 2  # cell00002, cell00003 only
     tagged = dict((path, (category, confidence)) for path, category, confidence in pooled.tagged_items())
-    assert tagged[str(fov / "fov_001_cell00000.tif")] == ("single", None)  # untouched
-    assert tagged[str(fov / "fov_001_cell00001.tif")] == ("junk", 0.5)  # untouched
-    assert tagged[str(fov / "fov_001_cell00002.tif")] == ("single", 0.9)  # newly tagged
-    assert tagged[str(fov / "fov_001_cell00003.tif")] == ("single", 0.9)  # newly tagged
+    assert tagged[f"{fov}/fov_001_cell00000.tif"] == ("single", None)  # untouched
+    assert tagged[f"{fov}/fov_001_cell00001.tif"] == ("junk", 0.5)  # untouched
+    assert tagged[f"{fov}/fov_001_cell00002.tif"] == ("single", 0.9)  # newly tagged
+    assert tagged[f"{fov}/fov_001_cell00003.tif"] == ("single", 0.9)  # newly tagged
 
 
 def test_classify_pool_computes_agreement_with_human_confirmed(tmp_path):
@@ -131,8 +140,7 @@ def test_classify_pool_computes_agreement_with_human_confirmed(tmp_path):
 
 
 def test_classify_pool_empty_pool(tmp_path):
-    fov = tmp_path / "proj1" / "05_tiles" / "fov_001"
-    fov.mkdir(parents=True)
+    fov = _make_fov(tmp_path, n_tiles=0)
     pooled = PooledAnnotations([str(fov)])
 
     result = classify_pool(pooled, _FakeClassifier())

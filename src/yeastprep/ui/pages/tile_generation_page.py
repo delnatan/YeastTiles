@@ -281,12 +281,12 @@ class TileGenerationPage(QWidget):
         (`_tile_viewer_label`), so what opens always matches what was shown
         before the click.
 
-        Each FOV's crops live in their own `05_tiles/<fov_id>/` subfolder
-        (see core/tiles.py's `export_tiles`), so every target FOV is passed
-        to tileclass as its own positional folder rather than as a `--fov`
-        filter on the shared root -- tileclass's `PooledAnnotations` then
-        gives each FOV its own annotation sidecar file instead of one
-        shared file covering every FOV."""
+        Each FOV's crops live in their own `05_tiles/<fov_id>.tiles`
+        container (see core/tiles.py's `export_tiles`), so every target FOV
+        is passed to tileclass as its own positional container file rather
+        than as a `--fov` filter on the shared root -- tileclass's
+        `PooledAnnotations` then gives each FOV its own annotation sidecar
+        file instead of one shared file covering every FOV."""
         paths_root = self.tree_panel.project_paths()
         if paths_root is None or not paths_root.tiles.is_dir():
             QMessageBox.warning(self, "yeastprep", "No tiles exported yet.")
@@ -301,16 +301,16 @@ class TileGenerationPage(QWidget):
                     fov_filter = [Path(p).stem for p in checked_paths]
 
         if fov_filter:
-            fov_dirs = [paths_root.tiles / fov_id for fov_id in fov_filter]
+            fov_files = [paths_root.tiles / f"{fov_id}.tiles" for fov_id in fov_filter]
         else:
-            fov_dirs = sorted(p for p in paths_root.tiles.iterdir() if p.is_dir())
-        fov_dirs = [d for d in fov_dirs if d.is_dir()]
+            fov_files = sorted(paths_root.tiles.glob("*.tiles"))
+        fov_files = [f for f in fov_files if f.is_file()]
 
-        if not fov_dirs:
+        if not fov_files:
             QMessageBox.warning(self, "yeastprep", "No tiles exported yet.")
             return
 
-        cmd = [sys.executable, "-m", "tileclass", *[str(d) for d in fov_dirs]]
+        cmd = [sys.executable, "-m", "tileclass", *[str(f) for f in fov_files]]
         subprocess.Popen(cmd, start_new_session=True)
 
     # ------------------------------------------------------------------

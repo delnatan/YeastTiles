@@ -89,6 +89,17 @@ class TileAnnotations(MutableMapping):
     def _annotation_file_path(root_dir):
         parent = os.path.dirname(root_dir)
         name = os.path.basename(root_dir)
+        if name.endswith(".tiles"):
+            # root_dir is a packed tile_container.py container file, not a
+            # real folder -- strip the extension so a project's sidecar
+            # keeps the exact same name (`<fov_id>.txt`) whether its cells
+            # live in a `<fov_id>/` folder or a `<fov_id>.tiles` container.
+            # Without this, packing an already-annotated project's tiles
+            # would silently orphan its existing tags: the viewer would
+            # look for `<fov_id>.tiles.txt`, find nothing, and a save from
+            # that point on would create a second, divergent sidecar file
+            # instead of updating the one that actually holds the data.
+            name = name[: -len(".tiles")]
         if not name:
             # root_dir was the filesystem root; nothing to nest alongside.
             return os.path.join(root_dir, "pyvistra_annotations.txt")
