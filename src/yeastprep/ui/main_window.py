@@ -42,6 +42,7 @@ from qtpy.QtWidgets import (
 from . import selection_actions, settings
 from .common.stage_breadcrumb import PipelineBreadcrumb
 from .pages.classifier_training_page import ClassifierTrainingPage
+from .pages.classify_tiles_page import ClassifyTilesPage
 from .pages.data_reduction_page import DataReductionPage
 from .pages.deconvolve_page import DeconvolvePage
 from .pages.denoise_page import DenoisePage
@@ -68,6 +69,7 @@ class YeastPrepWindow(QMainWindow):
         self.segmentation_page = SegmentationPage(self.tree_panel)
         self.tile_generation_page = TileGenerationPage(self.tree_panel)
         self.classifier_training_page = ClassifierTrainingPage(self.tree_panel)
+        self.classify_tiles_page = ClassifyTilesPage(self.tree_panel)
         self._pages = [
             ("Data Reduction", self.data_reduction_page),
             ("Preview", self.preview_page),
@@ -76,6 +78,7 @@ class YeastPrepWindow(QMainWindow):
             ("Segmentation", self.segmentation_page),
             ("Tile Generation", self.tile_generation_page),
             ("Classifier Training", self.classifier_training_page),
+            ("Classify Tiles", self.classify_tiles_page),
         ]
         # page_key (see selection_actions.py) -> page instance, used by
         # _on_action_triggered to route a SelectionActionsPanel button
@@ -88,6 +91,7 @@ class YeastPrepWindow(QMainWindow):
             "segmentation": self.segmentation_page,
             "tile_generation": self.tile_generation_page,
             "classifier_training": self.classifier_training_page,
+            "classify_tiles": self.classify_tiles_page,
         }
 
         self._build_ui()
@@ -173,6 +177,9 @@ class YeastPrepWindow(QMainWindow):
         self.page_list.currentRowChanged.connect(self.stack.setCurrentIndex)
         self.tree_panel.file_selected.connect(self._on_tree_selection)
         self.selection_panel.action_triggered.connect(self._on_action_triggered)
+        self.classifier_training_page.checkpointTrained.connect(
+            self.classify_tiles_page.set_default_checkpoint
+        )
 
         for _name, page in self._pages:
             page.progress_changed.connect(

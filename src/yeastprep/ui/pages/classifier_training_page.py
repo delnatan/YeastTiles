@@ -6,16 +6,20 @@ applied to classifier training the way `train_denoise_page.TrainDenoisePage`
 applies it to denoise training (this page's pooling UX is a direct port of
 that one, see `_classifier_pool_widget.ClassifierPoolWidget`).
 
-Training and inference are deliberately split across two apps now: this page
-always writes a training run's resulting checkpoint to a project-local
-session folder (`core.classify.supervised_output_dir`/`vicreg_output_dir`),
-never to tileclass's live inference slot directly -- promoting a checkpoint
-there is a separate, explicit "Deploy to Tile Classifier" action per tab, so
-a pooled multi-project training run can never silently overwrite what
-tileclass's auto-annotate is currently using without the user reviewing this
-page's diagnostics first (see `_save_weights`'s `output_dir` docstring in
+Training and inference are deliberately split across two *pages* now (not
+just two apps): this page always writes a training run's resulting
+checkpoint to a project-local session folder
+(`core.classify.supervised_output_dir`/`vicreg_output_dir`), never to
+tileclass's live inference slot directly -- promoting a checkpoint there is
+a separate, explicit "Deploy to Tile Classifier" action per tab, so a pooled
+multi-project training run can never silently overwrite what tileclass's
+auto-annotate is currently using without the user reviewing this page's
+diagnostics first (see `_save_weights`'s `output_dir` docstring in
 `tileclass.training.supervised`/`vicreg` for the underlying contract this
-relies on).
+relies on). *Using* a trained/deployed checkpoint to classify tiles, or to
+explore its embeddings, lives on the separate Classify Tiles page
+(`classify_tiles_page.ClassifyTilesPage`) instead -- this page only ever
+trains and (optionally) deploys.
 
 One pool is shared by both tabs (QTabWidget below), each tab wraps its own
 worker/params/diagnostics -- see `_SupervisedTrainingTab`/`_VicregTrainingTab`.
@@ -44,169 +48,19 @@ from qtpy.QtWidgets import (
 from tileclass.checkpoint_import import import_checkpoint
 from tileclass.classifiers.yeast_efficientnet import META_PATH as LIVE_CLASSIFIER_META_PATH
 from tileclass.classifiers.yeast_efficientnet import WEIGHTS_PATH as LIVE_CLASSIFIER_WEIGHTS_PATH
-from tileclass.classifiers.yeast_efficientnet import YeastEfficientNetClassifier
-from tileclass.main_window import MainWindow
-from tileclass.training.linear_probe import extract_embeddings, knn_accuracy, tsne_2d
 from tileclass.training.vicreg import VICREG_META_PATH as LIVE_VICREG_META_PATH
 from tileclass.training.vicreg import VICREG_WEIGHTS_PATH as LIVE_VICREG_WEIGHTS_PATH
-from tileclass.training.vicreg import load_backbone, warm_start_overlap
+from tileclass.training.vicreg import warm_start_overlap
 
 from yeastprep.core.classify import default_supervised_checkpoint_paths, default_vicreg_checkpoint_paths
 
 from ..classify_params_panel import SupervisedTrainParamsPanel, VicregTrainParamsPanel
-from ..common.json_tree_dialog import JsonTreeDialog
+from ..common.checkpoint_file_picker import CheckpointFilePicker as _CheckpointFilePicker
 from ..diagnostics.classifier_training_monitor_panel import ClassifierTrainingMonitorPanel
 from ..project_tree_panel import ProjectTreePanel
-from ..worker import ClassifierInferenceWorker, ClassifierTrainingWorker, ClassifierVicregWorker
+from ..worker import ClassifierTrainingWorker, ClassifierVicregWorker
 from ._classifier_pool_widget import ClassifierPoolWidget
 from .page_progress import PageProgress
-
-
-def _looks_like_vicreg_backbone(meta_path: Path) -> bool:
-    """Whether `meta_path` was written by `tileclass.training.vicreg`'s
-    `_save_backbone` rather than `tileclass.training.supervised`'s
-    `_save_weights` -- both save a `meta.json` with a `categories` key, so
-    that alone can't tell them apart, but only the VICReg one ever writes
-    a `pairing` key (see `training/vicreg.py`'s `_save_backbone`). Used to
-    reject a VICReg backbone picked (by mistake, via Browse) as an
-    inference checkpoint before it fails deep inside a background thread
-    with a raw PyTorch state_dict-mismatch error -- a headless backbone
-    has no classification head to load into `YeastEfficientNetClassifier`."""
-    try:
-        meta = json.loads(meta_path.read_text())
-    except (OSError, ValueError):
-        return False
-    return "pairing" in meta
-
-
-class _CheckpointFilePicker(QWidget):
-    """A checkpoint-weights-file field + Browse + Deployed + View Metadata
-    row, with "still showing its default until the user edits/Browses/picks
-    Deployed" tracking -- the shape shared by `_SupervisedTrainingTab`'s
-    "Run Inference on Pool" weights field, `_VicregTrainingTab`'s "Evaluate
-    Embeddings" weights field, the "Starting point" backbone field, and
-    both tabs' Deploy field -- previously hand-duplicated per tab (its own
-    `_..._is_default` flag, Browse dialog, Deployed-button wiring, and
-    existence/sibling-meta.json/checkpoint-kind validation). `resolve()`
-    centralizes that validation so callers just get back a ready-to-use
-    (weights_path, meta_path) pair or `None` (a QMessageBox has already
-    explained why, in that case).
-
-    "View Metadata..." opens the sibling meta.json (whatever's currently
-    typed/Browsed/Deployed into the field, not necessarily a validated
-    pair) in a `JsonTreeDialog` -- so a user can inspect what a checkpoint
-    was trained on and with what parameters before committing to using it
-    for inference, further training, or deploying it live."""
-
-    pathChanged = Signal(str)
-
-    def __init__(
-        self,
-        placeholder: str,
-        tooltip: str,
-        deployed_path: Path,
-        deployed_tooltip: str,
-        parent=None,
-    ):
-        super().__init__(parent)
-        self._deployed_path = deployed_path
-        self._is_default = True
-
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        self.edit = QLineEdit()
-        self.edit.setPlaceholderText(placeholder)
-        self.edit.setToolTip(tooltip)
-        self.edit.textEdited.connect(self._on_edited)
-        layout.addWidget(self.edit, 1)
-        browse_btn = QPushButton("Browse...")
-        browse_btn.clicked.connect(self._browse)
-        layout.addWidget(browse_btn)
-        deployed_btn = QPushButton("Deployed")
-        deployed_btn.setToolTip(deployed_tooltip)
-        deployed_btn.clicked.connect(self._use_deployed)
-        layout.addWidget(deployed_btn)
-        metadata_btn = QPushButton("View Metadata...")
-        metadata_btn.setToolTip(
-            "Open this checkpoint's sibling meta.json in a browsable tree -- "
-            "what it was trained on, with what parameters, and when."
-        )
-        metadata_btn.clicked.connect(self._view_metadata)
-        layout.addWidget(metadata_btn)
-
-    def _on_edited(self, text):
-        self._is_default = False
-        self.pathChanged.emit(text)
-
-    def _browse(self):
-        path, _filter = QFileDialog.getOpenFileName(
-            self, "Checkpoint", self.edit.text(), "PyTorch weights (*.pth)"
-        )
-        if path:
-            self.edit.setText(path)
-            self._is_default = False
-            self.pathChanged.emit(path)
-
-    def _use_deployed(self):
-        path = str(self._deployed_path)
-        self.edit.setText(path)
-        self._is_default = False
-        self.pathChanged.emit(path)
-
-    def _view_metadata(self):
-        text = self.edit.text().strip()
-        if not text:
-            QMessageBox.information(self, "yeastprep", "Choose a checkpoint first.")
-            return
-        meta_path = Path(text).with_name("meta.json")
-        if not meta_path.is_file():
-            QMessageBox.warning(
-                self, "yeastprep", f"No meta.json found next to {text}."
-            )
-            return
-        try:
-            data = json.loads(meta_path.read_text())
-        except (OSError, ValueError) as exc:
-            QMessageBox.warning(self, "yeastprep", f"Could not read {meta_path}: {exc}")
-            return
-        dialog = JsonTreeDialog(f"Metadata -- {meta_path}", data, parent=self)
-        dialog.exec_()
-
-    def set_default_path(self, path: Path):
-        """Called once a training run in this session produces a fresh
-        checkpoint -- only takes effect while the user hasn't Browsed/typed/
-        picked Deployed themselves, same "obvious default until you
-        deliberately override it" convention as the checkpoint-output field."""
-        if self._is_default:
-            self.edit.setText(str(path))
-            self.pathChanged.emit(str(path))
-
-    def resolve(self, *, expect_vicreg: bool, wrong_kind_message: str) -> tuple[Path, Path] | None:
-        """Validates the current text as a (weights.pth, sibling meta.json)
-        pair of the expected kind -- `expect_vicreg=False` for a
-        classifier checkpoint, `True` for a headless VICReg backbone (see
-        `_looks_like_vicreg_backbone`). Shows a `QMessageBox.warning` and
-        returns `None` for anything wrong; `wrong_kind_message` (a
-        `str.format`-style template taking `meta_path`) supplies the
-        tab-specific "pick a checkpoint from the other tab instead" hint."""
-        text = self.edit.text().strip()
-        if not text:
-            QMessageBox.warning(self, "yeastprep", "Choose a checkpoint first.")
-            return None
-        weights_path = Path(text)
-        meta_path = weights_path.with_name("meta.json")
-        if not weights_path.is_file() or not meta_path.is_file():
-            QMessageBox.warning(
-                self,
-                "yeastprep",
-                f"Expected both {weights_path.name} and a sibling meta.json at "
-                f"{weights_path.parent} -- one or both are missing.",
-            )
-            return None
-        if _looks_like_vicreg_backbone(meta_path) != expect_vicreg:
-            QMessageBox.warning(self, "yeastprep", wrong_kind_message.format(meta_path=meta_path))
-            return None
-        return weights_path, meta_path
 
 
 class _BaseTrainingTab(QWidget):
@@ -225,9 +79,17 @@ class _BaseTrainingTab(QWidget):
     `meta.json` of the right kind can be deployed."""
 
     progress_changed = Signal(object)  # PageProgress
+    # Emitted (weights_path, is_vicreg) right after a run finishes -- lets
+    # the Classify Tiles page default its own pickers to this session's
+    # fresh checkpoint, the way `deploy_picker` already does here, without
+    # duplicating any inference/embedding code in this page (see
+    # `main_window.py`'s wiring of `ClassifierTrainingPage.checkpointTrained`
+    # to `ClassifyTilesPage.set_default_checkpoint`).
+    checkpointTrained = Signal(Path, bool)
 
     _live_weights_filename = "weights.pth"  # overridden per subclass
     _live_meta_filename = "meta.json"
+    _is_vicreg = False  # overridden by _VicregTrainingTab
 
     def __init__(self, pool_widget: ClassifierPoolWidget, parent=None):
         super().__init__(parent)
@@ -236,15 +98,13 @@ class _BaseTrainingTab(QWidget):
         self._worker = None
         self._checkpoint_path_is_default = True
         self._last_checkpoint_dir: Path | None = None
-        self._embedding_viewer_windows: list[MainWindow] = []
 
         self._build_ui()
         self._wire_up()
         self._refresh_default_checkpoint_path()
 
     # ------------------------------------------------------------------
-    # UI construction -- subclasses provide the params panel and any
-    # extra controls (e.g. VICReg's "Evaluate embeddings" button) via hooks.
+    # UI construction -- subclasses provide the params panel via hooks.
 
     def _make_params_panel(self) -> QWidget:
         raise NotImplementedError
@@ -255,23 +115,11 @@ class _BaseTrainingTab(QWidget):
     def _live_slot_paths(self) -> tuple[Path, Path]:
         raise NotImplementedError
 
-    def _build_extra_actions(self, right_layout: QVBoxLayout):
-        """Hook for a subclass-specific action row below Deploy -- only
-        `_SupervisedTrainingTab` uses this (Run Inference on Pool); VICReg
-        produces a headless backbone with no classification head, so
-        inference doesn't apply there. No-op by default."""
-
     def _build_extra_left_widgets(self, left_layout: QVBoxLayout):
         """Hook for a subclass-specific widget below the checkpoint-output
         group, on the left (inputs) side -- used for a "warm-starting
         from..." indicator (see `_describe_warm_start`/`_refresh_warm_start_label`
         below). No-op by default."""
-
-    def _on_checkpoint_ready(self):
-        """Hook called once a training run finishes and `_last_checkpoint_dir`
-        is set, right after `deploy_picker` has had its default path set to
-        that fresh checkpoint -- overridden by `_SupervisedTrainingTab` to
-        also default its inference-weights picker."""
 
     def _pre_start_check(self) -> bool:
         """Hook called right before a training run actually starts (after
@@ -386,8 +234,6 @@ class _BaseTrainingTab(QWidget):
         deploy_layout.addWidget(self.deploy_btn)
         right_layout.addWidget(deploy_group)
 
-        self._build_extra_actions(right_layout)
-
         row.addWidget(right, 1)
 
         self.status_label = QLabel("")
@@ -422,33 +268,12 @@ class _BaseTrainingTab(QWidget):
         self.start_btn.clicked.connect(self._start_training)
         self.cancel_btn.clicked.connect(self._cancel_training)
         self.deploy_btn.clicked.connect(self._deploy_to_tile_classifier)
-        self.monitor_panel.pointsSelected.connect(self._open_viewer_for_selection)
         self.monitor_panel.datasetTabActivated.connect(self.refresh_dataset_summary)
 
     def refresh_dataset_summary(self):
         pooled = self.pool_widget.pooled_annotations()
         if pooled is not None:
             self.monitor_panel.set_dataset_summary(pooled)
-
-    def _open_viewer_for_selection(self, paths: list[str]) -> None:
-        """Opens tiles lasso-selected on the embedding scatter
-        (`ClassifierTrainingMonitorPanel.pointsSelected`) in an in-process
-        tileclass viewer window, scoped to the currently checked FOV
-        folders -- the same folders the embeddings themselves were pulled
-        from -- so an unexpected cluster or an outlier sitting with the
-        wrong label can be checked against its actual image and annotation.
-        Each selection opens its own window (rather than reusing one), kept
-        alive here since a parentless QMainWindow with no other reference
-        would otherwise be garbage-collected out from under Qt."""
-        folders = self.pool_widget.checked_fov_dirs()
-        if not folders or not paths:
-            return
-        window = MainWindow(folders, paths, tiles_per_page=len(paths))
-        window.show()
-        self._embedding_viewer_windows.append(window)
-        window.destroyed.connect(
-            lambda: self._embedding_viewer_windows.remove(window)
-        )
 
     # ------------------------------------------------------------------
     # Checkpoint output path -- defaults into the first pooled project's
@@ -569,7 +394,7 @@ class _BaseTrainingTab(QWidget):
         self.deploy_picker.set_default_path(
             self._last_checkpoint_dir / self._live_weights_filename
         )
-        self._on_checkpoint_ready()
+        self.checkpointTrained.emit(Path(result.weights_path), self._is_vicreg)
         self._on_result(result)
         self._finish("Training completed.")
 
@@ -787,139 +612,11 @@ class _SupervisedTrainingTab(_BaseTrainingTab):
             f"categories={result.categories}"
         )
 
-    # ------------------------------------------------------------------
-    # Run Inference on Pool: batch-classify every tile crop across the
-    # currently checked FOV folders with a chosen checkpoint, tagging
-    # results as unreviewed AI predictions. Never overwrites an existing
-    # tag (human-confirmed or a prior AI prediction) -- see
-    # `core.classify.classify_pool`. The weights field defaults to this
-    # session's just-trained checkpoint once one exists (so "train, then
-    # immediately see how it does on the pool" needs no extra picking),
-    # but is independently editable/Browse-able -- e.g. to evaluate an
-    # older session's checkpoint, or the currently deployed classifier,
-    # without having trained anything in this session at all.
-
-    def _build_extra_actions(self, right_layout):
-        self._inference_thread = None
-        self._inference_worker = None
-
-        group = QGroupBox("Run Inference")
-        v = QVBoxLayout(group)
-
-        self.infer_picker = _CheckpointFilePicker(
-            placeholder="weights.pth",
-            tooltip=(
-                "Checkpoint to run inference with -- defaults to this session's "
-                "just-trained weights once training finishes. Browse to pick a "
-                "different one (an older session's checkpoint, a backup, ...), "
-                "or use 'Deployed' for tileclass's current live classifier. "
-                "Expects a sibling meta.json next to whatever weights.pth is chosen."
-            ),
-            deployed_path=LIVE_CLASSIFIER_WEIGHTS_PATH,
-            deployed_tooltip="Use tileclass's currently deployed classifier weights.",
-        )
-        v.addWidget(self.infer_picker)
-
-        self.infer_btn = QPushButton("Run Inference on Pool")
-        self.infer_btn.setToolTip(
-            "Classify every currently-untagged tile across the checked FOVs "
-            "with the checkpoint above, tagging results as unreviewed AI "
-            "predictions. Tiles that already have a tag are left untouched; "
-            "human-confirmed tiles are used as a free accuracy check, logged below."
-        )
-        self.infer_btn.clicked.connect(self._run_inference)
-        v.addWidget(self.infer_btn)
-
-        right_layout.addWidget(group)
-
-    def _on_checkpoint_ready(self):
-        self.infer_picker.set_default_path(self._last_checkpoint_dir / self._live_weights_filename)
-
-    def _run_inference(self):
-        if self._inference_thread is not None:
-            return
-
-        resolved = self.infer_picker.resolve(
-            expect_vicreg=False,
-            wrong_kind_message=(
-                "{meta_path} looks like a VICReg backbone checkpoint, not a "
-                "classifier -- it has no classification head to run inference "
-                "with. Pick a checkpoint from the Supervised Training tab "
-                "instead (this session's own, the Deployed classifier, or "
-                "another supervised session's weights.pth)."
-            ),
-        )
-        if resolved is None:
-            return
-        weights_path, meta_path = resolved
-
-        pooled = self.pool_widget.pooled_annotations()
-        if pooled is None:
-            QMessageBox.warning(
-                self, "yeastprep", "No FOVs checked in the pool to run inference on."
-            )
-            return
-
-        try:
-            classifier = YeastEfficientNetClassifier(weights_path=weights_path, meta_path=meta_path)
-        except Exception as exc:
-            QMessageBox.critical(self, "yeastprep", f"Could not load checkpoint: {exc}")
-            return
-
-        self.status_label.setText("Running inference on pool...")
-        self.infer_btn.setEnabled(False)
-        self.start_btn.setEnabled(False)
-
-        self._inference_worker = ClassifierInferenceWorker(pooled, classifier)
-        self._inference_thread = QThread()
-        self._inference_worker.moveToThread(self._inference_thread)
-        self._inference_thread.started.connect(self._inference_worker.run)
-        self._inference_worker.finished.connect(self._on_inference_finished)
-        self._inference_worker.error.connect(self._on_inference_error)
-        self._inference_thread.start()
-
-    def _teardown_inference_thread(self):
-        self._inference_thread.quit()
-        self._inference_thread.wait()
-        self._inference_thread = None
-        self._inference_worker = None
-
-    def _on_inference_finished(self, result):
-        summary = (
-            f"inference: {result.n_total} tile(s) scored, "
-            f"{result.n_newly_tagged} newly tagged, categories={result.category_counts}"
-        )
-        if result.mean_confidence is not None:
-            summary += f", mean_confidence={result.mean_confidence:.3f}"
-        self.monitor_panel.log(summary)
-        if result.n_human_confirmed:
-            self.monitor_panel.log(
-                f"  agreement with {result.n_human_confirmed} human-confirmed tile(s): "
-                f"{result.accuracy_vs_human:.3f} ({result.n_agree_with_human}/{result.n_human_confirmed})"
-            )
-        self.refresh_dataset_summary()
-        self.status_label.setText("Inference complete.")
-        self.infer_btn.setEnabled(True)
-        self.start_btn.setEnabled(True)
-        self._teardown_inference_thread()
-
-    def _on_inference_error(self, message: str):
-        self.monitor_panel.log(f"inference ERROR: {message}")
-        self.status_label.setText(f"Inference error: {message.splitlines()[0] if message else ''}")
-        self.infer_btn.setEnabled(True)
-        self.start_btn.setEnabled(True)
-        self._teardown_inference_thread()
-
-    def shutdown(self):
-        if self._inference_thread is not None:
-            self._inference_thread.quit()
-            self._inference_thread.wait()
-        super().shutdown()
-
 
 class _VicregTrainingTab(_BaseTrainingTab):
     _live_weights_filename = "backbone.pth"
     _live_meta_filename = "meta.json"
+    _is_vicreg = True
 
     def _make_params_panel(self) -> QWidget:
         return VicregTrainParamsPanel()
@@ -1051,130 +748,11 @@ class _VicregTrainingTab(_BaseTrainingTab):
             f"final_loss={result.final_loss:.4f}  categories={result.categories}  "
             f"singleton_categories={result.singleton_categories}"
         )
-        self._evaluate_embeddings(result.weights_path)
-
-    def _evaluate_embeddings(self, weights_path):
-        """Post-hoc embedding-separability check (see
-        `tileclass.training.linear_probe`): loads the backbone at
-        `weights_path` back off disk and scatters a t-SNE projection of
-        its embeddings over every currently pooled confirmed tile --
-        t-SNE rather than a linear PCA projection because the accompanying
-        `knn_accuracy` number is itself a local-neighborhood notion of
-        separability, and a linear projection can visually smear apart
-        clusters a neighborhood-preserving one would show cleanly
-        separated (see `linear_probe.tsne_2d`'s docstring). Runs
-        synchronously on the GUI thread -- called both automatically right
-        after a training run finishes (`_on_result`, `weights_path` is
-        that run's own result) and on demand via the "Evaluate Embeddings"
-        button below (`weights_path` is whatever's in `evaluate_picker`,
-        independent of any training run). Not wired to progress signals --
-        there's nothing per-epoch to show here, unlike the loss plot.
-        Runs on the GUI thread with no per-item progress to report, so
-        this at least sets a wait cursor and disables the button for its
-        duration -- otherwise a slow t-SNE pass over a large pool looks
-        indistinguishable from a hang."""
-        import torch
-        from qtpy.QtCore import Qt
-        from qtpy.QtWidgets import QApplication
-
-        from tileclass.classifiers.device import select_device
-
-        records = self.pool_widget.gather_confirmed_records()
-        if len(records) < 2:
-            return
-        self.status_label.setText("Evaluating embeddings...")
-        self.evaluate_btn.setEnabled(False)
-        QApplication.setOverrideCursor(Qt.WaitCursor)
-        try:
-            device = select_device()
-            backbone = load_backbone(weights_path=weights_path, device=device)
-            backbone.eval()
-            paths = [p for p, _ in records]
-            labels = [label for _, label in records]
-            with torch.no_grad():
-                embeddings = extract_embeddings(paths, backbone, device)
-            xy = tsne_2d(embeddings)
-            acc = knn_accuracy(embeddings, labels) if len(set(labels)) > 1 else None
-            self.monitor_panel.show_embedding_scatter(xy, labels, paths=paths, knn_acc=acc)
-            self.status_label.setText("Embeddings evaluated.")
-        except Exception as exc:
-            self.monitor_panel.log(f"embedding evaluation failed: {exc}")
-            self.status_label.setText("Embedding evaluation failed.")
-        finally:
-            QApplication.restoreOverrideCursor()
-            self.evaluate_btn.setEnabled(True)
-
-    # ------------------------------------------------------------------
-    # Evaluate Embeddings: plot the t-SNE diagnostic above on demand, for
-    # any backbone checkpoint, without running any training -- same
-    # weights-field + Browse/Deployed pattern as
-    # `_SupervisedTrainingTab`'s "Run Inference on Pool". Runs synchronously
-    # (see `_evaluate_embeddings`'s docstring); fine for the "confirmed
-    # tiles" pool this always draws from, which is the same, typically
-    # small, annotated set a VICReg run itself trains on -- not the
-    # much larger full-pool `classify_pool` sweep that
-    # `ClassifierInferenceWorker` backgrounds.
-
-    def _build_extra_actions(self, right_layout):
-        group = QGroupBox("Evaluate Embeddings")
-        v = QVBoxLayout(group)
-
-        self.evaluate_picker = _CheckpointFilePicker(
-            placeholder="backbone.pth",
-            tooltip=(
-                "Backbone checkpoint to plot embeddings for -- defaults to this "
-                "session's just-trained backbone once training finishes. Browse "
-                "to pick a different one (an older session's checkpoint, a "
-                "backup, ...), or use 'Deployed' for tileclass's current live "
-                "VICReg backbone. Expects a sibling meta.json next to whatever "
-                "backbone.pth is chosen."
-            ),
-            deployed_path=LIVE_VICREG_WEIGHTS_PATH,
-            deployed_tooltip="Use tileclass's currently deployed VICReg backbone.",
+        self.monitor_panel.log(
+            "Open the Classify Tiles page's 'Explore Embeddings' group to "
+            "plot this backbone's embeddings (its picker now defaults to "
+            "this session's checkpoint)."
         )
-        v.addWidget(self.evaluate_picker)
-
-        self.evaluate_btn = QPushButton("Evaluate Embeddings")
-        self.evaluate_btn.setToolTip(
-            "Plot a t-SNE projection of the checkpoint above's embeddings "
-            "over every currently pooled confirmed tile, without running "
-            "any training -- the same diagnostic that runs automatically "
-            "after a VICReg training run finishes."
-        )
-        self.evaluate_btn.clicked.connect(self._evaluate_embeddings_clicked)
-        v.addWidget(self.evaluate_btn)
-
-        right_layout.addWidget(group)
-
-    def _on_checkpoint_ready(self):
-        self.evaluate_picker.set_default_path(self._last_checkpoint_dir / self._live_weights_filename)
-
-    def _evaluate_embeddings_clicked(self):
-        resolved = self.evaluate_picker.resolve(
-            expect_vicreg=True,
-            wrong_kind_message=(
-                "{meta_path} doesn't look like a VICReg backbone checkpoint "
-                "-- pick a backbone.pth from the VICReg Pretraining tab "
-                "instead (this session's own, the Deployed backbone, or "
-                "another session's backbone.pth)."
-            ),
-        )
-        if resolved is None:
-            return
-        weights_path, _meta_path = resolved
-
-        records = self.pool_widget.gather_confirmed_records()
-        if len(records) < 2:
-            QMessageBox.warning(
-                self,
-                "yeastprep",
-                "Need at least 2 confirmed annotated tiles in the pool to "
-                "evaluate embeddings.",
-            )
-            return
-
-        self.monitor_panel.log(f"evaluating embeddings: {weights_path}")
-        self._evaluate_embeddings(weights_path)
 
 
 class ClassifierTrainingPage(QWidget):
@@ -1182,6 +760,10 @@ class ClassifierTrainingPage(QWidget):
     tasks (see module docstring)."""
 
     progress_changed = Signal(object)  # PageProgress
+    # Bubbles up whichever tab's run just finished -- see
+    # `_BaseTrainingTab.checkpointTrained`; `main_window.py` wires this to
+    # `ClassifyTilesPage.set_default_checkpoint`.
+    checkpointTrained = Signal(Path, bool)
 
     def __init__(self, tree_panel: ProjectTreePanel, parent=None):
         super().__init__(parent)
@@ -1205,6 +787,8 @@ class ClassifierTrainingPage(QWidget):
     def _wire_up(self):
         self.supervised_tab.progress_changed.connect(self.progress_changed)
         self.vicreg_tab.progress_changed.connect(self.progress_changed)
+        self.supervised_tab.checkpointTrained.connect(self.checkpointTrained)
+        self.vicreg_tab.checkpointTrained.connect(self.checkpointTrained)
 
     # ------------------------------------------------------------------
 

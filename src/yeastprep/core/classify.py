@@ -14,6 +14,7 @@ a convenient, discoverable default, not project state.
 """
 
 import os
+import random
 import statistics
 from collections import Counter
 from dataclasses import dataclass, field
@@ -158,3 +159,24 @@ def classify_pool(pooled, classifier) -> ClassifyPoolResult:
         category_counts=dict(category_counts),
         mean_confidence=statistics.fmean(confidences) if confidences else None,
     )
+
+
+def sample_unlabeled(pooled, n: int, rng: random.Random | None = None) -> list[str]:
+    """Randomly sample up to `n` untagged tile paths from `pooled`'s checked
+    folders -- for the Classify Tiles page's "Explore Embeddings" group,
+    which wants to show where unlabeled data falls relative to labeled
+    clusters without embedding an entire (possibly huge) pool. Same
+    path-gathering as `classify_pool` (`scan_container` per folder,
+    normalized abspath), filtered to whatever `pooled` doesn't already have a
+    tag for -- human-confirmed or a still-standing AI prediction both count
+    as "labeled" here, matching `classify_pool`'s own "never overwrite an
+    existing tag" convention."""
+    rng = rng or random.Random()
+    paths = []
+    for folder in pooled.folders:
+        paths.extend(scan_container(folder))
+    paths = [os.path.normpath(os.path.abspath(p)) for p in paths]
+    untagged = [p for p in paths if pooled.get(p) is None]
+    if len(untagged) <= n:
+        return untagged
+    return rng.sample(untagged, n)

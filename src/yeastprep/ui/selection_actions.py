@@ -65,6 +65,7 @@ def actions_for_selection(stage: str, path: str, tree_panel: ProjectTreePanel) -
         return [
             Action("Open in Tile Viewer (this FOV)", "tile_generation", "open_viewer_fov"),
             Action("Train Classifier...", "classifier_training", "open_viewer_fov"),
+            Action("Classify Tiles...", "classify_tiles", "open_viewer_fov"),
         ]
 
     if stage == stages_core.STAGE_RAW:
