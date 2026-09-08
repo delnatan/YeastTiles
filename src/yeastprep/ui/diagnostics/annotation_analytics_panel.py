@@ -17,7 +17,7 @@ from pathlib import Path
 
 import polars as pl
 import seaborn as sns
-from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg, NavigationToolbar2QT
 from matplotlib.figure import Figure
 from qtpy.QtCore import Qt
 from qtpy.QtWidgets import (
@@ -78,12 +78,9 @@ class AnnotationAnalyticsPanel(QWidget):
         v = QVBoxLayout(content)
         v.setContentsMargins(0, 0, 0, 0)
 
-        self.stats_panel = AnnotationStatsPanel()
-        self.stats_panel.setMaximumHeight(180)
-        v.addWidget(self._wrap_group("Annotation Summary (pool)", self.stats_panel))
+        v.addWidget(self._build_stats_group())
 
         v.addWidget(self._build_fov_mapping_group())
-        v.addWidget(self._build_category_group())
         v.addStretch(1)
 
         scroll = QScrollArea()
@@ -97,8 +94,12 @@ class AnnotationAnalyticsPanel(QWidget):
         v = QVBoxLayout(tab)
         v.setContentsMargins(4, 4, 4, 4)
 
+        v.addWidget(self._build_category_group())
+
         self.figure = Figure(figsize=(7, 4.5), tight_layout=True)
         self.canvas = FigureCanvasQTAgg(self.figure)
+        self.toolbar = NavigationToolbar2QT(self.canvas, tab)
+        v.addWidget(self.toolbar)
         v.addWidget(self.canvas, 1)
 
         self.status_label = QLabel("")
@@ -123,6 +124,30 @@ class AnnotationAnalyticsPanel(QWidget):
         layout = QVBoxLayout(group)
         layout.setContentsMargins(4, 4, 4, 4)
         layout.addWidget(widget)
+        return group
+
+    def _build_stats_group(self) -> QGroupBox:
+        group = QGroupBox("Annotation Summary (pool)")
+        v = QVBoxLayout(group)
+        v.setContentsMargins(4, 4, 4, 4)
+
+        self.stats_panel = AnnotationStatsPanel()
+        self.stats_panel.setMaximumHeight(180)
+        v.addWidget(self.stats_panel)
+
+        refresh_row = QHBoxLayout()
+        refresh_btn = QPushButton("Refresh")
+        refresh_btn.setToolTip(
+            "Re-read annotations from disk and rebuild this summary -- "
+            "use after annotating tiles elsewhere (e.g. a tile viewer) "
+            "while this tab stayed open, since that doesn't trigger the "
+            "automatic refresh that runs when switching onto this tab."
+        )
+        refresh_btn.clicked.connect(self.refresh_from_pool)
+        refresh_row.addWidget(refresh_btn)
+        refresh_row.addStretch(1)
+        v.addLayout(refresh_row)
+
         return group
 
     def _build_fov_mapping_group(self) -> QGroupBox:
@@ -169,9 +194,13 @@ class AnnotationAnalyticsPanel(QWidget):
         self.fov_table.horizontalHeader().setSectionResizeMode(
             _PROJECT_COL, QHeaderView.ResizeToContents
         )
+        # Interactive (not ResizeToContents) so a user can shrink this
+        # column past a long FOV name -- the tooltip set per-item below
+        # covers what a tight column elides.
         self.fov_table.horizontalHeader().setSectionResizeMode(
-            _FOV_COL, QHeaderView.ResizeToContents
+            _FOV_COL, QHeaderView.Interactive
         )
+        self.fov_table.setColumnWidth(_FOV_COL, 100)
         self.fov_table.horizontalHeader().setSectionResizeMode(
             _INDEX_COL, QHeaderView.ResizeToContents
         )
@@ -231,8 +260,8 @@ class AnnotationAnalyticsPanel(QWidget):
         plot_row = QHBoxLayout()
         self.plot_btn = QPushButton("Plot")
         self.plot_btn.setToolTip(
-            "Build the plot from the current FOV mapping and category "
-            "selection, and switch to the Plot tab to show it."
+            "Build the plot from the current FOV mapping (Setup tab) and "
+            "the category selection above."
         )
         self.plot_btn.clicked.connect(self._on_plot_clicked)
         plot_row.addWidget(self.plot_btn)

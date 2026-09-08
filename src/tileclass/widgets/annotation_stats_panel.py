@@ -25,8 +25,10 @@ class AnnotationStatsPanel(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(6, 6, 6, 6)
 
-        self.table = QTableWidget(0, 4)
-        self.table.setHorizontalHeaderLabels(["Category", "Count", "%", "VICReg Pairing"])
+        self.table = QTableWidget(0, 5)
+        self.table.setHorizontalHeaderLabels(
+            ["Category", "Count", "%", "Human-Annotated", "VICReg Pairing"]
+        )
         self.table.verticalHeader().setVisible(False)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         # Selectable (not the prior NoSelection) so a user can grab just
@@ -81,13 +83,21 @@ class AnnotationStatsPanel(QWidget):
         Percentages are of the tagged (classified) total, not of
         `total_count` — the "Un-annotated" row has no percentage.
 
+        The "Human-Annotated" column counts, per category, how many of its
+        tagged tiles were set/confirmed by a human rather than left as an
+        unreviewed AI prediction (see `TileAnnotations`'s module docstring
+        for how the two are told apart on disk).
+
         The "VICReg Pairing" column flags categories with fewer than 2
         examples: `training.vicreg.ClassPairDataset` can't draw two distinct
         crops from a singleton category, so it falls back to pairing that
         category's one crop with itself -- worth knowing before pretraining."""
         counts = {}
-        for category in annotations.values():
+        human_counts = {}
+        for _relpath, category, confidence in annotations.tagged_items():
             counts[category] = counts.get(category, 0) + 1
+            if confidence is None:
+                human_counts[category] = human_counts.get(category, 0) + 1
         tagged_total = sum(counts.values())
         untagged = max(total_count - tagged_total, 0)
 
@@ -119,6 +129,11 @@ class AnnotationStatsPanel(QWidget):
             pct_item.setTextAlignment(Qt.AlignCenter)
             self.table.setItem(r, 2, pct_item)
 
+            human_text = str(human_counts.get(name, 0)) if has_pct else "–"
+            human_item = QTableWidgetItem(human_text)
+            human_item.setTextAlignment(Qt.AlignCenter)
+            self.table.setItem(r, 3, human_item)
+
             if not has_pct:
                 pairing_text = ""
             elif count < 2:
@@ -127,4 +142,4 @@ class AnnotationStatsPanel(QWidget):
                 pairing_text = "ready"
             pairing_item = QTableWidgetItem(pairing_text)
             pairing_item.setTextAlignment(Qt.AlignCenter)
-            self.table.setItem(r, 3, pairing_item)
+            self.table.setItem(r, 4, pairing_item)

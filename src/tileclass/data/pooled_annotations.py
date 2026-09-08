@@ -117,10 +117,10 @@ class PooledAnnotations:
         """Every (abs_path, category, confidence) currently tagged across
         the whole pool -- confidence is None for a human-set/confirmed
         tag, a [0, 1] float for an unreviewed AI prediction (see
-        annotations.py). The one method with no `TileAnnotations`
-        counterpart -- added for the training workflow, which needs
-        resolvable absolute paths, not relpaths scoped to a folder it
-        doesn't know about."""
+        annotations.py). Mirrors `TileAnnotations.tagged_items()`, keyed
+        by resolvable absolute path instead of a folder-scoped relpath --
+        the training workflow needs paths that resolve outside whatever
+        single pooled folder produced them."""
         items = []
         for folder, store in self._stores.items():
             for relpath, category in store.items():

@@ -277,6 +277,18 @@ class TileAnnotations(MutableMapping):
         was set/confirmed by a human (see module docstring)."""
         return self.confidences.get(relpath)
 
+    def tagged_items(self):
+        """Every (relpath, category, confidence) currently tagged --
+        confidence is None for a human-set/confirmed tag, a [0, 1] float
+        for an unreviewed AI prediction (see module docstring). Mirrors
+        `PooledAnnotations.tagged_items()` so callers like
+        `AnnotationStatsPanel` can treat a single-folder store and a pool
+        the same way."""
+        return [
+            (relpath, category, self.confidences.get(relpath))
+            for relpath, category in self._categories.items()
+        ]
+
     def update_with_confidence(self, items):
         """Batch-tag relpaths from an AI classifier: `(relpath, category,
         confidence)` triples, saving once. Unlike `update()`/

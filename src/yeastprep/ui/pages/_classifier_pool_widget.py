@@ -112,6 +112,9 @@ class ClassifierPoolWidget(QWidget):
                 for fov_dir in fov_dirs:
                     leaf = QTreeWidgetItem(top_item, [fov_dir.name])
                     leaf.setData(0, Qt.UserRole, str(fov_dir))
+                    # Same rationale as the project row's tooltip above --
+                    # long FOV names get elided in a narrow tree.
+                    leaf.setToolTip(0, str(fov_dir))
                     leaf.setFlags(leaf.flags() | Qt.ItemIsUserCheckable)
                     # Checked by default -- "pool everything" is the visible
                     # default, not an invisible fallback for nothing checked
