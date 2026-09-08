@@ -22,7 +22,7 @@ def main():
         help="Packed .tiles container(s) to browse/annotate",
     )
     parser.add_argument(
-        "--tiles-per-page", type=int, default=100, help="Tiles per page (default: 100)"
+        "--tiles-per-page", type=int, default=96, help="Tiles per page (default: 96)"
     )
     parser.add_argument(
         "--fov",

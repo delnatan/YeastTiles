@@ -45,18 +45,18 @@ from .widgets.tiled_display_settings_dialog import TiledDisplaySettingsDialog
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, folders, image_paths, tiles_per_page=100, parent=None):
+    def __init__(self, folders, image_paths, tiles_per_page=96, parent=None):
         super().__init__(parent)
         self.setAttribute(Qt.WA_DeleteOnClose)
 
         self.image_paths = image_paths
         self.tiles_per_page = tiles_per_page
         self.current_page = 0
-        self.tile_size = 200
+        self.tile_size = 80
 
         # Per-window (not persisted) limits for the tile-size slider and
         # tiles-per-page spinbox -- see show_display_limits_dialog.
-        self._tile_size_min = 100
+        self._tile_size_min = 50
         self._tile_size_max = 400
         self._tiles_per_page_min = 1
         self._tiles_per_page_max = 300

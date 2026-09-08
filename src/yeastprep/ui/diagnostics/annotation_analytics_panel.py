@@ -32,6 +32,7 @@ from qtpy.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QSplitter,
     QTableWidget,
     QTableWidgetItem,
     QTabWidget,
@@ -94,17 +95,22 @@ class AnnotationAnalyticsPanel(QWidget):
         v = QVBoxLayout(tab)
         v.setContentsMargins(4, 4, 4, 4)
 
-        v.addWidget(self._build_category_group())
+        splitter = QSplitter(Qt.Vertical)
+        splitter.addWidget(self._build_category_group())
+
+        plot_area = QWidget()
+        plot_v = QVBoxLayout(plot_area)
+        plot_v.setContentsMargins(0, 0, 0, 0)
 
         self.figure = Figure(figsize=(7, 4.5), tight_layout=True)
         self.canvas = FigureCanvasQTAgg(self.figure)
         self.toolbar = NavigationToolbar2QT(self.canvas, tab)
-        v.addWidget(self.toolbar)
-        v.addWidget(self.canvas, 1)
+        plot_v.addWidget(self.toolbar)
+        plot_v.addWidget(self.canvas, 1)
 
         self.status_label = QLabel("")
         self.status_label.setWordWrap(True)
-        v.addWidget(self.status_label)
+        plot_v.addWidget(self.status_label)
 
         button_row = QHBoxLayout()
         self.save_figure_btn = QPushButton("Save Figure...")
@@ -114,7 +120,13 @@ class AnnotationAnalyticsPanel(QWidget):
         self.export_data_btn.clicked.connect(self._export_data)
         button_row.addWidget(self.export_data_btn)
         button_row.addStretch(1)
-        v.addLayout(button_row)
+        plot_v.addLayout(button_row)
+
+        splitter.addWidget(plot_area)
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
+        splitter.setSizes([220, 500])
+        v.addWidget(splitter)
 
         return tab
 
@@ -253,9 +265,9 @@ class AnnotationAnalyticsPanel(QWidget):
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
-        scroll.setMaximumHeight(120)
+        scroll.setMinimumHeight(80)
         scroll.setWidget(self.category_list_widget)
-        v.addWidget(scroll)
+        v.addWidget(scroll, 1)
 
         plot_row = QHBoxLayout()
         self.plot_btn = QPushButton("Plot")
