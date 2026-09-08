@@ -387,17 +387,30 @@ class _BaseTrainingTab(QWidget):
         self._emit_progress(PageProgress(active=False))
         self._teardown_thread()
 
-    def _on_finished(self, result):
+    def _apply_result(self, result):
         self._last_checkpoint_dir = Path(result.weights_path).parent
         self.deploy_picker.set_default_path(
             self._last_checkpoint_dir / self._live_weights_filename
         )
         self.checkpointTrained.emit(Path(result.weights_path), self._is_vicreg)
         self._on_result(result)
+
+    def _on_finished(self, result):
+        self._apply_result(result)
         self._finish("Training completed.")
 
-    def _on_cancelled(self):
-        self._finish("Training cancelled.")
+    def _on_cancelled(self, result):
+        # `result` is the best-epoch-so-far checkpoint the worker already
+        # saved (see `worker.ClassifierTrainingWorker`/`ClassifierVicregWorker`),
+        # or None if cancelled before a single epoch finished (nothing to
+        # save) -- see `tileclass.training.supervised.train_classifier`'s
+        # docstring for the underlying "save current best weights" logic.
+        if result is None:
+            self._finish("Training cancelled -- no epoch finished yet, nothing saved.")
+            return
+        self._apply_result(result)
+        self.monitor_panel.log("cancelled -- saved best epoch reached before stopping.")
+        self._finish("Training cancelled -- best weights saved.")
 
     def _on_error(self, message: str):
         self.monitor_panel.log(f"ERROR: {message}")

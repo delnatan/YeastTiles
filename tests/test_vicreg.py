@@ -318,6 +318,38 @@ def test_pretrain_vicreg_honors_cancel_check(tmp_path, monkeypatch):
     assert not (weights_dir / "backbone.pth").exists()
 
 
+def test_pretrain_vicreg_cancel_after_progress_saves_best_weights(tmp_path, monkeypatch):
+    """Cancelling after at least one epoch has finished shouldn't discard
+    the run -- it should save the lowest-loss epoch reached so far, same as
+    a completed run, and flag the result as cancelled."""
+    weights_dir = tmp_path / "vicreg_weights"
+    monkeypatch.setattr("tileclass.training.vicreg.VICREG_WEIGHTS_DIR", weights_dir)
+    monkeypatch.setattr(
+        "tileclass.training.vicreg.VICREG_WEIGHTS_PATH", weights_dir / "backbone.pth"
+    )
+    monkeypatch.setattr(
+        "tileclass.training.vicreg.VICREG_META_PATH", weights_dir / "meta.json"
+    )
+
+    records = _make_records(tmp_path, n_per_class=8)
+
+    calls = {"n": 0}
+
+    def cancel_after_a_few():
+        calls["n"] += 1
+        return calls["n"] > 2
+
+    result = pretrain_vicreg(
+        records,
+        params=VICRegParams(epochs=5, batch_size=4, num_workers=0),
+        cancel_check=cancel_after_a_few,
+    )
+
+    assert result.cancelled is True
+    assert (weights_dir / "backbone.pth").exists()
+    assert (weights_dir / "meta.json").exists()
+
+
 # --- linear_probe ----------------------------------------------------------
 
 

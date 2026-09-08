@@ -693,7 +693,10 @@ class ClassifierTrainingWorker(QObject):
     progress = Signal(object)  # tileclass.training.supervised.TrainingProgress
     finished = Signal(object)  # tileclass.training.supervised.TrainingResult
     error = Signal(str)
-    cancelled = Signal()
+    # object: the TrainingResult built from the best epoch reached before
+    # cancellation, or None if cancelled before any epoch finished (nothing
+    # to save) -- see `train_classifier`'s docstring.
+    cancelled = Signal(object)
 
     def __init__(
         self,
@@ -726,12 +729,15 @@ class ClassifierTrainingWorker(QObject):
                 output_dir=self._output_dir,
             )
         except TrainingCancelled:
-            self.cancelled.emit()
+            self.cancelled.emit(None)
             return
         except Exception as exc:
             self.error.emit(str(exc))
             return
-        self.finished.emit(result)
+        if result.cancelled:
+            self.cancelled.emit(result)
+        else:
+            self.finished.emit(result)
 
 
 class ClassifierInferenceWorker(QObject):
@@ -769,7 +775,10 @@ class ClassifierVicregWorker(QObject):
     progress = Signal(object)  # tileclass.training.vicreg.VICRegProgress
     finished = Signal(object)  # tileclass.training.vicreg.VICRegResult
     error = Signal(str)
-    cancelled = Signal()
+    # object: the VICRegResult built from the best epoch reached before
+    # cancellation, or None if cancelled before any epoch finished (nothing
+    # to save) -- see `pretrain_vicreg`'s docstring.
+    cancelled = Signal(object)
 
     def __init__(self, records, params: VICRegParams = VICRegParams(), output_dir: Path | None = None):
         super().__init__()
@@ -791,9 +800,12 @@ class ClassifierVicregWorker(QObject):
                 output_dir=self._output_dir,
             )
         except TrainingCancelled:
-            self.cancelled.emit()
+            self.cancelled.emit(None)
             return
         except Exception as exc:
             self.error.emit(str(exc))
             return
-        self.finished.emit(result)
+        if result.cancelled:
+            self.cancelled.emit(result)
+        else:
+            self.finished.emit(result)

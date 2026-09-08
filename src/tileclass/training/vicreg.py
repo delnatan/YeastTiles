@@ -34,7 +34,7 @@ from torch.utils.data import DataLoader, Dataset
 from ..classifiers.device import select_device
 from .dataset import ClampTensor, RandomGaussianNoise, load_masked_crop
 from .model import build_yeast_efficientnet
-from .supervised import TrainingCancelled
+from .supervised import TrainingCancelled, _clone_state_dict
 from ..tile_container import group_training_provenance, training_provenance_contains
 
 VICREG_WEIGHTS_DIR = Path(__file__).parent / "weights" / "vicreg_backbone"
@@ -258,6 +258,10 @@ class VICRegResult:
     pair_count: int = 0
     final_loss: float = 0.0
     weights_path: Path = VICREG_WEIGHTS_PATH
+    # True when this result came from a cancelled run that still had at
+    # least one completed epoch's improvement to fall back on -- see
+    # `pretrain_vicreg`'s "best weights" tracking.
+    cancelled: bool = False
 
 
 def load_backbone(weights_path=VICREG_WEIGHTS_PATH, device=None):
@@ -409,8 +413,11 @@ def pretrain_vicreg(
     much of `records` a given live backbone has already seen before
     deciding.
 
-    Raises `ValueError` for too little data, `TrainingCancelled` if
-    `cancel_check()` goes true between epochs.
+    Raises `ValueError` for too little data. If `cancel_check()` goes true
+    between epochs: raises `TrainingCancelled` if no epoch has finished yet
+    (nothing to save), otherwise returns a `VICRegResult` (with
+    `cancelled=True`) built from whichever epoch had the lowest total VICReg
+    loss so far, saved the same way a completed run's result would be.
     """
     if len(records) < 2:
         raise ValueError(
@@ -471,40 +478,77 @@ def pretrain_vicreg(
 
     vicreg.train()
     final_avg_loss = 0.0
-    for epoch in range(params.epochs):
-        if cancel_check is not None and cancel_check():
-            raise TrainingCancelled()
+    # Tracks the lowest-total-loss epoch seen so far -- recovered on
+    # cancellation instead of discarding the whole run (mirrors
+    # `supervised.train_classifier`'s val_accuracy-based tracking; VICReg
+    # has no held-out split, so total loss is the closest analog here).
+    best = {"loss": float("inf"), "state": None}
+    completed_epochs = 0
 
-        epoch_totals = {"sim": 0.0, "std": 0.0, "cov": 0.0, "total": 0.0}
-        num_batches = 0
-        for x1, x2 in loader:
-            x1, x2 = x1.to(device), x2.to(device)
-            optimizer.zero_grad()
+    try:
+        for epoch in range(params.epochs):
+            if cancel_check is not None and cancel_check():
+                raise TrainingCancelled()
 
-            _, z1 = vicreg(x1)
-            _, z2 = vicreg(x2)
+            epoch_totals = {"sim": 0.0, "std": 0.0, "cov": 0.0, "total": 0.0}
+            num_batches = 0
+            for x1, x2 in loader:
+                x1, x2 = x1.to(device), x2.to(device)
+                optimizer.zero_grad()
 
-            loss, metrics = criterion(z1, z2)
-            loss.backward()
-            optimizer.step()
+                _, z1 = vicreg(x1)
+                _, z2 = vicreg(x2)
 
-            for key, value in metrics.items():
-                epoch_totals[key] += value
-            num_batches += 1
+                loss, metrics = criterion(z1, z2)
+                loss.backward()
+                optimizer.step()
 
-        num_batches = max(num_batches, 1)
-        avg_metrics = {k: v / num_batches for k, v in epoch_totals.items()}
-        final_avg_loss = avg_metrics["total"]
+                for key, value in metrics.items():
+                    epoch_totals[key] += value
+                num_batches += 1
 
-        if progress_callback is not None:
-            progress_callback(
-                VICRegProgress(
-                    epoch=epoch + 1,
-                    total_epochs=params.epochs,
-                    avg_loss=final_avg_loss,
-                    metrics=avg_metrics,
+            num_batches = max(num_batches, 1)
+            avg_metrics = {k: v / num_batches for k, v in epoch_totals.items()}
+            final_avg_loss = avg_metrics["total"]
+            completed_epochs += 1
+            if final_avg_loss < best["loss"]:
+                best["loss"] = final_avg_loss
+                best["state"] = _clone_state_dict(vicreg)
+
+            if progress_callback is not None:
+                progress_callback(
+                    VICRegProgress(
+                        epoch=epoch + 1,
+                        total_epochs=params.epochs,
+                        avg_loss=final_avg_loss,
+                        metrics=avg_metrics,
+                    )
                 )
-            )
+    except TrainingCancelled:
+        # Nothing to fall back to (cancelled before a single epoch
+        # finished) -- same as before, discard the run entirely.
+        if best["state"] is None:
+            raise
+        vicreg.load_state_dict(best["state"])
+        categories = dataset.classes
+        category_counts = {c: len(idxs) for c, idxs in dataset.by_class.items()}
+        weights_dir = _save_backbone(
+            vicreg,
+            categories,
+            dataset.singleton_classes,
+            params,
+            paths,
+            category_counts=category_counts,
+            output_dir=output_dir,
+        )
+        return VICRegResult(
+            categories=categories,
+            singleton_categories=dataset.singleton_classes,
+            pair_count=len(dataset) * completed_epochs,
+            final_loss=best["loss"],
+            weights_path=weights_dir / "backbone.pth",
+            cancelled=True,
+        )
 
     categories = dataset.classes
     category_counts = {c: len(idxs) for c, idxs in dataset.by_class.items()}

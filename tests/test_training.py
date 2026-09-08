@@ -233,3 +233,33 @@ def test_train_classifier_honors_cancel_check(tmp_path, monkeypatch):
             cancel_check=lambda: True,
         )
     assert not (weights_dir / "weights.pth").exists()
+
+
+def test_train_classifier_cancel_after_progress_saves_best_weights(tmp_path, monkeypatch):
+    """Cancelling after at least one epoch has finished shouldn't discard
+    the run -- it should save the best epoch reached so far, same as a
+    completed run, and flag the result as cancelled."""
+    weights_dir = tmp_path / "weights"
+    monkeypatch.setattr("tileclass.training.supervised.WEIGHTS_DIR", weights_dir)
+    monkeypatch.setattr("tileclass.training.supervised.WEIGHTS_PATH", weights_dir / "weights.pth")
+
+    records = _make_records(tmp_path)
+
+    # Cancel partway through the finetune stage (probe_epochs=2 finishes
+    # uninterrupted; finetune's cancel_check flips true on its 2nd check).
+    calls = {"n": 0}
+
+    def cancel_after_a_few():
+        calls["n"] += 1
+        return calls["n"] > 3
+
+    result = train_classifier(
+        records,
+        params=TrainingParams(val_frac=0.3, batch_size=4, probe_epochs=2, finetune_epochs=5),
+        cancel_check=cancel_after_a_few,
+    )
+
+    assert result.cancelled is True
+    assert (weights_dir / "weights.pth").exists()
+    assert (weights_dir / "meta.json").exists()
+    assert 0.0 <= result.val_accuracy <= 1.0

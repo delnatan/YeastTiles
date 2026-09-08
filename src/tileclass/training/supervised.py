@@ -80,6 +80,10 @@ class TrainingResult:
     train_count: int = 0
     val_count: int = 0
     weights_path: Path = WEIGHTS_PATH
+    # True when this result came from a cancelled run that still had at
+    # least one completed epoch's improvement to fall back on -- see
+    # `train_classifier`'s "best weights" tracking below.
+    cancelled: bool = False
 
 
 def resolve_target_categories(records) -> list[str]:
@@ -116,6 +120,14 @@ def _evaluate(model, loader, device, num_classes):
     return correct / total, per_class_acc
 
 
+def _clone_state_dict(model):
+    """A CPU-detached snapshot of `model`'s current weights -- independent
+    of subsequent training, unlike `model.state_dict()`'s live tensor
+    references. Loadable back into a model on any device (`load_state_dict`
+    copies element-wise, not by reference)."""
+    return {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+
+
 def _run_stage(
     model,
     train_loader,
@@ -128,7 +140,14 @@ def _run_stage(
     stage_name,
     progress_callback,
     cancel_check,
+    best,
 ):
+    """`best`: a dict shared across both training stages (probe + finetune)
+    that this function updates in place whenever an epoch's validation
+    accuracy beats `best["val_accuracy"]` -- so whichever epoch across the
+    whole run scored highest is always recoverable, even if training gets
+    cancelled partway through, or later epochs (e.g. finetuning overfitting
+    the small labeled set) do worse than an earlier one."""
     val_acc, per_class_acc = 0.0, None
     for epoch in range(num_epochs):
         if cancel_check is not None and cancel_check():
@@ -145,6 +164,10 @@ def _run_stage(
 
         avg_loss = epoch_loss / max(len(train_loader), 1)
         val_acc, per_class_acc = _evaluate(model, val_loader, device, num_classes)
+        if val_acc > best["val_accuracy"]:
+            best["val_accuracy"] = val_acc
+            best["per_class_acc"] = per_class_acc
+            best["state"] = _clone_state_dict(model)
         if progress_callback is not None:
             progress_callback(
                 TrainingProgress(
@@ -279,8 +302,11 @@ def train_classifier(
     `tileclass.checkpoint_import.import_checkpoint`.
     Raises `ValueError` for too little data, an unrecognized category, or
     a `backbone_weights_path` that doesn't match this model's
-    architecture; `TrainingCancelled` if `cancel_check()` goes true
-    between epochs."""
+    architecture. If `cancel_check()` goes true between epochs: raises
+    `TrainingCancelled` if no epoch has finished yet (nothing to save),
+    otherwise returns a `TrainingResult` (with `cancelled=True`) built from
+    whichever epoch scored highest on validation accuracy so far, saved the
+    same way a completed run's result would be."""
     import torch
     import torch.nn as nn
     from torch.utils.data import DataLoader
@@ -340,53 +366,82 @@ def train_classifier(
     weights = class_weights(train_labels, num_classes).to(device)
     criterion = nn.CrossEntropyLoss(weight=weights)
 
-    # Stage 1: linear probe -- freeze the backbone, train only the head.
-    for name, param in model.named_parameters():
-        param.requires_grad = name.startswith("classifier")
-    optimizer = torch.optim.AdamW(
-        [p for p in model.parameters() if p.requires_grad],
-        lr=params.probe_lr,
-        weight_decay=params.weight_decay,
-    )
-    model.train()
-    _run_stage(
-        model,
-        train_loader,
-        val_loader,
-        optimizer,
-        criterion,
-        device,
-        num_classes,
-        params.probe_epochs,
-        "probe",
-        progress_callback,
-        cancel_check,
-    )
+    # Tracks the highest-val_accuracy epoch seen across both stages below
+    # (see `_run_stage`'s docstring) -- recovered on cancellation instead of
+    # discarding the whole run (see the `except TrainingCancelled` below).
+    best = {"val_accuracy": -1.0, "per_class_acc": None, "state": None}
 
-    # Stage 2: unfreeze everything, fine-tune end-to-end at a low LR so
-    # existing backbone features aren't wrecked by the small labeled set.
-    for param in model.parameters():
-        param.requires_grad = True
-    optimizer = torch.optim.AdamW(
-        [
-            {"params": model.features.parameters(), "lr": params.finetune_backbone_lr},
-            {"params": model.classifier.parameters(), "lr": params.finetune_head_lr},
-        ],
-        weight_decay=params.weight_decay,
-    )
-    val_acc, per_class_acc = _run_stage(
-        model,
-        train_loader,
-        val_loader,
-        optimizer,
-        criterion,
-        device,
-        num_classes,
-        params.finetune_epochs,
-        "finetune",
-        progress_callback,
-        cancel_check,
-    )
+    try:
+        # Stage 1: linear probe -- freeze the backbone, train only the head.
+        for name, param in model.named_parameters():
+            param.requires_grad = name.startswith("classifier")
+        optimizer = torch.optim.AdamW(
+            [p for p in model.parameters() if p.requires_grad],
+            lr=params.probe_lr,
+            weight_decay=params.weight_decay,
+        )
+        model.train()
+        _run_stage(
+            model,
+            train_loader,
+            val_loader,
+            optimizer,
+            criterion,
+            device,
+            num_classes,
+            params.probe_epochs,
+            "probe",
+            progress_callback,
+            cancel_check,
+            best,
+        )
+
+        # Stage 2: unfreeze everything, fine-tune end-to-end at a low LR so
+        # existing backbone features aren't wrecked by the small labeled set.
+        for param in model.parameters():
+            param.requires_grad = True
+        optimizer = torch.optim.AdamW(
+            [
+                {"params": model.features.parameters(), "lr": params.finetune_backbone_lr},
+                {"params": model.classifier.parameters(), "lr": params.finetune_head_lr},
+            ],
+            weight_decay=params.weight_decay,
+        )
+        val_acc, per_class_acc = _run_stage(
+            model,
+            train_loader,
+            val_loader,
+            optimizer,
+            criterion,
+            device,
+            num_classes,
+            params.finetune_epochs,
+            "finetune",
+            progress_callback,
+            cancel_check,
+            best,
+        )
+    except TrainingCancelled:
+        # Nothing to fall back to (cancelled before a single epoch
+        # finished) -- same as before, discard the run entirely.
+        if best["state"] is None:
+            raise
+        model.load_state_dict(best["state"])
+        category_counts = Counter(label for _, label in records)
+        weights_dir = _save_weights(
+            model, categories, train_paths, category_counts=category_counts, output_dir=output_dir
+        )
+        return TrainingResult(
+            val_accuracy=best["val_accuracy"],
+            per_class_accuracy={
+                categories[c]: float(acc) for c, acc in enumerate(best["per_class_acc"])
+            },
+            categories=categories,
+            train_count=len(train_idx),
+            val_count=len(val_idx),
+            weights_path=weights_dir / "weights.pth",
+            cancelled=True,
+        )
 
     category_counts = Counter(label for _, label in records)
     weights_dir = _save_weights(
