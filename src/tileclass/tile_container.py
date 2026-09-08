@@ -139,3 +139,38 @@ def get_container(path) -> TileContainer:
             container = TileContainer(path)
             _container_cache[key] = container
         return container
+
+
+def group_training_provenance(paths) -> dict[str, list[int]]:
+    """Compact form of a list of container-ref crop paths, for recording
+    training provenance in meta.json (see `training/supervised.py`'s
+    `_save_weights` and `training/vicreg.py`'s `_save_backbone`): a
+    container-ref path repeats its container's own path once per cell
+    contributed, which is most of what made the old flat path list balloon
+    to one line per cell -- grouping by container and keeping only each
+    cell's already-recorded integer `label` (the container index's own
+    per-cell field) says the same thing in a fraction of the text.
+
+    Returns `{container_path: [label, ...]}`. Every `path` must be a
+    container ref -- every crop tileclass/yeastprep produce or consume now
+    comes from one (see scan.py's module docstring).
+    """
+    containers: dict[str, list[int]] = {}
+    for path in paths:
+        container_path, cell_id = container_and_cell(str(path))
+        label = get_container(container_path).entries[cell_id]["label"]
+        containers.setdefault(str(container_path), []).append(label)
+    return {k: sorted(v) for k, v in sorted(containers.items())}
+
+
+def training_provenance_contains(provenance: dict[str, list[int]], path) -> bool:
+    """Membership test against `group_training_provenance`'s output --
+    the read-side counterpart used by `training/vicreg.py`'s
+    `warm_start_overlap` to check a newly pooled crop against a
+    previously recorded one without re-expanding the grouping back into a
+    flat set of path strings."""
+    container_path, cell_id = container_and_cell(str(path))
+    entry = get_container(container_path).entries.get(cell_id)
+    if entry is None:
+        return False
+    return entry["label"] in provenance.get(str(container_path), ())

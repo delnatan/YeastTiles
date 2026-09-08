@@ -13,6 +13,7 @@ import tifffile
 
 pytest.importorskip("torch")
 
+from tileclass.tile_container import write_container
 from tileclass.training.linear_probe import (
     LinearProbeParams,
     extract_embeddings,
@@ -32,24 +33,36 @@ from tileclass.training.vicreg import (
 )
 
 
-def _write_synthetic_crop(path, seed, size=64):
+def _synthetic_crop(seed, size=64):
     rng = np.random.default_rng(seed)
     brightfield = rng.integers(0, 255, size=(size, size), dtype=np.uint8)
     target = rng.integers(0, 255, size=(size, size), dtype=np.uint8)
     mask = np.full((size, size), 255, dtype=np.uint8)
-    crop = np.stack([brightfield, target, mask], axis=0)
-    tifffile.imwrite(path, crop, photometric="minisblack", metadata={"axes": "CYX"})
+    return np.stack([brightfield, target, mask], axis=0)
+
+
+def _write_synthetic_crop(path, seed, size=64):
+    tifffile.imwrite(
+        path, _synthetic_crop(seed, size), photometric="minisblack", metadata={"axes": "CYX"}
+    )
 
 
 def _make_records(tmp_path, n_per_class=6, classes=("single", "junk")):
+    """Packs every crop into one `fov.tiles` container (matching real
+    usage -- see tile_container.py's module docstring) rather than one
+    loose tif per crop, so records here exercise the same container-ref
+    path format `_save_backbone`'s `trained_on` provenance expects."""
+    container_path = tmp_path / "fov.tiles"
     records = []
+    cells = []
     seed = 0
     for label in classes:
         for i in range(n_per_class):
-            path = tmp_path / f"{label}_{i}.tif"
-            _write_synthetic_crop(path, seed)
+            cell_id = f"fov_cell{seed:05d}"
+            cells.append((cell_id, seed, _synthetic_crop(seed)))
+            records.append((str(container_path / f"{cell_id}.tif"), label))
             seed += 1
-            records.append((str(path), label))
+    write_container(container_path, cells)
     return records
 
 
@@ -162,7 +175,11 @@ def test_pretrain_vicreg_records_trained_on_paths(tmp_path, monkeypatch):
     pretrain_vicreg(records, params=_tiny_vicreg_params())
 
     meta = json.loads(meta_path.read_text())
-    assert set(meta["trained_on_paths"]) == {p for p, _ in records}
+    # Grouped by container path -> sorted cell labels -- see
+    # tile_container.group_training_provenance.
+    trained_on = meta["trained_on"]
+    assert set(trained_on) == {str(tmp_path / "fov.tiles")}
+    assert len(trained_on[str(tmp_path / "fov.tiles")]) == len(records)
     assert meta["params"]["warm_start"] is True
 
 
@@ -230,8 +247,18 @@ def test_warm_start_overlap(tmp_path, monkeypatch):
     records = _make_records(tmp_path, n_per_class=8)
     pretrain_vicreg(records, params=_tiny_vicreg_params())
 
+    # A second, never-trained-on container stands in for "newly pooled
+    # crops this backbone hasn't seen" -- a real probe is always some
+    # other container ref, never a path outside the container format.
+    unseen_container = tmp_path / "unseen.tiles"
+    write_container(
+        unseen_container,
+        [(f"unseen_cell{i:05d}", i, _synthetic_crop(100 + i)) for i in range(3)],
+    )
+    unseen_paths = [f"{unseen_container}/unseen_cell{i:05d}.tif" for i in range(3)]
+
     trained_paths = [p for p, _ in records]
-    probe_paths = trained_paths[:5] + ["/not/really/a/crop.tif"] * 3
+    probe_paths = trained_paths[:5] + unseen_paths
     already_seen, total = warm_start_overlap(probe_paths, meta_path=meta_path)
     assert already_seen == 5
     assert total == 8

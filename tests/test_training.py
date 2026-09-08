@@ -13,6 +13,7 @@ import tifffile
 
 pytest.importorskip("torch")
 
+from tileclass.tile_container import write_container
 from tileclass.training.supervised import (
     TrainingCancelled,
     TrainingParams,
@@ -21,24 +22,36 @@ from tileclass.training.supervised import (
 )
 
 
-def _write_synthetic_crop(path, seed, size=64):
+def _synthetic_crop(seed, size=64):
     rng = np.random.default_rng(seed)
     brightfield = rng.integers(0, 255, size=(size, size), dtype=np.uint8)
     target = rng.integers(0, 255, size=(size, size), dtype=np.uint8)
     mask = np.full((size, size), 255, dtype=np.uint8)
-    crop = np.stack([brightfield, target, mask], axis=0)
-    tifffile.imwrite(path, crop, photometric="minisblack", metadata={"axes": "CYX"})
+    return np.stack([brightfield, target, mask], axis=0)
+
+
+def _write_synthetic_crop(path, seed, size=64):
+    tifffile.imwrite(
+        path, _synthetic_crop(seed, size), photometric="minisblack", metadata={"axes": "CYX"}
+    )
 
 
 def _make_records(tmp_path, n_per_class=6):
+    """Packs every crop into one `fov.tiles` container (matching real
+    usage -- see tile_container.py's module docstring) rather than one
+    loose tif per crop, so records here exercise the same container-ref
+    path format `_save_weights`'s `trained_on` provenance expects."""
+    container_path = tmp_path / "fov.tiles"
     records = []
+    cells = []
     seed = 0
     for label in ("single", "junk"):
         for i in range(n_per_class):
-            path = tmp_path / f"{label}_{i}.tif"
-            _write_synthetic_crop(path, seed)
+            cell_id = f"fov_cell{seed:05d}"
+            cells.append((cell_id, seed, _synthetic_crop(seed)))
+            records.append((str(container_path / f"{cell_id}.tif"), label))
             seed += 1
-            records.append((str(path), label))
+    write_container(container_path, cells)
     return records
 
 
@@ -113,10 +126,13 @@ def test_train_classifier_records_trained_on_paths(tmp_path, monkeypatch):
     result = train_classifier(records, params=_tiny_params())
 
     meta = json.loads((weights_dir / "meta.json").read_text())
-    trained_paths = set(meta["trained_on_paths"])
-    assert trained_paths
-    assert trained_paths <= {path for path, _ in records}
-    assert len(trained_paths) == result.train_count
+    # Grouped by container path -> sorted cell labels -- see
+    # tile_container.group_training_provenance.
+    trained_on = meta["trained_on"]
+    assert set(trained_on) == {str(tmp_path / "fov.tiles")}
+    trained_labels = trained_on[str(tmp_path / "fov.tiles")]
+    assert trained_labels
+    assert len(trained_labels) == result.train_count
 
 
 def test_train_classifier_warm_starts_from_vicreg_backbone(tmp_path, monkeypatch):

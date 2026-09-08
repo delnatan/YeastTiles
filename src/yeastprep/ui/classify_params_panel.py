@@ -18,6 +18,8 @@ from qtpy.QtWidgets import (
 from tileclass.training.supervised import TrainingParams
 from tileclass.training.vicreg import VICRegParams
 
+from .common.collapsible_section import CollapsibleSection
+
 
 def _dspin(value, minimum, maximum, step=0.01, decimals=4) -> QDoubleSpinBox:
     box = QDoubleSpinBox()
@@ -47,8 +49,7 @@ class SupervisedTrainParamsPanel(QWidget):
 
     def _build_group(self) -> QGroupBox:
         group = QGroupBox("Supervised Training")
-        form = QFormLayout(group)
-        form.setVerticalSpacing(8)
+        outer = QVBoxLayout(group)
         defaults = TrainingParams()
 
         description = QLabel(
@@ -70,10 +71,17 @@ class SupervisedTrainParamsPanel(QWidget):
             "trained last run land in this run's validation split and look "
             "artificially accurate."
         )
-        form.addRow(description)
+        outer.addWidget(description)
 
-        self.val_frac_spin = _dspin(defaults.val_frac, 0.05, 0.9, 0.05, decimals=2)
-        self.seed_spin = _ispin(defaults.seed, 0, 999999)
+        # Basic: the knobs worth tweaking on nearly every run. Everything
+        # else (learning rates, weight decay, val split, seed) has a
+        # sensible default that's rarely worth touching -- tucked behind
+        # "Advanced" below so the common case isn't lost among them.
+        basic_widget = QWidget()
+        basic_form = QFormLayout(basic_widget)
+        basic_form.setContentsMargins(0, 0, 0, 0)
+        basic_form.setVerticalSpacing(8)
+
         self.batch_size_spin = _ispin(defaults.batch_size, 1, 1024)
         self.probe_epochs_spin = _ispin(defaults.probe_epochs, 0, 2000)
         self.probe_epochs_spin.setToolTip(
@@ -87,6 +95,19 @@ class SupervisedTrainParamsPanel(QWidget):
             "network -- backbone included -- is unfrozen (requires_grad=True) "
             "and trained end-to-end."
         )
+
+        basic_form.addRow("Batch size:", self.batch_size_spin)
+        basic_form.addRow("Probe epochs:", self.probe_epochs_spin)
+        basic_form.addRow("Finetune epochs:", self.finetune_epochs_spin)
+        outer.addWidget(basic_widget)
+
+        advanced_widget = QWidget()
+        advanced_form = QFormLayout(advanced_widget)
+        advanced_form.setContentsMargins(0, 0, 0, 0)
+        advanced_form.setVerticalSpacing(8)
+
+        self.val_frac_spin = _dspin(defaults.val_frac, 0.05, 0.9, 0.05, decimals=2)
+        self.seed_spin = _ispin(defaults.seed, 0, 999999)
         self.probe_lr_spin = _dspin(defaults.probe_lr, 1e-6, 1.0, 1e-4, decimals=6)
         self.probe_lr_spin.setToolTip(
             "Learning rate for the classifier head during the probe stage. "
@@ -109,15 +130,13 @@ class SupervisedTrainParamsPanel(QWidget):
         )
         self.weight_decay_spin = _dspin(defaults.weight_decay, 0.0, 1.0, 1e-4, decimals=6)
 
-        form.addRow("Validation fraction:", self.val_frac_spin)
-        form.addRow("Seed:", self.seed_spin)
-        form.addRow("Batch size:", self.batch_size_spin)
-        form.addRow("Probe epochs:", self.probe_epochs_spin)
-        form.addRow("Finetune epochs:", self.finetune_epochs_spin)
-        form.addRow("Probe LR:", self.probe_lr_spin)
-        form.addRow("Finetune backbone LR:", self.finetune_backbone_lr_spin)
-        form.addRow("Finetune head LR:", self.finetune_head_lr_spin)
-        form.addRow("Weight decay:", self.weight_decay_spin)
+        advanced_form.addRow("Validation fraction:", self.val_frac_spin)
+        advanced_form.addRow("Seed:", self.seed_spin)
+        advanced_form.addRow("Probe LR:", self.probe_lr_spin)
+        advanced_form.addRow("Finetune backbone LR:", self.finetune_backbone_lr_spin)
+        advanced_form.addRow("Finetune head LR:", self.finetune_head_lr_spin)
+        advanced_form.addRow("Weight decay:", self.weight_decay_spin)
+        outer.addWidget(CollapsibleSection("Advanced", advanced_widget))
 
         for box in (
             self.val_frac_spin,
@@ -163,8 +182,7 @@ class VicregTrainParamsPanel(QWidget):
 
     def _build_group(self) -> QGroupBox:
         group = QGroupBox("VICReg Pretraining")
-        form = QFormLayout(group)
-        form.setVerticalSpacing(8)
+        outer = QVBoxLayout(group)
         defaults = VICRegParams()
 
         description = QLabel(
@@ -180,7 +198,18 @@ class VicregTrainParamsPanel(QWidget):
             "ImageNet weights."
         )
         description.setWordWrap(True)
-        form.addRow(description)
+        outer.addWidget(description)
+
+        # Basic: run length + the two toggles almost every run cares about.
+        # The VICReg loss coefficients, learning rate, and other tuning
+        # knobs below have well-tested defaults from the NN_workflow
+        # scripts this training was ported from -- tucked behind "Advanced"
+        # so they don't crowd out the handful of settings worth changing
+        # per run.
+        basic_widget = QWidget()
+        basic_form = QFormLayout(basic_widget)
+        basic_form.setContentsMargins(0, 0, 0, 0)
+        basic_form.setVerticalSpacing(8)
 
         self.epochs_spin = _ispin(defaults.epochs, 1, 2000)
         self.batch_size_spin = _ispin(defaults.batch_size, 1, 1024)
@@ -195,6 +224,18 @@ class VicregTrainParamsPanel(QWidget):
         )
         self.balanced_sampling_cb = QCheckBox("Balanced sampling")
         self.balanced_sampling_cb.setChecked(defaults.balanced_sampling)
+
+        basic_form.addRow("Epochs:", self.epochs_spin)
+        basic_form.addRow("Batch size:", self.batch_size_spin)
+        basic_form.addRow(self.warm_start_cb)
+        basic_form.addRow(self.balanced_sampling_cb)
+        outer.addWidget(basic_widget)
+
+        advanced_widget = QWidget()
+        advanced_form = QFormLayout(advanced_widget)
+        advanced_form.setContentsMargins(0, 0, 0, 0)
+        advanced_form.setVerticalSpacing(8)
+
         self.lr_spin = _dspin(defaults.lr, 1e-6, 1.0, 1e-4, decimals=6)
         self.weight_decay_spin = _dspin(defaults.weight_decay, 0.0, 1.0, 1e-4, decimals=6)
         self.proj_dim_spin = _ispin(defaults.proj_dim, 8, 8192)
@@ -204,18 +245,15 @@ class VicregTrainParamsPanel(QWidget):
         self.num_workers_spin = _ispin(defaults.num_workers, 0, 32)
         self.seed_spin = _ispin(defaults.seed, 0, 999999)
 
-        form.addRow("Epochs:", self.epochs_spin)
-        form.addRow("Batch size:", self.batch_size_spin)
-        form.addRow(self.warm_start_cb)
-        form.addRow(self.balanced_sampling_cb)
-        form.addRow("Learning rate:", self.lr_spin)
-        form.addRow("Weight decay:", self.weight_decay_spin)
-        form.addRow("Projection dim:", self.proj_dim_spin)
-        form.addRow("Invariance (sim) coeff:", self.sim_coeff_spin)
-        form.addRow("Variance (std) coeff:", self.std_coeff_spin)
-        form.addRow("Covariance coeff:", self.cov_coeff_spin)
-        form.addRow("Dataloader workers:", self.num_workers_spin)
-        form.addRow("Seed:", self.seed_spin)
+        advanced_form.addRow("Learning rate:", self.lr_spin)
+        advanced_form.addRow("Weight decay:", self.weight_decay_spin)
+        advanced_form.addRow("Projection dim:", self.proj_dim_spin)
+        advanced_form.addRow("Invariance (sim) coeff:", self.sim_coeff_spin)
+        advanced_form.addRow("Variance (std) coeff:", self.std_coeff_spin)
+        advanced_form.addRow("Covariance coeff:", self.cov_coeff_spin)
+        advanced_form.addRow("Dataloader workers:", self.num_workers_spin)
+        advanced_form.addRow("Seed:", self.seed_spin)
+        outer.addWidget(CollapsibleSection("Advanced", advanced_widget))
 
         for box in (
             self.epochs_spin,

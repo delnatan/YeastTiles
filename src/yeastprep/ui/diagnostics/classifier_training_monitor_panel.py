@@ -85,6 +85,12 @@ class ClassifierTrainingMonitorPanel(QWidget):
             self._secondary_label = secondary_label
         self.ax.clear()
         self.ax_right.clear()
+        # `Axes.clear()` resets a twin axis's tick/label side back to the
+        # default left, undoing what `ax.twinx()` set up -- re-apply it here
+        # since this runs on every redraw (see `_redraw`), not just once at
+        # construction.
+        self.ax_right.yaxis.tick_right()
+        self.ax_right.yaxis.set_label_position("right")
         self.ax.set_xlabel("epoch")
         self.ax.set_ylabel("loss")
         self.ax_right.set_ylabel(self._secondary_label)

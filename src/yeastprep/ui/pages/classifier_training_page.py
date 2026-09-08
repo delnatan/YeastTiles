@@ -21,8 +21,11 @@ explore its embeddings, lives on the separate Classify Tiles page
 (`classify_tiles_page.ClassifyTilesPage`) instead -- this page only ever
 trains and (optionally) deploys.
 
-One pool is shared by both tabs (QTabWidget below), each tab wraps its own
-worker/params/diagnostics -- see `_SupervisedTrainingTab`/`_VicregTrainingTab`.
+One pool is shared by both tabs: it lives once in a narrow settings sidebar
+on the left (alongside whichever tab's own params/checkpoint-output
+settings is active), leaving the wide right-hand side for that tab's
+diagnostics/plots -- see `_SupervisedTrainingTab`/`_VicregTrainingTab` and
+`ClassifierTrainingPage._build_ui`.
 """
 
 import json
@@ -40,6 +43,8 @@ from qtpy.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QSplitter,
+    QStackedWidget,
     QTabWidget,
     QVBoxLayout,
     QWidget,
@@ -64,11 +69,18 @@ from .page_progress import PageProgress
 
 
 class _BaseTrainingTab(QWidget):
-    """Shared shell for the two tabs below: params panel + checkpoint-output
-    path field + Start/Cancel on the left, diagnostics panel + a Deploy
-    group (checkpoint picker + Deploy button) on the right. Subclasses
-    supply the params panel, the worker class, and the deploy destination;
+    """Shared controller for the two training modes below: params panel +
+    checkpoint-output path field + Start/Cancel, diagnostics panel, and a
+    Deploy group (checkpoint picker + Deploy button). Subclasses supply the
+    params panel, the worker class, and the deploy destination;
     `_start_training`/`_finish` etc. are generic over that.
+
+    This widget itself is never shown -- `_build_ui` splits its content into
+    two child widgets, `left_panel` (params/checkpoint/extra -- a narrow
+    settings column) and `right_panel` (diagnostics/plots/buttons/deploy --
+    the wide, plot-heavy half), which `ClassifierTrainingPage` places into a
+    shared settings-sidebar/tab-content split instead of duplicating a full
+    left+right row per tab (see that class's `_build_ui`).
 
     Deploy is deliberately independent of whether a training run happened
     in this session at all: its `_CheckpointFilePicker` defaults to
@@ -176,12 +188,8 @@ class _BaseTrainingTab(QWidget):
         )
 
     def _build_ui(self):
-        outer = QVBoxLayout(self)
-        row = QHBoxLayout()
-        outer.addLayout(row, 1)
-
-        left = QWidget()
-        left_layout = QVBoxLayout(left)
+        self.left_panel = QWidget()
+        left_layout = QVBoxLayout(self.left_panel)
         left_layout.setContentsMargins(0, 0, 0, 0)
         self.params_panel = self._make_params_panel()
         left_layout.addWidget(self.params_panel)
@@ -189,16 +197,8 @@ class _BaseTrainingTab(QWidget):
         self._build_extra_left_widgets(left_layout)
         left_layout.addStretch(1)
 
-        left_scroll = QScrollArea()
-        left_scroll.setWidgetResizable(True)
-        left_scroll.setFrameShape(QFrame.NoFrame)
-        left_scroll.setWidget(left)
-        left_scroll.setMinimumWidth(340)
-        left_scroll.setMaximumWidth(440)
-        row.addWidget(left_scroll)
-
-        right = QWidget()
-        right_layout = QVBoxLayout(right)
+        self.right_panel = QWidget()
+        right_layout = QVBoxLayout(self.right_panel)
         right_layout.setContentsMargins(0, 0, 0, 0)
         self.monitor_panel = ClassifierTrainingMonitorPanel()
         right_layout.addWidget(self.monitor_panel, 1)
@@ -234,10 +234,8 @@ class _BaseTrainingTab(QWidget):
         deploy_layout.addWidget(self.deploy_btn)
         right_layout.addWidget(deploy_group)
 
-        row.addWidget(right, 1)
-
         self.status_label = QLabel("")
-        outer.addWidget(self.status_label)
+        right_layout.addWidget(self.status_label)
 
     def _build_checkpoint_group(self) -> QGroupBox:
         group = QGroupBox("Save Trained Weights To")
@@ -774,15 +772,44 @@ class ClassifierTrainingPage(QWidget):
 
     def _build_ui(self):
         outer = QVBoxLayout(self)
+
+        splitter = QSplitter()
+        outer.addWidget(splitter, 1)
+
+        left = QWidget()
+        left_layout = QVBoxLayout(left)
+        left_layout.setContentsMargins(0, 0, 0, 0)
         self.pool_widget = ClassifierPoolWidget()
-        outer.addWidget(self.pool_widget)
+        left_layout.addWidget(self.pool_widget)
+
+        # One settings column shared by both tabs: since the pool is shared
+        # (single tree, single set of checked FOVs -- see class docstring),
+        # it lives once in this sidebar rather than being duplicated per
+        # tab. Below it, a stacked widget swaps in whichever tab's own
+        # settings (params/checkpoint-output/extras) match the active tab
+        # on the right, kept in sync via `self.tabs.currentChanged`.
+        self.settings_stack = QStackedWidget()
+        left_layout.addWidget(self.settings_stack, 1)
+
+        left_scroll = QScrollArea()
+        left_scroll.setWidgetResizable(True)
+        left_scroll.setFrameShape(QFrame.NoFrame)
+        left_scroll.setWidget(left)
+        left_scroll.setMinimumWidth(340)
+        left_scroll.setMaximumWidth(440)
+        splitter.addWidget(left_scroll)
 
         self.tabs = QTabWidget()
-        outer.addWidget(self.tabs, 1)
         self.supervised_tab = _SupervisedTrainingTab(self.pool_widget)
-        self.tabs.addTab(self.supervised_tab, "Supervised Training")
+        self.tabs.addTab(self.supervised_tab.right_panel, "Supervised Training")
+        self.settings_stack.addWidget(self.supervised_tab.left_panel)
         self.vicreg_tab = _VicregTrainingTab(self.pool_widget)
-        self.tabs.addTab(self.vicreg_tab, "VICReg Pretraining")
+        self.tabs.addTab(self.vicreg_tab.right_panel, "VICReg Pretraining")
+        self.settings_stack.addWidget(self.vicreg_tab.left_panel)
+        self.tabs.currentChanged.connect(self.settings_stack.setCurrentIndex)
+        splitter.addWidget(self.tabs)
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
 
     def _wire_up(self):
         self.supervised_tab.progress_changed.connect(self.progress_changed)

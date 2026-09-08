@@ -162,21 +162,25 @@ def classify_pool(pooled, classifier) -> ClassifyPoolResult:
 
 
 def sample_unlabeled(pooled, n: int, rng: random.Random | None = None) -> list[str]:
-    """Randomly sample up to `n` untagged tile paths from `pooled`'s checked
-    folders -- for the Classify Tiles page's "Explore Embeddings" group,
-    which wants to show where unlabeled data falls relative to labeled
-    clusters without embedding an entire (possibly huge) pool. Same
-    path-gathering as `classify_pool` (`scan_container` per folder,
-    normalized abspath), filtered to whatever `pooled` doesn't already have a
-    tag for -- human-confirmed or a still-standing AI prediction both count
-    as "labeled" here, matching `classify_pool`'s own "never overwrite an
-    existing tag" convention."""
+    """Randomly sample up to `n` not-yet-human-reviewed tile paths from
+    `pooled`'s checked folders -- for the Classify Tiles page's "Explore
+    Embeddings" group, which wants to show where unreviewed data falls
+    relative to labeled clusters without embedding an entire (possibly huge)
+    pool. Same path-gathering as `classify_pool` (`scan_container` per
+    folder, normalized abspath), filtered to whatever `pooled` has no
+    *human-confirmed* tag for -- a still-standing AI prediction still counts
+    as "unlabeled" here (unlike `classify_pool`'s own "never overwrite an
+    existing tag" convention, which does treat it as labeled): otherwise,
+    running "Run Inference on Pool" first -- which tags every untagged tile
+    with an AI prediction -- would leave nothing left for this to sample."""
     rng = rng or random.Random()
     paths = []
     for folder in pooled.folders:
         paths.extend(scan_container(folder))
     paths = [os.path.normpath(os.path.abspath(p)) for p in paths]
-    untagged = [p for p in paths if pooled.get(p) is None]
+    untagged = [
+        p for p in paths if pooled.get(p) is None or pooled.confidence(p) is not None
+    ]
     if len(untagged) <= n:
         return untagged
     return rng.sample(untagged, n)

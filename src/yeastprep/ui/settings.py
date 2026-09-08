@@ -237,3 +237,18 @@ def restore_window_geometry(window):
     geometry = _settings().value("window_geometry")
     if isinstance(geometry, QByteArray):
         window.restoreGeometry(geometry)
+
+
+def save_splitter_state(key: str, splitter):
+    _settings().setValue(f"splitter_state/{key}", splitter.saveState())
+
+
+def restore_splitter_state(key: str, splitter) -> bool:
+    """Restores a previously saved sash position for `splitter`, if any --
+    returns whether a saved state was actually found/applied, so callers
+    can fall back to their own default `setSizes(...)` on a first run."""
+    state = _settings().value(f"splitter_state/{key}")
+    if isinstance(state, QByteArray):
+        splitter.restoreState(state)
+        return True
+    return False

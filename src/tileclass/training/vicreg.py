@@ -35,6 +35,7 @@ from ..classifiers.device import select_device
 from .dataset import ClampTensor, RandomGaussianNoise, load_masked_crop
 from .model import build_yeast_efficientnet
 from .supervised import TrainingCancelled
+from ..tile_container import group_training_provenance, training_provenance_contains
 
 VICREG_WEIGHTS_DIR = Path(__file__).parent / "weights" / "vicreg_backbone"
 VICREG_WEIGHTS_PATH = VICREG_WEIGHTS_DIR / "backbone.pth"
@@ -287,10 +288,10 @@ def _save_backbone(
     written to.
 
     `trained_on_paths`: every crop path this run pretrained on -- recorded
-    in meta.json as `trained_on_paths` so a later run can tell (via
-    `warm_start_overlap`) how much of a newly pooled dataset this backbone
-    has already been exposed to before deciding whether/how hard to
-    warm-start from it again.
+    in meta.json as `trained_on` (see `tile_container.group_training_provenance`)
+    so a later run can tell (via `warm_start_overlap`) how much of a newly
+    pooled dataset this backbone has already been exposed to before
+    deciding whether/how hard to warm-start from it again.
 
     `category_counts`: number of annotated crops per category that fed
     this run's pairing -- see `training/supervised.py`'s `_save_weights`
@@ -319,7 +320,7 @@ def _save_backbone(
         ),
         "singleton_categories": singleton_categories,
         "pairing": "class-conditioned (different crops, same category)",
-        "trained_on_paths": sorted(str(p) for p in trained_on_paths),
+        "trained_on": group_training_provenance(trained_on_paths),
         "params": {
             "epochs": params.epochs,
             "batch_size": params.batch_size,
@@ -349,14 +350,13 @@ def warm_start_overlap(paths, meta_path=VICREG_META_PATH) -> tuple[int, int] | N
     the backbone recorded at `meta_path` has already seen, as
     `(already_seen, total)` -- or `None` if `meta_path` doesn't exist, or
     exists but predates this field (an older checkpoint saved before
-    `trained_on_paths` was added). Used by the training UI to warn before
-    a warm-started run: repeatedly exposing the backbone to the same crops
-    across rounds isn't the validation-leakage bug that motivated always
-    training the supervised classifier from scratch (VICReg has no
-    held-out split to corrupt -- see `training/supervised.py`'s module
-    docstring), but a user deliberately trying to broaden a backbone's
-    exposure still wants to know how much of a newly pooled dataset is
-    actually new to it."""
+    `trained_on` was added). Used by the training UI to warn before a warm-started run: repeatedly
+    exposing the backbone to the same crops across rounds isn't the
+    validation-leakage bug that motivated always training the supervised
+    classifier from scratch (VICReg has no held-out split to corrupt --
+    see `training/supervised.py`'s module docstring), but a user
+    deliberately trying to broaden a backbone's exposure still wants to
+    know how much of a newly pooled dataset is actually new to it."""
     import json
 
     meta_path = Path(meta_path)
@@ -366,12 +366,13 @@ def warm_start_overlap(paths, meta_path=VICREG_META_PATH) -> tuple[int, int] | N
         meta = json.loads(meta_path.read_text())
     except (OSError, ValueError):
         return None
-    trained_on = meta.get("trained_on_paths")
+    trained_on = meta.get("trained_on")
     if trained_on is None:
         return None
-    seen = set(trained_on)
     paths = list(paths)
-    already_seen = sum(1 for p in paths if str(p) in seen)
+    already_seen = sum(
+        1 for p in paths if training_provenance_contains(trained_on, p)
+    )
     return already_seen, len(paths)
 
 

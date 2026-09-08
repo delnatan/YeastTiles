@@ -24,9 +24,7 @@ class TrainingMonitorPanel(QWidget):
         self.canvas = FigureCanvasQTAgg(self.figure)
         self.ax = self.figure.add_subplot(111)
         self.ax_right = self.ax.twinx()
-        self.ax.set_xlabel("epoch")
-        self.ax.set_ylabel("loss")
-        self.ax_right.set_ylabel("mu_mse")
+        self._label_axes()
 
         self.log_view = QPlainTextEdit()
         self.log_view.setReadOnly(True)
@@ -45,9 +43,7 @@ class TrainingMonitorPanel(QWidget):
         self._mu_mses = []
         self.ax.clear()
         self.ax_right.clear()
-        self.ax.set_xlabel("epoch")
-        self.ax.set_ylabel("loss")
-        self.ax_right.set_ylabel("mu_mse")
+        self._label_axes()
         self.canvas.draw_idle()
         self.log_view.clear()
 
@@ -58,12 +54,21 @@ class TrainingMonitorPanel(QWidget):
             self._mu_mses.append(mu_mse)
         self._redraw()
 
-    def _redraw(self):
-        self.ax.clear()
-        self.ax_right.clear()
+    def _label_axes(self):
         self.ax.set_xlabel("epoch")
         self.ax.set_ylabel("loss")
         self.ax_right.set_ylabel("mu_mse")
+        # `Axes.clear()` resets a twin axis's tick/label side back to the
+        # default left, undoing what `ax.twinx()` set up -- re-apply it here
+        # since this runs after every `.clear()` (construction, `clear()`,
+        # `_redraw()`), not just once.
+        self.ax_right.yaxis.tick_right()
+        self.ax_right.yaxis.set_label_position("right")
+
+    def _redraw(self):
+        self.ax.clear()
+        self.ax_right.clear()
+        self._label_axes()
         (loss_line,) = self.ax.plot(
             self._epochs, self._losses, color="tab:blue", label="loss"
         )

@@ -1,3 +1,6 @@
+# DE note: you can run `uv sync --extra full` to make sure all the packages
+# are installed.
+
 [project]
 name = "tileclass"
 version = "0.1.0"
@@ -30,6 +33,9 @@ classification = [
     "torch",
     "torchvision",
     "scikit-learn>=1.9.0",
+    "matplotlib",
+    "polars",
+    "seaborn",
 ]
 # yeastprep's raw-stack-to-tiles pipeline (Data Reduction, Denoise,
 # Deconvolve, Segmentation, Tile Generation) -- the heavy, GPU-segmentation
@@ -44,6 +50,7 @@ prep = [
     "vispy",
     "matplotlib",
     "polars",
+    "seaborn",
 ]
 # PSF Calculator convenience tab on the Deconvolve page (computes a
 # synthetic widefield PSF from optical parameters). Deconvolution itself

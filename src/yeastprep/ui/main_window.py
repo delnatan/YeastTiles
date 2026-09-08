@@ -6,7 +6,11 @@ checkable batch-selection tree shared by every page (see
 project_tree_panel.py's module docstring) -- and the `SelectionActionsPanel`
 below that, rather than putting the tree and page list in two side-by-side
 columns, so the rest of the window is free for image previews. That column
-drives a QStackedWidget holding the actual pages. Switching pages doesn't
+sits in a QSplitter (`main_splitter`) against a QStackedWidget holding the
+actual pages, rather than a fixed-width column, so it can be dragged wider
+for a long project path without stealing width from every other page's own
+plots/previews by default; the sash position persists across sessions (see
+`settings.save_splitter_state`/`restore_splitter_state`). Switching pages doesn't
 stop a page's background worker: QStackedWidget only hides the widget, so
 a batch run on a page you've navigated away from keeps going and keeps
 updating its stage-list progress bar.
@@ -34,6 +38,7 @@ from qtpy.QtWidgets import (
     QListWidgetItem,
     QMainWindow,
     QProgressBar,
+    QSplitter,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
@@ -117,15 +122,19 @@ class YeastPrepWindow(QMainWindow):
         self.breadcrumb = PipelineBreadcrumb(self.tree_panel)
         outer.addWidget(self.breadcrumb)
 
-        layout = QHBoxLayout()
-        outer.addLayout(layout, 1)
+        self.main_splitter = QSplitter()
+        outer.addWidget(self.main_splitter, 1)
 
         sidebar = QWidget()
         sidebar_layout = QVBoxLayout(sidebar)
         sidebar_layout.setContentsMargins(0, 0, 0, 0)
-        sidebar.setMinimumWidth(320)
-        sidebar.setMaximumWidth(420)
-        layout.addWidget(sidebar)
+        # Narrower default than before -- this column is a page picker + a
+        # navigation tree, neither of which needs much width -- but still a
+        # QSplitter, not a fixed size, so it can be dragged wider for a long
+        # project path/filename. Sash position persists across sessions
+        # (see `settings.restore_splitter_state` below and `closeEvent`).
+        sidebar.setMinimumWidth(220)
+        self.main_splitter.addWidget(sidebar)
 
         self.page_list = QListWidget()
         sidebar_layout.addWidget(self.page_list)
@@ -136,7 +145,13 @@ class YeastPrepWindow(QMainWindow):
         sidebar_layout.addWidget(self.selection_panel)
 
         self.stack = QStackedWidget()
-        layout.addWidget(self.stack, 1)
+        self.main_splitter.addWidget(self.stack)
+        self.main_splitter.setStretchFactor(0, 0)
+        self.main_splitter.setStretchFactor(1, 1)
+        self.main_splitter.setCollapsible(0, False)
+        self.main_splitter.setCollapsible(1, False)
+        if not settings.restore_splitter_state("main_sidebar", self.main_splitter):
+            self.main_splitter.setSizes([280, self.width() - 280])
 
         self._progress_bars = {}
         for name, page in self._pages:
@@ -213,6 +228,7 @@ class YeastPrepWindow(QMainWindow):
 
     def closeEvent(self, event):
         settings.save_window_geometry(self)
+        settings.save_splitter_state("main_sidebar", self.main_splitter)
         for _name, page in self._pages:
             page.shutdown()
         self.tree_panel.shutdown()

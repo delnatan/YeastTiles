@@ -18,17 +18,17 @@ from pathlib import Path
 from qtpy.QtCore import QThread, Signal
 from qtpy.QtWidgets import (
     QCheckBox,
+    QFrame,
     QGroupBox,
     QHBoxLayout,
-    QHeaderView,
     QLabel,
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QSplitter,
-    QTableWidget,
-    QTableWidgetItem,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -44,6 +44,7 @@ from tileclass.training.vicreg import load_backbone
 from yeastprep.core.classify import sample_unlabeled
 
 from ..common.checkpoint_file_picker import CheckpointFilePicker
+from ..diagnostics.annotation_analytics_panel import AnnotationAnalyticsPanel
 from ..diagnostics.embedding_scatter_widget import UNLABELED_LABEL, EmbeddingScatterWidget
 from ..project_tree_panel import ProjectTreePanel
 from ..worker import ClassifierInferenceWorker
@@ -69,8 +70,6 @@ class ClassifyTilesPage(QWidget):
 
     def _build_ui(self):
         outer = QVBoxLayout(self)
-        self.pool_widget = ClassifierPoolWidget()
-        outer.addWidget(self.pool_widget)
 
         splitter = QSplitter()
         outer.addWidget(splitter, 1)
@@ -78,15 +77,30 @@ class ClassifyTilesPage(QWidget):
         left = QWidget()
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(0, 0, 0, 0)
+        self.pool_widget = ClassifierPoolWidget()
+        left_layout.addWidget(self.pool_widget)
         left_layout.addWidget(self._build_inference_group())
         left_layout.addWidget(self._build_embeddings_controls_group())
         left_layout.addStretch(1)
-        left.setMinimumWidth(360)
-        left.setMaximumWidth(460)
-        splitter.addWidget(left)
+
+        left_scroll = QScrollArea()
+        left_scroll.setWidgetResizable(True)
+        left_scroll.setFrameShape(QFrame.NoFrame)
+        left_scroll.setWidget(left)
+        left_scroll.setMinimumWidth(360)
+        left_scroll.setMaximumWidth(460)
+        splitter.addWidget(left_scroll)
 
         self.embedding_scatter = EmbeddingScatterWidget()
-        splitter.addWidget(self.embedding_scatter)
+        self.annotation_analytics = AnnotationAnalyticsPanel(self.pool_widget)
+
+        self.right_tabs = QTabWidget()
+        self.right_tabs.addTab(self.embedding_scatter, "Embeddings")
+        self._analytics_tab_index = self.right_tabs.addTab(
+            self.annotation_analytics, "Annotation Analytics"
+        )
+        self.right_tabs.currentChanged.connect(self._on_right_tab_changed)
+        splitter.addWidget(self.right_tabs)
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
 
@@ -121,13 +135,6 @@ class ClassifyTilesPage(QWidget):
         )
         self.infer_btn.clicked.connect(self._run_inference)
         v.addWidget(self.infer_btn)
-
-        self.predicted_table = QTableWidget(0, 2)
-        self.predicted_table.setHorizontalHeaderLabels(["Category", "Predicted"])
-        self.predicted_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        self.predicted_table.verticalHeader().setVisible(False)
-        self.predicted_table.setMaximumHeight(160)
-        v.addWidget(self.predicted_table)
 
         self.inference_log = QPlainTextEdit()
         self.inference_log.setReadOnly(True)
@@ -191,6 +198,15 @@ class ClassifyTilesPage(QWidget):
 
     def _wire_up(self):
         self.embedding_scatter.pointsSelected.connect(self._open_viewer_for_selection)
+        self.pool_widget.pool_changed.connect(self.annotation_analytics.refresh_from_pool)
+
+    def _on_right_tab_changed(self, index: int):
+        # Annotation files can change on disk from outside this page
+        # entirely (a separately opened tile viewer, another yeastprep
+        # window), so pull a fresh summary each time the tab becomes
+        # visible rather than relying only on pool_changed.
+        if index == self._analytics_tab_index:
+            self.annotation_analytics.refresh_from_pool()
 
     def load_selection(self, stage: str, path: str, mode: str):
         """Only `mode == "open_viewer_fov"` applies here (see
@@ -278,16 +294,14 @@ class ClassifyTilesPage(QWidget):
                 f"  agreement with {result.n_human_confirmed} human-confirmed tile(s): "
                 f"{result.accuracy_vs_human:.3f} ({result.n_agree_with_human}/{result.n_human_confirmed})"
             )
-        categories = sorted(result.category_counts)
-        self.predicted_table.setRowCount(len(categories))
-        for row, category in enumerate(categories):
-            self.predicted_table.setItem(row, 0, QTableWidgetItem(category))
-            self.predicted_table.setItem(
-                row, 1, QTableWidgetItem(str(result.category_counts[category]))
-            )
         self.status_label.setText("Inference complete.")
         self.infer_btn.setEnabled(True)
         self._teardown_inference_thread()
+        # Newly-tagged predictions just landed on disk -- refresh the
+        # Annotation Analytics tab's pool-wide summary rather than leaving
+        # it showing pre-inference counts until the user happens to click
+        # into that tab.
+        self.annotation_analytics.refresh_from_pool()
 
     def _on_inference_error(self, message: str):
         self.inference_log.appendPlainText(f"inference ERROR: {message}")
@@ -360,7 +374,9 @@ class ClassifyTilesPage(QWidget):
             self.embedding_scatter.show_embedding_scatter(xy, labels, paths=paths, knn_acc=acc)
             self.status_label.setText("Embeddings evaluated.")
         except Exception as exc:
-            self.inference_log.appendPlainText(f"embedding evaluation failed: {exc}")
+            QMessageBox.critical(
+                self, "yeastprep", f"Embedding evaluation failed:\n\n{exc}"
+            )
             self.status_label.setText("Embedding evaluation failed.")
         finally:
             QApplication.restoreOverrideCursor()

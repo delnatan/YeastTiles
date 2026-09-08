@@ -43,6 +43,7 @@ from .dataset import (
     stratified_split,
 )
 from .model import build_yeast_efficientnet
+from ..tile_container import group_training_provenance
 
 
 class TrainingCancelled(Exception):
@@ -201,7 +202,8 @@ def _save_weights(
     default to `output_dir=None` can still report where the result landed.
 
     `trained_on_paths`: the crop paths this run actually trained on (the
-    train split, not val) -- recorded in meta.json as provenance. Every
+    train split, not val) -- recorded in meta.json as `trained_on` (see
+    `tile_container.group_training_provenance`) as provenance. Every
     supervised run starts from scratch, so nothing here needs to *warn*
     about repeat exposure the way `training/vicreg.py`'s equivalent field
     does for its warm-startable backbone; this is just an honest record of
@@ -232,7 +234,7 @@ def _save_weights(
     meta["categories"] = categories
     if category_counts is not None:
         meta["category_counts"] = {c: category_counts.get(c, 0) for c in categories}
-    meta["trained_on_paths"] = sorted(str(p) for p in trained_on_paths)
+    meta["trained_on"] = group_training_provenance(trained_on_paths)
     meta["last_trained"] = datetime.now(timezone.utc).isoformat()
     meta.setdefault(
         "description",
