@@ -255,6 +255,10 @@ class TrainDenoisePage(QWidget):
                 top_item = QTreeWidgetItem(self.pool_tree, [f"{root}  ({len(paths)} file(s))"])
                 top_item.setData(0, Qt.UserRole, root)
                 top_item.setFlags(top_item.flags() & ~Qt.ItemIsUserCheckable)
+                # The label above gets elided when the tree is narrower than
+                # the project path -- a tooltip is the only other place a
+                # narrow window leaves to see the full path.
+                top_item.setToolTip(0, root)
 
                 for path in paths:
                     leaf = QTreeWidgetItem(top_item, [path.name])

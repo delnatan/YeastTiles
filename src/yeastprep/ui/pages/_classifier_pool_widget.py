@@ -104,6 +104,10 @@ class ClassifierPoolWidget(QWidget):
                 top_item = QTreeWidgetItem(self.pool_tree, [f"{root}  ({len(fov_dirs)} FOV(s))"])
                 top_item.setData(0, Qt.UserRole, root)
                 top_item.setFlags(top_item.flags() & ~Qt.ItemIsUserCheckable)
+                # The label above gets elided when the tree is narrower than
+                # the project path -- a tooltip is the only other place a
+                # narrow window leaves to see the full path.
+                top_item.setToolTip(0, root)
 
                 for fov_dir in fov_dirs:
                     leaf = QTreeWidgetItem(top_item, [fov_dir.name])

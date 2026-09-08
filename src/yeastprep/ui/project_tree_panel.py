@@ -335,15 +335,68 @@ class ProjectTreePanel(QWidget):
         """Populate the tree from an already-computed `ProjectScanSnapshot`
         -- pure Qt-widget bookkeeping, no filesystem access, so this is
         cheap enough to run on the GUI thread. `snapshot` is None only when
-        no project is open yet."""
+        no project is open yet.
+
+        `refresh()` runs far more often than just "the user opened a new
+        project" -- every batch action, source-stage change, and raw-pattern
+        edit calls it too -- and each cycle tears down and rebuilds every
+        leaf from scratch (see `_apply_stage`). Left alone, that discards
+        the tree's scroll position and current selection every time,
+        which reads as "clicking a tree item scrolls back to the top"
+        since a refresh so often lands right after the click that started
+        whatever triggered it. Save/restore both around the rebuild so a
+        refresh update the tree without yanking the user's place in it.
+        """
+        scrollbar = self.tree.verticalScrollBar()
+        saved_scroll = scrollbar.value()
+        saved_current = self._current_item_key()
+
         for stage in _STAGE_ORDER:
             self._apply_stage(stage, snapshot.stages[stage] if snapshot else None)
+
+        self._restore_current_item(saved_current)
+        scrollbar.setValue(saved_scroll)
         self.refreshed.emit()
+
+    def _current_item_key(self):
+        current = self.tree.currentItem()
+        if current is None:
+            return None
+        return current.data(0, Qt.UserRole)
+
+    def _restore_current_item(self, key):
+        if key is None:
+            return
+        for stage_item in self._stage_items.values():
+            if stage_item.data(0, Qt.UserRole) == key:
+                self.tree.setCurrentItem(stage_item)
+                return
+            for i in range(stage_item.childCount()):
+                leaf = stage_item.child(i)
+                if leaf.data(0, Qt.UserRole) == key:
+                    self.tree.setCurrentItem(leaf)
+                    return
 
     def _apply_stage(self, stage: str, result):
         top_item = self._stage_items.get(stage)
         if top_item is None:
             return
+        # Preserve the user's checked/unchecked choices across the rebuild
+        # below -- every leaf is torn down and recreated from the fresh
+        # scan, and defaulting them all back to checked would silently
+        # re-include files the user had deliberately excluded from a batch
+        # run the next time anything triggers a refresh.
+        was_populated = top_item.childCount() > 0
+        previously_unchecked = {
+            top_item.child(i).data(0, Qt.UserRole)[2]
+            for i in range(top_item.childCount())
+            if top_item.child(i).checkState(0) == Qt.Unchecked
+        }
+        # Ditto for manual expand/collapse: only apply the auto-expand
+        # default the first time a stage is populated, not on every
+        # subsequent refresh.
+        was_expanded = top_item.isExpanded()
+
         top_item.takeChildren()
 
         badge = " \U0001f52c" if result is not None and result.is_active_2d else ""
@@ -374,8 +427,10 @@ class ProjectTreePanel(QWidget):
                     # defaulting to unchecked-means-everything would make
                     # "process everything" an invisible fallback rather
                     # than something the tree actually shows you're about
-                    # to do.
-                    leaf.setCheckState(0, Qt.Checked)
+                    # to do. But if this leaf was already unchecked before
+                    # this rebuild, keep it that way.
+                    checked = leaf_info.path not in previously_unchecked
+                    leaf.setCheckState(0, Qt.Checked if checked else Qt.Unchecked)
                 leaf.setIcon(0, status_icon(leaf_info.icon_state))
                 if leaf_info.tooltip:
                     leaf.setToolTip(0, leaf_info.tooltip)
@@ -386,8 +441,10 @@ class ProjectTreePanel(QWidget):
             self.tree.blockSignals(False)
         # Mirrors the old synchronous behavior: every 2D-stage/raw node
         # auto-expands, the tiles summary stays collapsed (it's a per-FOV
-        # rollup, not something you page through leaf by leaf).
-        top_item.setExpanded(stage != project_core.STAGE_TILES)
+        # rollup, not something you page through leaf by leaf) -- but only
+        # the first time a stage is populated. A later refresh respects
+        # whatever the user last set it to instead of stomping it back.
+        top_item.setExpanded(was_expanded if was_populated else stage != project_core.STAGE_TILES)
 
     def last_scan_snapshot(self):
         """Most recent completed `project_scan.ProjectScanSnapshot`, or
