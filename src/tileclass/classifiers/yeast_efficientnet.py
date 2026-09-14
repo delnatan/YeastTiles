@@ -1,11 +1,6 @@
 """Yeast cell-crop classifier: brightfield + fluorescence + mask crops,
 EfficientNet-B0 with a stem modified for 2 input channels.
 
-Self-contained inference port of BurgessLab/imaging/Bri/yeastVIC.py +
-03_inference.py -- only what's needed to load the trained weights and
-classify crops, none of the training / self-supervised-pretraining
-machinery those scripts also carry.
-
 torch/torchvision are imported lazily (inside methods, not at module
 scope) so listing available classifiers never requires them -- only
 actually running one does. See the ``classification`` extra in pyproject.toml.
@@ -40,7 +35,9 @@ class YeastEfficientNetClassifier(TileClassifier):
         caller) that monkeypatches the module-level `WEIGHTS_PATH`/
         `META_PATH` still takes effect -- a parameter default binds once at
         module-import time, before any monkeypatch could run."""
-        self._weights_path = Path(weights_path) if weights_path is not None else WEIGHTS_PATH
+        self._weights_path = (
+            Path(weights_path) if weights_path is not None else WEIGHTS_PATH
+        )
         meta_path = Path(meta_path) if meta_path is not None else META_PATH
         meta = json.loads(meta_path.read_text())
         self.categories = meta["categories"]
@@ -56,8 +53,12 @@ class YeastEfficientNetClassifier(TileClassifier):
 
         device = select_device()
 
-        model = build_yeast_efficientnet(len(self.categories), pretrained=False)
-        model.load_state_dict(torch.load(self._weights_path, map_location=device))
+        model = build_yeast_efficientnet(
+            len(self.categories), pretrained=False
+        )
+        model.load_state_dict(
+            torch.load(self._weights_path, map_location=device)
+        )
         model.to(device)
         model.eval()
 
