@@ -23,17 +23,16 @@ def main():
     try:
         from .ui.main_window import YeastPrepWindow
     except ImportError as exc:
-        # Could be a missing `prep` package (cellpose/pyvistra/jssl-denoise)
-        # or a missing `classification` one (torch/scikit-learn) -- the
-        # Classifier Training page (batch auto-annotate/fine-tune across a
-        # pooled project) is wired into this window unconditionally, so
-        # yeastprep needs both extras to launch at all, unlike `tiled_viewer`
-        # which only needs `classification` when a classifier is selected.
+        # A missing `classification` package (torch/pyvistra/...): the
+        # window needs that extra to launch at all. The `prep` extra's
+        # cellpose/jssl-denoise aren't needed here -- without them the
+        # Segmentation/Denoise pages just show an "install prep"
+        # placeholder (see yeastprep/optional_deps.py).
         QMessageBox.critical(
             None,
             "yeastprep",
             "yeastprep needs extra packages that aren't installed:\n"
-            f"{exc}\n\nInstall with:\n  pip install -e '.[classification,prep]'",
+            f"{exc}\n\nInstall with:\n  pip install -e '.[classification]'",
         )
         sys.exit(1)
 

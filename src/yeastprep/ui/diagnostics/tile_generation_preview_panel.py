@@ -12,8 +12,8 @@ this import.
 """
 
 import numpy as np
-from cellpose.utils import masks_to_outlines
 
+from ..common.mask_outlines import outline_rgba
 from ..common.single_image_preview import SingleImagePreviewPanel
 from yeastprep.core.tiles import cell_geometry
 
@@ -25,9 +25,7 @@ class TileGenerationPreviewPanel(SingleImagePreviewPanel):
     def set_data(self, focal_slice: np.ndarray, masks: np.ndarray, tile_size: int):
         self.set_image(focal_slice)
 
-        outline_rgba = np.zeros((*masks.shape, 4), dtype=np.float32)
-        outline_rgba[masks_to_outlines(masks)] = _OUTLINE_RGBA
-        self.canvas.set_overlay_mask(outline_rgba)
+        self.canvas.set_overlay_mask(outline_rgba(masks, _OUTLINE_RGBA))
         self.canvas.set_overlay_boxes(self._crop_boxes(masks, tile_size), color=_BOX_COLOR)
 
         n_cells = int(masks.max())

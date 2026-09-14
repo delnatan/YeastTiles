@@ -29,6 +29,11 @@ those action buttons is what switches the stack to the owning page *and*
 loads the file into it (`_on_action_triggered`) -- one click, and the
 actions panel always shows exactly what a click on the currently-selected
 item can do next.
+
+Denoise and Segmentation need the `prep` extra's jssl-denoise/cellpose, so
+on an install without them those two slots get a `MissingExtraPage` saying
+what to install, and the rest of the window (Classifier Training, Classify
+Tiles, ...) still works -- see yeastprep/optional_deps.py.
 """
 
 from qtpy.QtWidgets import (
@@ -44,16 +49,17 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
+from yeastprep.optional_deps import missing
+
 from . import selection_actions, settings
 from .common.stage_breadcrumb import PipelineBreadcrumb
 from .pages.classifier_training_page import ClassifierTrainingPage
 from .pages.classify_tiles_page import ClassifyTilesPage
 from .pages.data_reduction_page import DataReductionPage
 from .pages.deconvolve_page import DeconvolvePage
-from .pages.denoise_page import DenoisePage
+from .pages.missing_extra_page import MissingExtraPage
 from .pages.page_progress import PageProgress
 from .pages.preview_page import PreviewPage
-from .pages.segmentation_page import SegmentationPage
 from .pages.tile_generation_page import TileGenerationPage
 from .project_tree_panel import ProjectTreePanel
 from .selection_actions_panel import SelectionActionsPanel
@@ -69,9 +75,9 @@ class YeastPrepWindow(QMainWindow):
 
         self.data_reduction_page = DataReductionPage(self.tree_panel)
         self.preview_page = PreviewPage(self.tree_panel)
-        self.denoise_page = DenoisePage(self.tree_panel)
+        self.denoise_page = self._build_denoise_page()
         self.deconvolve_page = DeconvolvePage(self.tree_panel)
-        self.segmentation_page = SegmentationPage(self.tree_panel)
+        self.segmentation_page = self._build_segmentation_page()
         self.tile_generation_page = TileGenerationPage(self.tree_panel)
         self.classifier_training_page = ClassifierTrainingPage(self.tree_panel)
         self.classify_tiles_page = ClassifyTilesPage(self.tree_panel)
@@ -109,6 +115,25 @@ class YeastPrepWindow(QMainWindow):
 
     # ------------------------------------------------------------------
     # UI construction
+
+    # The page modules are imported only once their packages are known to
+    # be installed, since they (and their params panels) import them at
+    # module level.
+    def _build_denoise_page(self):
+        absent = missing("jssl_denoise")
+        if absent:
+            return MissingExtraPage("Denoise", absent, extra="prep")
+        from .pages.denoise_page import DenoisePage
+
+        return DenoisePage(self.tree_panel)
+
+    def _build_segmentation_page(self):
+        absent = missing("cellpose")
+        if absent:
+            return MissingExtraPage("Segmentation", absent, extra="prep")
+        from .pages.segmentation_page import SegmentationPage
+
+        return SegmentationPage(self.tree_panel)
 
     def _build_ui(self):
         central = QWidget()

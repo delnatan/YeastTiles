@@ -10,8 +10,8 @@ beyond this import.
 """
 
 import numpy as np
-from cellpose.utils import masks_to_outlines
 
+from ..common.mask_outlines import outline_rgba
 from ..common.single_image_preview import SingleImagePreviewPanel
 
 _OUTLINE_RGBA = (1.0, 0.85, 0.0, 1.0)  # yellow, matches cellpose GUI's outline color
@@ -21,9 +21,7 @@ class SegmentationPreviewPanel(SingleImagePreviewPanel):
     def set_data(self, focal_slice: np.ndarray, masks: np.ndarray):
         self.set_image(focal_slice)
 
-        outline_rgba = np.zeros((*masks.shape, 4), dtype=np.float32)
-        outline_rgba[masks_to_outlines(masks)] = _OUTLINE_RGBA
-        self.canvas.set_overlay_mask(outline_rgba)
+        self.canvas.set_overlay_mask(outline_rgba(masks, _OUTLINE_RGBA))
 
         n_cells = int(masks.max())
         self.status_label.setText(f"{n_cells} cell{'s' if n_cells != 1 else ''} detected")

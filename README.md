@@ -33,18 +33,18 @@ The two packages have very different weight, and installs are split to match:
   machine.
 
 - **Full pipeline, raw stacks through tiles** (`yeastprep`) -- needs both
-  `prep` (cellpose, pyvistra, jssl-denoise) and `classification` (torch):
-  yeastprep's own Classifier Training page is the main entry point for
-  batch-wise annotation/fine-tuning across a pooled project (not just
-  `tiled_viewer`'s per-page Auto-Annotate), and it's wired into the main
-  window unconditionally, so both extras are required just to launch it.
+  `prep` (cellpose, jssl-denoise) and `classification` (torch, pyvistra,
+  qtkit):
 
   ```bash
   uv sync --extra classification --extra prep
   ```
 
-  Running `uv run yeastprep` without the `prep` extra installed shows a
-  dialog naming the missing packages instead of crashing outright. `psf`
+  `yeastprep` launches with just `classification`: its Classifier Training
+  page (the main entry point for batch-wise annotation/fine-tuning across a
+  pooled project) and Classify Tiles page work, and the Denoise and
+  Segmentation pages show which packages to install instead. Running it
+  without `classification` shows a dialog naming the missing packages. `psf`
   is a further, separate extra -- it's only `psfkit`, used by the PSF
   Calculator convenience tab on the Deconvolve page. Deconvolution itself
   just needs a PSF tiff file, so skipping `psf` doesn't block it; that tab
@@ -77,7 +77,8 @@ purely for browsing/annotating tiles even without deciding on `classification` u
 
 ### Third-party packages
 
-`jssl-denoise`, `pyvistra` (`prep` extra), and `psfkit` (`psf` extra) are
+`jssl-denoise` (`prep` extra), `pyvistra` and `qtkit` (`classification` extra),
+and `psfkit` (`psf` extra) are
 listed directly as git-URL dependencies in `pyproject.toml` -- `uv sync`
 clones them itself; no manual cloning or local path setup needed. `resolvde` isn't
 a dependency at all: its deconvolution code is vendored directly into

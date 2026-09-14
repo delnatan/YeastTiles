@@ -18,8 +18,6 @@ QObject-worker-on-QThread + progress/finished/error/cancelled signal pattern.
 from dataclasses import dataclass
 from pathlib import Path
 
-from jssl_denoise.training import Trainer
-
 from qtpy.QtCore import QObject, QThread, QTimer, Signal
 from tileclass.training.supervised import TrainingCancelled, TrainingParams, train_classifier
 from tileclass.training.vicreg import VICRegParams, pretrain_vicreg
@@ -665,6 +663,8 @@ class TrainingWorker(QObject):
             )
         )
         try:
+            from jssl_denoise.training import Trainer
+
             checkpoint = Trainer(self._config).fit(
                 self._images, callback=self, should_stop=lambda: self._cancel_requested
             )

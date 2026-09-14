@@ -29,6 +29,12 @@ dependencies = [
 # powerful machine can still handle for inference and light fine-tuning.
 # VICReg pretraining is compute-heavy but needs no extra packages beyond
 # this, just more time/a GPU, so it isn't a separate extra.
+# pyvistra/qtkit are here because `yeastprep` itself (its Classifier
+# Training/Classify Tiles pages, project tree, image previews) needs them to
+# launch; only Denoise and Segmentation need the `prep` extra, and show an
+# "install prep" placeholder without it (see yeastprep/optional_deps.py).
+# qtkit is listed explicitly because pyvistra depends on it without saying
+# where to get it.
 classification = [
     "torch",
     "torchvision",
@@ -36,16 +42,19 @@ classification = [
     "matplotlib",
     "polars",
     "seaborn",
+    "pyvistra @ git+https://github.com/delnatan/pyvistra.git",
+    "qtkit @ git+https://github.com/delnatan/qtkit.git",
 ]
 # yeastprep's raw-stack-to-tiles pipeline (Data Reduction, Denoise,
 # Deconvolve, Segmentation, Tile Generation) -- the heavy, GPU-segmentation
-# stack. Only needed on the machine doing FOV processing, not on one that
+# stack. cellpose and jssl-denoise are what actually gate the Segmentation
+# and Denoise pages; `yeastprep` launches without them. Only needed on the machine doing FOV processing, not on one that
 # just annotates/classifies already-generated tiles. Deconvolution itself
 # only needs a PSF tiff file, not psfkit -- see the separate `psf` extra.
 prep = [
     "cellpose[gui]",
     "pyvistra @ git+https://github.com/delnatan/pyvistra.git",
-    "jssl-denoise @ https://github.com/delnatan/jssl_denoise.git",
+    "jssl-denoise @ git+https://github.com/delnatan/jssl_denoise.git",
     "scipy",
     "vispy",
     "matplotlib",

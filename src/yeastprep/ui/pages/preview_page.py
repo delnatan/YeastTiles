@@ -18,7 +18,6 @@ stage.
 from pathlib import Path
 
 import numpy as np
-from cellpose.utils import masks_to_outlines
 from qtpy.QtCore import Qt, Signal
 from qtpy.QtWidgets import (
     QLabel,
@@ -33,6 +32,7 @@ from yeastprep.core.combined_tiff import BRIGHTFIELD_CHANNEL, TARGET_CHANNEL, lo
 from yeastprep.core.segmentation import load_saved_masks, seg_npy_path
 
 from .. import settings
+from ..common.mask_outlines import outline_rgba
 from ..common.preview_source_label import PreviewSourceLabel
 from ..project_tree_panel import ProjectTreePanel
 from ..rawstack.canvas import RawStackCanvas
@@ -123,9 +123,7 @@ class PreviewPage(QWidget):
         masks = load_saved_masks(seg_npy_path(path))
         n_cells_msg = ""
         if masks is not None:
-            outline_rgba = np.zeros((*masks.shape, 4), dtype=np.float32)
-            outline_rgba[masks_to_outlines(masks)] = _MASK_OUTLINE_RGBA
-            self.canvas.set_overlay_mask(outline_rgba)
+            self.canvas.set_overlay_mask(outline_rgba(masks, _MASK_OUTLINE_RGBA))
             n_cells_msg = f" -- {int(masks.max())} cell(s) segmented"
         else:
             self.canvas.clear_overlay_mask()

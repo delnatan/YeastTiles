@@ -10,14 +10,19 @@ one checkpoint. `denoise_and_save` merges its result into whatever's
 already in 02_denoised/ for that file rather than overwriting it wholesale,
 so denoising channel 0 today and channel 1 tomorrow doesn't clobber
 yesterday's result.
+
+jssl_denoise (the `prep` extra) is imported only when a checkpoint is
+actually loaded, so `DenoiseParams` and the checkpoint-lookup helpers stay
+importable on a classification-only install (core/project.py needs them).
 """
+
+from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
-import torch
-from jssl_denoise import Denoiser
 from pyvistra.io import save_tiff
 from tileclass.classifiers.device import select_device
 
@@ -37,6 +42,10 @@ class DenoiseParams:
 # DenoisePage to auto-fill checkpoint fields for a project that already has
 # checkpoints sitting in it) reads the exact same convention rather than a
 # second hand-copied one that could drift out of sync.
+if TYPE_CHECKING:
+    import torch
+    from jssl_denoise import Denoiser
+
 _CHECKPOINT_CHANNEL_SLUGS = {BRIGHTFIELD_CHANNEL: "brightfield", TARGET_CHANNEL: "target"}
 
 
@@ -71,6 +80,9 @@ def get_denoiser(checkpoint_path: str, device: torch.device | None = None) -> De
     key = (str(checkpoint_path), str(device))
     denoiser = _denoiser_cache.get(key)
     if denoiser is None:
+        from yeastprep.optional_deps import require
+
+        Denoiser = require("jssl_denoise", extra="prep").Denoiser
         denoiser = Denoiser.load(checkpoint_path, device=str(device))
         _denoiser_cache[key] = denoiser
     return denoiser

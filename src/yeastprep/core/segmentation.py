@@ -17,20 +17,29 @@ directly for manual correction, per design.md. Cellpose 4's SAM model
 dropped channel selection, so the GUI needs a real single-channel file --
 opening the 2-channel combined tiff directly would segment/train on the
 target channel too.
+
+cellpose (the `prep` extra) is imported inside the functions that run it,
+not at module level, so `SegmentationParams`/`seg_npy_path`/
+`load_saved_masks` stay importable on a classification-only install --
+core/project.py, core/tiles.py and the Classify/Classifier Training pages
+all pull this module in without ever segmenting anything.
 """
+
+from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
-import torch
-from cellpose import io as cp_io
-from cellpose import utils as cp_utils
-from cellpose.models import CellposeModel
 
 from tileclass.classifiers.device import select_device
 
 from .combined_tiff import brightfield_tiff_path, load_brightfield_channel, write_brightfield_tiff
+
+if TYPE_CHECKING:
+    import torch
+    from cellpose.models import CellposeModel
 
 DEFAULT_MODEL_PATH: str | None = None  # None -> cellpose's built-in default (cpsam)
 
@@ -59,6 +68,9 @@ def get_model(model_path: str | None, device: torch.device | None = None) -> Cel
     key = (model_path, str(device))
     model = _model_cache.get(key)
     if model is None:
+        from yeastprep.optional_deps import require
+
+        CellposeModel = require("cellpose.models", extra="prep").CellposeModel
         model = CellposeModel(pretrained_model=model_path or "cpsam", device=device)
         _model_cache[key] = model
     return model
@@ -84,6 +96,8 @@ def run_segmentation(
     masks = masks_list[0]
     flows = flows_list[0]
     if params.remove_edge_masks:
+        from cellpose import utils as cp_utils
+
         masks = cp_utils.remove_edge_masks(masks)
     n_cells = int(masks.max())
     return SegmentationResult(masks=masks, flows=flows, styles=styles, n_cells=n_cells)
@@ -135,6 +149,8 @@ def segment_and_save(
         image = load_brightfield_channel(path)
         result = run_segmentation(model, image, params)
         bf_path = write_brightfield_tiff(path)
+        from cellpose import io as cp_io
+
         cp_io.masks_flows_to_seg(
             [image], [result.masks], [result.flows], [str(bf_path)], channels=[0, 0]
         )

@@ -1,14 +1,13 @@
 """Per-channel visibility/colormap/contrast controls for the raw-stack
 canvas. Vendored (simplified) from pyvistra/widgets/channel_panel.py's
 ChannelRow: a checkbox, a colormap dropdown, and min/max spinboxes flanking
-pyvistra's own `CompactHistogramWidget` (imported directly, not
-re-vendored -- it's already a self-contained QWidget with no dependency on
-pyvistra's viewer/renderer classes, just numpy + Qt) -- enough for a
+qtkit's `HistogramCanvas` (the shared histogram pyvistra itself now uses in
+place of its old `CompactHistogramWidget`) -- enough for a
 "decent" visual check, not a full contrast-editing suite (no gamma, no
 colormap-picker popup).
 """
 
-from qtpy.QtGui import QColor
+from qtkit import HistogramCanvas
 from qtpy.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -18,8 +17,6 @@ from qtpy.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-
-from pyvistra.widgets.histogram import CompactHistogramWidget
 
 from . import colormaps as _colormaps
 from .channel_state import ChannelDisplayList
@@ -74,9 +71,10 @@ class ChannelRow(QWidget):
         # squeezed onto one row with two labels and two spinboxes, the
         # histogram was only ever getting a sliver of this column's width to
         # actually render a distribution in.
-        self.histogram = CompactHistogramWidget()
-        self.histogram.set_clim(vmin, vmax)
-        self.histogram.climChanged.connect(self._on_histogram_clim_changed)
+        self.histogram = HistogramCanvas()
+        self.histogram.setMaximumHeight(50)
+        self.histogram.set_range(vmin, vmax)
+        self.histogram.rangeChanged.connect(self._on_histogram_clim_changed)
         layout.addWidget(self.histogram, 1)
 
         clim_row = QHBoxLayout()
@@ -105,7 +103,8 @@ class ChannelRow(QWidget):
         slice change, since the histogram has no way to pull that data
         itself."""
         color = self.display[self.channel_idx].display_color() or _FALLBACK_HISTOGRAM_COLOR
-        self.histogram.set_data(data_slice, color)
+        self.histogram.set_data(data_slice)
+        self.histogram.set_color(color)
 
     def _on_clim_edited(self, _value):
         self.display.set_clim(
@@ -125,7 +124,7 @@ class ChannelRow(QWidget):
             self.histogram.blockSignals(True)
             self.min_spin.setValue(state.clim[0])
             self.max_spin.setValue(state.clim[1])
-            self.histogram.set_clim(*state.clim)
+            self.histogram.set_range(*state.clim)
             self.min_spin.blockSignals(False)
             self.max_spin.blockSignals(False)
             self.histogram.blockSignals(False)
@@ -133,8 +132,7 @@ class ChannelRow(QWidget):
             self.cmap_combo.blockSignals(True)
             self.cmap_combo.setCurrentText(state.colormap_name)
             self.cmap_combo.blockSignals(False)
-            self.histogram.color = QColor(state.display_color() or _FALLBACK_HISTOGRAM_COLOR)
-            self.histogram.update()
+            self.histogram.set_color(state.display_color() or _FALLBACK_HISTOGRAM_COLOR)
         elif field == "visible":
             self.chk_visible.blockSignals(True)
             self.chk_visible.setChecked(state.visible)
