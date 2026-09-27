@@ -56,6 +56,14 @@ sidecar file or a fourth "reviewed" state to track.
 drops every tag that still carries a confidence, leaving human-set tags
 alone -- for wiping stale predictions from an older model before
 re-running a newer one over the same folder.
+
+Several writers can hold the same sidecar open at once (a tile viewer
+subprocess, yeastprep's background "Run Inference on Pool", an embedding
+lasso viewer), and `save()` rewrites the whole file. So every mutating
+method re-reads the file first and applies only its own change on top --
+otherwise a writer's stale in-memory copy would silently erase whatever
+another writer saved since it loaded (e.g. human tags made while an
+inference pass was running).
 """
 
 import os
@@ -229,10 +237,12 @@ class TileAnnotations(MutableMapping):
 
     def __setitem__(self, relpath, category):
         """Tag relpath with category (empty/None clears the tag) and save."""
+        self.load()
         self._apply(relpath, category)
         self.save()
 
     def __delitem__(self, relpath):
+        self.load()
         del self._categories[relpath]
         self.confidences.pop(relpath, None)
         self.save()
@@ -252,6 +262,7 @@ class TileAnnotations(MutableMapping):
         dict.update() contract, just persisted.
         """
         items = other.items() if hasattr(other, "items") else other
+        self.load()
         for relpath, category in items:
             self._apply(relpath, category)
         for relpath, category in kwargs.items():
@@ -294,8 +305,15 @@ class TileAnnotations(MutableMapping):
         confidence)` triples, saving once. Unlike `update()`/
         `__setitem__`, this *keeps* the confidence -- it marks the tag as
         an unconfirmed prediction until a human overwrites it through the
-        plain category-only API."""
+        plain category-only API.
+
+        Never replaces a human-set tag: callers pick untagged relpaths up
+        front, but a human may have tagged one of them (in another window)
+        while the classifier was running."""
+        self.load()
         for relpath, category, confidence in items:
+            if relpath in self._categories and relpath not in self.confidences:
+                continue
             if category:
                 self._categories[relpath] = category
                 self.confidences[relpath] = confidence
@@ -311,6 +329,7 @@ class TileAnnotations(MutableMapping):
         number of tags removed -- for a classifier to be able to
         re-predict a folder after a new training run without disturbing
         anything a human has already confirmed."""
+        self.load()
         stale = list(self.confidences)
         for relpath in stale:
             self._categories.pop(relpath, None)
@@ -339,6 +358,7 @@ class TileAnnotations(MutableMapping):
         name = name.strip()
         if not name:
             return
+        self.load()
         if not self._category_vocab:
             self._category_vocab = self.categories()
         key = normalized_category_key(name)
@@ -357,6 +377,7 @@ class TileAnnotations(MutableMapping):
         Existing tags using this category are left untouched (still shown
         on their tiles) — only removed from the picker's choices.
         """
+        self.load()
         if name in self._category_vocab:
             self._category_vocab.remove(name)
             self.save()
@@ -366,6 +387,7 @@ class TileAnnotations(MutableMapping):
         new = new.strip()
         if not new or old == new:
             return
+        self.load()
         if old in self._category_vocab:
             self._category_vocab[self._category_vocab.index(old)] = new
         for relpath, category in self._categories.items():
@@ -375,6 +397,7 @@ class TileAnnotations(MutableMapping):
 
     def set_dims(self, dims):
         """Persist the axes-order string used for this folder."""
+        self.load()
         self.dims = dims
         self.save()
 
@@ -382,6 +405,7 @@ class TileAnnotations(MutableMapping):
         """Persist the fast thumbnail grid's per-channel color/blend-mode
         /opacity overlay settings: ``{channel_idx: (color_hex, blend_mode,
         opacity)}``."""
+        self.load()
         self.channel_colors = dict(channel_colors)
         self.save()
 

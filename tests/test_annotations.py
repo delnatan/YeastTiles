@@ -28,3 +28,30 @@ def test_tags_written_against_the_folder_are_visible_through_the_container(tmp_p
 
     reopened = TileAnnotations(str(tmp_path / "fov1.tiles"))
     assert reopened.get("fov1_cell00001.tif") == "single"
+
+
+def test_concurrent_writer_does_not_erase_other_writers_tags(tmp_path):
+    """Two stores open on the same sidecar (e.g. a tile viewer and a
+    background inference pass, each loaded before the other saved): a
+    save from one must not drop what the other already saved."""
+    viewer = TileAnnotations(str(tmp_path / "fov1.tiles"))
+    inference = TileAnnotations(str(tmp_path / "fov1.tiles"))
+
+    viewer.update([("fov1_cell00001.tif", "single")])
+    inference.update_with_confidence([("fov1_cell00002.tif", "budded", 0.9)])
+
+    reopened = TileAnnotations(str(tmp_path / "fov1.tiles"))
+    assert reopened.get("fov1_cell00001.tif") == "single"
+    assert reopened.get("fov1_cell00002.tif") == "budded"
+
+
+def test_prediction_never_replaces_a_human_tag_saved_meanwhile(tmp_path):
+    viewer = TileAnnotations(str(tmp_path / "fov1.tiles"))
+    inference = TileAnnotations(str(tmp_path / "fov1.tiles"))
+
+    viewer.update([("fov1_cell00001.tif", "single")])
+    inference.update_with_confidence([("fov1_cell00001.tif", "budded", 0.9)])
+
+    reopened = TileAnnotations(str(tmp_path / "fov1.tiles"))
+    assert reopened.get("fov1_cell00001.tif") == "single"
+    assert reopened.confidence("fov1_cell00001.tif") is None
