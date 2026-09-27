@@ -19,7 +19,6 @@ dependencies = [
     "PyQt6",
     "qtpy",
     "tifffile",
-    "scikit-learn"
 ]
 
 [project.optional-dependencies]

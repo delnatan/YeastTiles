@@ -3,7 +3,7 @@
 Renders the whole grid as a single widget with a custom ``paintEvent``
 instead of one canvas per tile -- no GPU context. Decoding happens on a
 background thread (see ``data/thumbnail_cache.py``); compositing
-(clim/gamma -> RGB) happens lazily on the GUI thread from already-decoded
+(clim -> RGB) happens lazily on the GUI thread from already-decoded
 planes, so it's numpy-only work, never disk I/O, and safe to do inline in
 ``paintEvent``.
 """
@@ -15,7 +15,7 @@ from qtpy.QtCore import QRect, Qt, Signal
 from qtpy.QtGui import QColor, QImage, QPainter, QPen, QPixmap
 from qtpy.QtWidgets import QMenu, QWidget
 
-from ..data.overlay_state import default_channel_state
+from ..data.channel_state import default_channel_state
 from ..data.palette import readable_text_color
 from ..data.thumbnail_cache import (
     DecodeCache,
@@ -68,10 +68,7 @@ class ThumbnailGridWidget(QWidget):
 
         self._annotations = {}  # path -> (label, color_hex, confidence)
 
-        self._display = None  # ChannelDisplayList (global settings)
-        self._custom_clim = set()  # live ref to VisualState._custom_clim
-        self._overlay_state = None  # OverlayStateList (color/blend/opacity)
-        self._overlay_unsubscribe = None
+        self._channel_state = None  # ChannelStateList, see set_channel_state
 
         self._pixmap_cache = {}  # path -> QPixmap
 
@@ -117,39 +114,11 @@ class ThumbnailGridWidget(QWidget):
         self._relayout()
         self.update()
 
-    def set_channel_display(self, display, custom_clim):
-        """``display``: a ``ChannelDisplayList``. ``custom_clim``: the
-        live ``set[int]`` of channel indices explicitly overridden via
-        the Colors panel (the same object the owner mutates -- read
-        live here, never copied).
-
-        A no-op if both are already the current references -- callers
-        (e.g. a per-decoded-image refresh) may call this far more often
-        than the display actually changes, and clearing the pixmap
-        cache on every call would force a full recomposite each time.
-        """
-        if display is self._display and custom_clim is self._custom_clim:
-            return
-        self._display = display
-        self._custom_clim = custom_clim
-        self._pixmap_cache.clear()
-        self.update()
-
-    def set_overlay_state(self, overlay_state):
-        """``overlay_state``: an ``OverlayStateList`` (per-channel color /
-        blend-mode / opacity, see ``data/overlay_state.py``). Stored as a
-        live reference and subscribed to once -- unlike ``display``, this
-        list is resized/mutated in place rather than replaced, so this
-        only needs calling once."""
-        if overlay_state is self._overlay_state:
-            return
-        self._overlay_state = overlay_state
-        self._overlay_unsubscribe = overlay_state.subscribe(
-            self._on_overlay_state_changed
-        )
-        self.invalidate_pixmaps()
-
-    def _on_overlay_state_changed(self, channel_idx, field):
+    def set_channel_state(self, channel_state):
+        """``channel_state``: the owner's ``ChannelStateList``, read live
+        (it's mutated in place, never replaced); any change recomposites."""
+        self._channel_state = channel_state
+        channel_state.subscribe(lambda _idx: self.invalidate_pixmaps())
         self.invalidate_pixmaps()
 
     def set_annotations(self, annotations):
@@ -376,28 +345,19 @@ class ThumbnailGridWidget(QWidget):
     def _channel_params(self, default_clims):
         params = []
         for c, default_clim in enumerate(default_clims):
-            if self._display is not None and c < len(self._display):
-                state = self._display[c]
-                clim = state.clim if c in self._custom_clim else default_clim
-                gamma = state.gamma
-                visible = state.visible
+            if self._channel_state is not None and c < len(self._channel_state):
+                state = self._channel_state[c]
             else:
-                clim = default_clim
-                gamma = 1.0
-                visible = True
-
-            if self._overlay_state is not None and c < len(self._overlay_state):
-                ov = self._overlay_state[c]
-                color = _hex_to_rgb01(ov.color_hex)
-                blend_mode = ov.blend_mode
-                opacity = ov.opacity
-            else:
-                default_state = default_channel_state(c)
-                color = _hex_to_rgb01(default_state.color_hex)
-                blend_mode = default_state.blend_mode
-                opacity = default_state.opacity
-
-            params.append((clim, gamma, color, visible, blend_mode, opacity))
+                state = default_channel_state(c)
+            params.append(
+                (
+                    state.clim or default_clim,
+                    _hex_to_rgb01(state.color_hex),
+                    state.visible,
+                    state.blend_mode,
+                    state.opacity,
+                )
+            )
         return params
 
     # ------------------------------------------------------------------

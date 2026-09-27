@@ -18,14 +18,14 @@ from collections import OrderedDict
 import numpy as np
 
 from ..contrast import compute_percentile_clim
-from .overlay_state import OVERLAY
+from .channel_state import OVERLAY
 from ..load_thumbnail import load_plane
 
 
 def composite_to_rgb(plane, channel_params):
     """Composite a ``(C, H, W)`` plane into an ``(H, W, 3)`` uint8 image.
 
-    Each channel is normalized to ``[0, 1]`` by clim + gamma, then
+    Each channel is normalized to ``[0, 1]`` by its clim, then
     blended onto an accumulating canvas (starting at black) in
     channel-index order:
 
@@ -41,7 +41,7 @@ def composite_to_rgb(plane, channel_params):
 
     Args:
         plane: ``(C, H, W)`` array.
-        channel_params: sequence of ``(clim, gamma, color_rgb, visible,
+        channel_params: sequence of ``(clim, color_rgb, visible,
             blend_mode, opacity)``, one per channel. ``color_rgb`` is an
             ``(r, g, b)`` triple in ``[0, 1]``. Extra entries beyond
             ``plane.shape[0]`` are ignored.
@@ -49,7 +49,7 @@ def composite_to_rgb(plane, channel_params):
     C, H, W = plane.shape
     rgb = np.zeros((H, W, 3), dtype=np.float32)
     for c in range(min(C, len(channel_params))):
-        clim, gamma, color_rgb, visible, blend_mode, opacity = channel_params[c]
+        clim, color_rgb, visible, blend_mode, opacity = channel_params[c]
         if not visible:
             continue
         vmin, vmax = clim
@@ -58,8 +58,6 @@ def composite_to_rgb(plane, channel_params):
             span = 1.0
         data = plane[c].astype(np.float32, copy=False)
         t = np.clip((data - vmin) / span, 0.0, 1.0)
-        if gamma != 1.0:
-            t = np.power(t, gamma, dtype=np.float32)
         color = np.asarray(color_rgb, dtype=np.float32)
         weighted = (t * opacity)[..., np.newaxis]
         if blend_mode == OVERLAY:

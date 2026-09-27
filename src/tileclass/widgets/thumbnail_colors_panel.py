@@ -1,21 +1,11 @@
-"""Simple per-channel color/blend-mode/opacity/contrast panel for the
-fast thumbnail grid.
+"""Per-channel color/blend-mode/opacity/contrast/visibility panel for the
+thumbnail grid, editing the viewer's ``ChannelStateList``
+(``data/channel_state.py``).
 
-Deliberately minimal compared to ``ChannelPanel``/``ChannelRow``
-(``widgets/channel_panel.py``): no histogram, no gamma, no colormap
-picker -- those stay dialog-only for the full per-tile vispy viewer.
-This is the *only* contrast/visibility control fast mode offers
-(``show_channel_panel`` refuses to open the heavy panel in fast mode --
-see ``TiledViewer.show_channel_panel``), so on top of what
-``composite_to_rgb`` (``data/thumbnail_cache.py``) needs -- flat color,
-additive-vs-overlay blend mode, opacity -- it also exposes a plain
-min/max contrast range and a visibility toggle per channel, backed by
-``viewer.visual_proxy`` (the same ``TiledVisualProxy`` the old panel
-used). Min/max is deliberately *not* percentile-based: label/mask
-images (binary segmentation, small-integer label maps) have almost no
-dynamic range, and a percentile bracket over them can clip real label
-values -- plain min/max never does. Pure Qt -- no vispy, colors come
-from ``QColorDialog``, not a named colormap registry.
+Min/max is a plain range rather than percentile-based: label/mask images
+(binary segmentation, small-integer label maps) have almost no dynamic
+range, and a percentile bracket over them can clip real label values --
+plain min/max never does.
 """
 
 from qtpy.QtCore import Qt, Signal
@@ -34,7 +24,7 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
-from ..data.overlay_state import ADDITIVE, OVERLAY
+from ..data.channel_state import ADDITIVE, OVERLAY
 
 
 class _ColorRow(QWidget):
@@ -47,10 +37,10 @@ class _ColorRow(QWidget):
     visibleChanged = Signal(int, bool)  # channel_idx, visible
     climChanged = Signal(int, float, float)  # channel_idx, vmin, vmax
 
-    def __init__(self, channel_idx, overlay_state, clim, visible, parent=None):
+    def __init__(self, channel_idx, state, clim, parent=None):
         super().__init__(parent)
         self.channel_idx = channel_idx
-        self._color_hex = overlay_state.color_hex
+        self._color_hex = state.color_hex
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(4, 2, 4, 2)
@@ -122,25 +112,26 @@ class _ColorRow(QWidget):
         bottom.addStretch()
         outer.addLayout(bottom)
 
-        self.set_state(overlay_state, clim, visible)
+        self.set_state(state, clim)
 
-    def set_state(self, overlay_state, clim, visible):
-        """Reflect *overlay_state* (an OverlayChannelState), *clim*
-        (vmin, vmax), and *visible* without re-emitting signals for
-        this programmatic update."""
-        self._color_hex = overlay_state.color_hex
+    def set_state(self, state, clim):
+        """Reflect *state* (a ChannelState) and the displayed *clim*
+        (vmin, vmax) without re-emitting signals for this programmatic
+        update."""
+        visible = state.visible
+        self._color_hex = state.color_hex
         self.swatch.setStyleSheet(
-            f"background-color: {overlay_state.color_hex}; border: 1px solid #555;"
+            f"background-color: {state.color_hex}; border: 1px solid #555;"
         )
         radio = (
             self.overlay_radio
-            if overlay_state.blend_mode == OVERLAY
+            if state.blend_mode == OVERLAY
             else self.additive_radio
         )
         radio.blockSignals(True)
         radio.setChecked(True)
         radio.blockSignals(False)
-        pct = round(overlay_state.opacity * 100)
+        pct = round(state.opacity * 100)
         self.opacity_slider.blockSignals(True)
         self.opacity_slider.setValue(pct)
         self.opacity_slider.blockSignals(False)
@@ -189,17 +180,12 @@ class _ColorRow(QWidget):
 
 
 class ThumbnailColorsPanel(QWidget):
-    """Per-channel color/blend-mode/opacity/contrast/visibility control
-    for a TiledViewer running in fast mode. Color/blend/opacity read
-    from ``viewer.overlay_state``; contrast/visibility read from
-    ``viewer.visual_proxy`` (shared with the general per-tile viewer,
-    but this is the only UI that reaches it in fast mode)."""
+    """One `_ColorRow` per channel of `viewer.channel_state`."""
 
     def __init__(self, viewer, parent=None):
         super().__init__(parent)
         self.viewer = viewer
-        self.overlay_state = viewer.overlay_state
-        self.proxy = viewer.visual_proxy
+        self.states = viewer.channel_state
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(6, 6, 6, 6)
@@ -226,74 +212,44 @@ class ThumbnailColorsPanel(QWidget):
         layout.addWidget(scroll, 1)
 
         self.rows = []
-        self._unsubscribe = self.overlay_state.subscribe(self._on_state_changed)
+        self._unsubscribe = self.states.subscribe(lambda _idx: self.refresh_ui())
         self.refresh_ui()
 
-    def _suggested_state(self, c):
-        """(clim, visible) for channel *c*: the user's explicit override
-        if they've set one via this panel, otherwise a plain min/max
-        suggestion sampled across all currently-decoded tiles."""
-        visible = self.proxy.get_channel_visible(c)
-        if c in self.proxy.custom_clim:
-            return self.proxy.display[c].clim, visible
+    def _displayed_clim(self, c):
+        """The channel's explicit contrast override if set, otherwise a
+        plain min/max suggestion sampled across the decoded tiles."""
+        clim = self.states[c].clim
+        if clim is not None:
+            return clim
         data = self.viewer.thumbnail_grid.aggregate_channel_data(c)
         if data is not None and data.size > 0:
-            return (float(data.min()), float(data.max())), visible
-        return self.proxy.display[c].clim, visible
+            return (float(data.min()), float(data.max()))
+        return (0.0, 1.0)
 
     def refresh_ui(self):
         """Rebuild rows if the channel count changed, else sync values."""
-        if len(self.rows) != len(self.overlay_state):
+        if len(self.rows) != len(self.states):
             while self.rows_layout.count():
                 item = self.rows_layout.takeAt(0)
                 widget = item.widget()
                 if widget is not None:
                     widget.deleteLater()
             self.rows = []
-            for c in range(len(self.overlay_state)):
-                clim, visible = self._suggested_state(c)
-                row = _ColorRow(c, self.overlay_state[c], clim, visible)
-                row.colorChanged.connect(self._on_color_changed)
-                row.blendModeChanged.connect(self._on_blend_mode_changed)
-                row.opacityChanged.connect(self._on_opacity_changed)
-                row.visibleChanged.connect(self._on_visible_changed)
-                row.climChanged.connect(self._on_clim_changed)
+            for c in range(len(self.states)):
+                row = _ColorRow(c, self.states[c], self._displayed_clim(c))
+                row.colorChanged.connect(lambda i, v: self.states.set(i, color_hex=v))
+                row.blendModeChanged.connect(lambda i, v: self.states.set(i, blend_mode=v))
+                row.opacityChanged.connect(lambda i, v: self.states.set(i, opacity=v))
+                row.visibleChanged.connect(lambda i, v: self.states.set(i, visible=v))
+                row.climChanged.connect(
+                    lambda i, vmin, vmax: self.states.set(i, clim=(vmin, vmax))
+                )
                 self.rows.append(row)
                 self.rows_layout.addWidget(row)
             self.rows_layout.addStretch()
         else:
             for c, row in enumerate(self.rows):
-                clim, visible = self._suggested_state(c)
-                row.set_state(self.overlay_state[c], clim, visible)
-
-    # User input -> overlay_state / visual_proxy.
-
-    def _on_color_changed(self, idx, hex_color):
-        self.overlay_state.set_color(idx, hex_color)
-
-    def _on_blend_mode_changed(self, idx, mode):
-        self.overlay_state.set_blend_mode(idx, mode)
-
-    def _on_opacity_changed(self, idx, opacity):
-        self.overlay_state.set_opacity(idx, opacity)
-
-    def _on_visible_changed(self, idx, visible):
-        self.proxy.set_channel_visible(idx, visible)
-
-    def _on_clim_changed(self, idx, vmin, vmax):
-        self.proxy.set_clim(idx, vmin, vmax)
-
-    # overlay_state -> UI (external mutation, e.g. loaded from the
-    # annotation sidecar file on folder open). visual_proxy changes
-    # (new tiles decoded, channel count grows, Auto Contrast All) reach
-    # this panel via explicit refresh_ui() calls from TiledViewer
-    # instead of a subscription -- update_max_channels replaces
-    # visual_proxy.display wholesale on a channel-count change, which
-    # would otherwise leave a display.subscribe() callback bound to a
-    # stale, abandoned list.
-
-    def _on_state_changed(self, channel_idx, field):
-        self.refresh_ui()
+                row.set_state(self.states[c], self._displayed_clim(c))
 
     def closeEvent(self, event):
         if self._unsubscribe is not None:

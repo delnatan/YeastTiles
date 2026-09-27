@@ -14,7 +14,7 @@ every time the same folder is reopened:
     #channel_colors\t0=#ff8800:additive:1.0\t1=#00ff00:overlay:0.8
 
 ``#channel_colors`` is the fast thumbnail grid's per-channel color/blend
--mode/opacity overlay settings (see ``data/overlay_state.py``); only
+-mode/opacity settings (see ``data/channel_state.py``); only
 channels overridden from the default need an entry, so it's sparse and
 absent entirely for folders that never touched the Colors... panel.
 Any other ``#`` line (e.g. the ``#dims`` line older versions wrote) is

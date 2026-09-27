@@ -29,10 +29,9 @@ from qtpy.QtWidgets import (
 )
 
 from .classifiers import CLASSIFIERS
-from .data.overlay_state import OverlayStateList, default_channel_state
+from .data.channel_state import ChannelStateList, default_channel_state
 from .data.palette import category_color, readable_text_color
 from .data.pooled_annotations import PooledAnnotations
-from .data.visual_state import VisualState
 from .widgets.annotation_stats_panel import AnnotationStatsPanel
 from .widgets.manage_categories_dialog import ManageCategoriesDialog
 from .widgets.thumbnail_colors_panel import ThumbnailColorsPanel
@@ -67,17 +66,14 @@ class MainWindow(QMainWindow):
 
         self._classifier_instances = {}  # name -> loaded TileClassifier
 
-        self.visual_proxy = VisualState(self)
-
-        # Per-channel color/blend-mode/opacity overlay state, persisted
-        # to the annotation sidecar file on every change; seeded from it
-        # in _update_channel_state once channels are known. Channels are
-        # discovered incrementally as background decoding progresses, so
-        # seed from a frozen snapshot rather than the live, mutating
-        # self.annotations.channel_colors to avoid a partial-write race.
+        # Per-channel display state. Its colors are persisted to the
+        # annotation sidecar on every change, and seeded from it in
+        # _update_channel_state as channels are discovered (incrementally,
+        # as tiles decode) -- from a frozen snapshot, since seeding itself
+        # writes back through _on_channel_state_changed.
         self._pending_channel_colors = dict(self.annotations.channel_colors)
-        self.overlay_state = OverlayStateList(0)
-        self.overlay_state.subscribe(self._on_overlay_state_changed)
+        self.channel_state = ChannelStateList(0)
+        self.channel_state.subscribe(self._on_channel_state_changed)
         self._colors_seeded_channels = set()
 
         self.colors_panel = None
@@ -158,17 +154,9 @@ class MainWindow(QMainWindow):
     def _update_channel_state(self):
         """Channel count can only grow as more images finish decoding in
         the background."""
-        max_c = self.thumbnail_grid.max_channels()
-        if max_c > self.max_C:
-            self.max_C = max_c
-        self.visual_proxy.update_max_channels(self.max_C)
-        self.thumbnail_grid.set_channel_display(
-            self.visual_proxy.display, self.visual_proxy.custom_clim
-        )
-
-        self.overlay_state.resize(self.max_C)
+        self.max_C = max(self.max_C, self.thumbnail_grid.max_channels())
+        self.channel_state.resize(self.max_C)
         self._seed_channel_colors()
-        self.thumbnail_grid.set_overlay_state(self.overlay_state)
 
         if self.colors_panel is not None and self._colors_dock.isVisible():
             self.colors_panel.refresh_ui()
@@ -178,27 +166,27 @@ class MainWindow(QMainWindow):
         overrides (from the annotation sidecar's #channel_colors line) to
         newly-available channel indices, once each."""
         for idx, (color_hex, blend_mode, opacity) in self._pending_channel_colors.items():
-            if idx in self._colors_seeded_channels or idx >= len(self.overlay_state):
+            if idx in self._colors_seeded_channels or idx >= len(self.channel_state):
                 continue
-            self.overlay_state.set_color(idx, color_hex)
-            self.overlay_state.set_blend_mode(idx, blend_mode)
-            self.overlay_state.set_opacity(idx, opacity)
             self._colors_seeded_channels.add(idx)
+            self.channel_state.set(
+                idx, color_hex=color_hex, blend_mode=blend_mode, opacity=opacity
+            )
 
-    def _on_overlay_state_changed(self, channel_idx, field):
-        # Sparse: only channels that differ from their default get an
-        # entry, so merely opening a folder never touches the sidecar
+    def _on_channel_state_changed(self, _channel_idx):
+        # Sparse: only channels whose colors differ from their default get
+        # an entry, so merely opening a folder never touches the sidecar
         # file unless the user actually changes a color.
-        colors = {}
-        for c in range(len(self.overlay_state)):
-            state = self.overlay_state[c]
-            default_state = default_channel_state(c)
-            if (state.color_hex, state.blend_mode, state.opacity) != (
-                default_state.color_hex,
-                default_state.blend_mode,
-                default_state.opacity,
-            ):
-                colors[c] = (state.color_hex, state.blend_mode, state.opacity)
+        # Channels not decoded yet keep their persisted entry.
+        n_channels = len(self.channel_state)
+        colors = {
+            idx: value for idx, value in self._pending_channel_colors.items() if idx >= n_channels
+        }
+        colors.update(
+            (c, self.channel_state[c].colors)
+            for c in range(n_channels)
+            if self.channel_state[c].colors != default_channel_state(c).colors
+        )
         if colors == self.annotations.channel_colors:
             return
         self.annotations.set_channel_colors(colors)
@@ -597,6 +585,7 @@ class MainWindow(QMainWindow):
         self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
 
         self.thumbnail_grid = ThumbnailGridWidget()
+        self.thumbnail_grid.set_channel_state(self.channel_state)
         self.thumbnail_grid.set_tile_size(self.tile_size)
         self.thumbnail_grid.set_show_info(False)
         self.thumbnail_grid.selectionChanged.connect(self._on_selection_changed)
@@ -775,13 +764,9 @@ class MainWindow(QMainWindow):
         self.size_slider.setValue(self.tile_size + direction * TILE_SIZE_STEP)
 
     def _auto_contrast_all(self):
-        """Every image's own per-image auto-contrast is already its
-        default clim (baked in at decode time) -- this just reverts any
-        explicit Colors-panel overrides back to that default."""
-        self.visual_proxy.custom_clim.clear()
-        self.thumbnail_grid.invalidate_pixmaps()
-        if self.colors_panel is not None and self._colors_dock.isVisible():
-            self.colors_panel.refresh_ui()
+        """Revert any Colors-panel contrast overrides to each tile's own
+        auto-contrast (computed at decode time)."""
+        self.channel_state.reset_clims()
 
     # ------------------------------------------------------------------
 

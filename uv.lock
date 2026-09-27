@@ -3694,7 +3694,6 @@ dependencies = [
     { name = "pillow" },
     { name = "pyqt6" },
     { name = "qtpy" },
-    { name = "scikit-learn" },
     { name = "tifffile", version = "2026.3.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "tifffile", version = "2026.8.23", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
 ]
@@ -3772,7 +3771,6 @@ requires-dist = [
     { name = "pyvistra", marker = "extra == 'prep'", git = "https://github.com/delnatan/pyvistra.git" },
     { name = "qtkit", marker = "extra == 'classification'", git = "https://github.com/delnatan/qtkit.git" },
     { name = "qtpy" },
-    { name = "scikit-learn" },
     { name = "scikit-learn", marker = "extra == 'classification'", specifier = ">=1.9.0" },
     { name = "scipy", marker = "extra == 'prep'" },
     { name = "seaborn", marker = "extra == 'classification'" },
