@@ -33,25 +33,6 @@ class PooledAnnotations:
         self.folders = [os.path.normpath(os.path.abspath(f)) for f in folders]
         self._stores = {folder: TileAnnotations(folder) for folder in self.folders}
 
-    def add_folders(self, folders):
-        """Extend the pool at runtime with newly chosen folder(s) -- for the
-        tiled-viewer GUI's "Add Project Folder(s)..." action, so a
-        newly-annotated project can be pooled in without relaunching.
-        Idempotent: a folder already pooled is skipped. Returns the folders
-        actually added (as normalized absolute paths), for the caller's
-        confirmation/summary message. Deliberately doesn't touch anything
-        about which images are browsable/annotatable in a given window --
-        purely extends what `tagged_items()`/`categories()`/`values()` see."""
-        added = []
-        for folder in folders:
-            norm = os.path.normpath(os.path.abspath(folder))
-            if norm in self._stores:
-                continue
-            self.folders.append(norm)
-            self._stores[norm] = TileAnnotations(norm)
-            added.append(norm)
-        return added
-
     # ------------------------------------------------------------------
     # Per-tile: keyed by absolute path (see module docstring)
 
@@ -180,18 +161,7 @@ class PooledAnnotations:
 
     # ------------------------------------------------------------------
     # Display settings -- also propagated (pooled tiles are assumed to
-    # share one axes-order / channel-color convention; see module docstring)
-
-    @property
-    def dims(self):
-        for store in self._stores.values():
-            if store.dims:
-                return store.dims
-        return None
-
-    def set_dims(self, dims):
-        for store in self._stores.values():
-            store.set_dims(dims)
+    # share one channel-color convention; see module docstring)
 
     @property
     def channel_colors(self):

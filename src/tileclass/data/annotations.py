@@ -11,13 +11,14 @@ data) carry folder-level settings so they don't need to be re-entered
 every time the same folder is reopened:
 
     #categories\tCategoryA\tCategoryB\tCategoryC
-    #dims\ttzcyx
     #channel_colors\t0=#ff8800:additive:1.0\t1=#00ff00:overlay:0.8
 
 ``#channel_colors`` is the fast thumbnail grid's per-channel color/blend
 -mode/opacity overlay settings (see ``data/overlay_state.py``); only
 channels overridden from the default need an entry, so it's sparse and
 absent entirely for folders that never touched the Colors... panel.
+Any other ``#`` line (e.g. the ``#dims`` line older versions wrote) is
+ignored, and dropped on the next save.
 
 The category vocabulary is optional — if absent, `categories()` falls
 back to whatever category names are actually in use (the original
@@ -89,7 +90,6 @@ class TileAnnotations(MutableMapping):
         self._categories = {}  # relpath -> category name
         self.confidences = {}  # relpath -> AI confidence, only if unreviewed
         self._category_vocab = []  # explicit predefined category list, if any
-        self.dims = None  # persisted axes-order string (e.g. "tzcyx"), or None
         self.channel_colors = {}  # channel_idx -> (color_hex, blend_mode, opacity)
         self.load()
 
@@ -119,7 +119,6 @@ class TileAnnotations(MutableMapping):
         self._categories.clear()
         self.confidences.clear()
         self._category_vocab = []
-        self.dims = None
         self.channel_colors = {}
         if not os.path.exists(self.file_path):
             return
@@ -132,12 +131,10 @@ class TileAnnotations(MutableMapping):
                     )
                     continue
                 parts = line.split("\t")
-                if parts[0] == "#dims":
-                    if len(parts) == 2 and parts[1]:
-                        self.dims = parts[1]
-                    continue
                 if parts[0] == "#channel_colors":
                     self.channel_colors = self._parse_channel_colors(parts[1:])
+                    continue
+                if line.startswith("#"):
                     continue
                 if len(parts) not in (2, 3) or not parts[0]:
                     continue
@@ -212,8 +209,6 @@ class TileAnnotations(MutableMapping):
         with open(self.file_path, "w", encoding="utf-8") as f:
             if self._category_vocab:
                 f.write("#categories\t" + "\t".join(self._category_vocab) + "\n")
-            if self.dims:
-                f.write(f"#dims\t{self.dims}\n")
             if self.channel_colors:
                 f.write(
                     "#channel_colors\t"
@@ -393,12 +388,6 @@ class TileAnnotations(MutableMapping):
         for relpath, category in self._categories.items():
             if category == old:
                 self._categories[relpath] = new
-        self.save()
-
-    def set_dims(self, dims):
-        """Persist the axes-order string used for this folder."""
-        self.load()
-        self.dims = dims
         self.save()
 
     def set_channel_colors(self, channel_colors):

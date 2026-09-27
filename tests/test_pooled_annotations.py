@@ -173,23 +173,6 @@ def test_raw_category_names_surfaces_divergence_categories_hides(tmp_path):
     assert pool.raw_category_names() == ["Two", "two"]
 
 
-def test_add_folders_extends_pool_and_skips_already_pooled(tmp_path):
-    import os
-
-    folder1 = _make_folder(tmp_path, "expA")
-    folder2 = _make_folder(tmp_path, "expB")
-    pool = PooledAnnotations([folder1])
-
-    added = pool.add_folders([folder1, folder2])
-
-    norm_folder2 = os.path.normpath(os.path.abspath(str(folder2)))
-    assert added == [norm_folder2]  # folder1 skipped, already pooled
-    assert norm_folder2 in pool.folders
-
-    pool.update([(str(folder2 / "a.tif"), "single")])
-    assert pool.get(str(folder2 / "a.tif")) == "single"
-
-
 def test_single_folder_pool_matches_plain_tile_annotations_behavior(tmp_path):
     folder = _make_folder(tmp_path, "solo")
     pool = PooledAnnotations([folder])

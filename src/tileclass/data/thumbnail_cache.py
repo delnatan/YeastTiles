@@ -94,10 +94,10 @@ class DecodeCache:
                 self._cache.move_to_end(path)
             return entry
 
-    def decode(self, path, dims=None):
+    def decode(self, path):
         """Decode ``path`` synchronously and store it. Safe to call from
         a background thread. Returns the cached entry."""
-        plane = load_plane(path, dims=dims)
+        plane = load_plane(path)
         default_clims = tuple(
             compute_percentile_clim(plane[c], 0.5, 99.5)
             for c in range(plane.shape[0])
@@ -137,10 +137,9 @@ class ThumbnailDecodeWorker:
     of queuing up stale work.
     """
 
-    def __init__(self, cache, callback, dims=None):
+    def __init__(self, cache, callback):
         self._cache = cache
         self._callback = callback
-        self._dims = dims
         self._lock = threading.Condition()
         self._queue = []
         self._closed = False
@@ -155,10 +154,6 @@ class ThumbnailDecodeWorker:
         with self._lock:
             self._queue = [p for p in paths if p not in self._cache]
             self._lock.notify()
-
-    def set_dims(self, dims):
-        with self._lock:
-            self._dims = dims
 
     def close(self):
         with self._lock:
@@ -175,11 +170,10 @@ class ThumbnailDecodeWorker:
                 if self._closed:
                     return
                 path = self._queue.pop(0)
-                dims = self._dims
             if path in self._cache:
                 continue
             try:
-                self._cache.decode(path, dims=dims)
+                self._cache.decode(path)
             except Exception:
                 continue
             try:

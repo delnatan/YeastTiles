@@ -28,3 +28,11 @@ def rgb_to_hex(color):
 def category_color(index):
     """Hex color for the *index*-th distinct category (wraps around)."""
     return rgb_to_hex(PALETTE[index % len(PALETTE)])
+
+
+def readable_text_color(hex_color):
+    """Black or white, whichever reads better on `hex_color`."""
+    hex_color = hex_color.lstrip("#")
+    r, g, b = (int(hex_color[i : i + 2], 16) for i in (0, 2, 4))
+    luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255
+    return "black" if luminance > 0.6 else "white"

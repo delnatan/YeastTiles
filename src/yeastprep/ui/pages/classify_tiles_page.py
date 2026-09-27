@@ -136,6 +136,15 @@ class ClassifyTilesPage(QWidget):
         self.infer_btn.clicked.connect(self._run_inference)
         v.addWidget(self.infer_btn)
 
+        self.clear_predictions_btn = QPushButton("Clear AI Predictions in Pool...")
+        self.clear_predictions_btn.setToolTip(
+            "Remove every unconfirmed AI prediction across the checked FOVs, "
+            "keeping human-set and accepted annotations -- so a newer "
+            "checkpoint can re-predict those tiles."
+        )
+        self.clear_predictions_btn.clicked.connect(self._clear_predictions)
+        v.addWidget(self.clear_predictions_btn)
+
         self.inference_log = QPlainTextEdit()
         self.inference_log.setReadOnly(True)
         self.inference_log.setMaximumBlockCount(2000)
@@ -274,6 +283,33 @@ class ClassifyTilesPage(QWidget):
         self._inference_worker.finished.connect(self._on_inference_finished)
         self._inference_worker.error.connect(self._on_inference_error)
         self._inference_thread.start()
+
+    def _clear_predictions(self):
+        if self._inference_thread is not None:
+            return
+        pooled = self.pool_widget.pooled_annotations()
+        if pooled is None:
+            QMessageBox.warning(self, "yeastprep", "No FOVs checked in the pool.")
+            return
+        n_predictions = sum(
+            1 for _path, _category, confidence in pooled.tagged_items() if confidence is not None
+        )
+        if not n_predictions:
+            QMessageBox.information(
+                self, "yeastprep", "There are no unconfirmed AI predictions in the pool."
+            )
+            return
+        answer = QMessageBox.question(
+            self,
+            "yeastprep",
+            f"Remove {n_predictions} unconfirmed AI prediction(s) from the checked FOVs? "
+            "Human-set and accepted annotations are kept.",
+        )
+        if answer != QMessageBox.Yes:
+            return
+        removed = pooled.clear_unconfirmed()
+        self.inference_log.appendPlainText(f"cleared {removed} unconfirmed AI prediction(s)")
+        self.annotation_analytics.refresh_from_pool()
 
     def _teardown_inference_thread(self):
         self._inference_thread.quit()

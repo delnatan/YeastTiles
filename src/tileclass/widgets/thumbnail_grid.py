@@ -16,19 +16,12 @@ from qtpy.QtGui import QColor, QImage, QPainter, QPen, QPixmap
 from qtpy.QtWidgets import QMenu, QWidget
 
 from ..data.overlay_state import default_channel_state
+from ..data.palette import readable_text_color
 from ..data.thumbnail_cache import (
     DecodeCache,
     ThumbnailDecodeWorker,
     composite_to_rgb,
 )
-
-
-def _readable_text_color(hex_color):
-    """Pick black or white text for readability against hex_color."""
-    hex_color = hex_color.lstrip("#")
-    r, g, b = (int(hex_color[i : i + 2], 16) for i in (0, 2, 4))
-    luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255
-    return "black" if luminance > 0.6 else "white"
 
 
 def _hex_to_rgb01(hex_color):
@@ -50,8 +43,7 @@ class ThumbnailGridWidget(QWidget):
 
     selectionChanged = Signal(list)  # list[str] of selected paths
     annotateRequested = Signal()  # act on current selection
-    openInViewerRequested = Signal(str)  # path
-    showInfoRequested = Signal(str)  # path
+    viewFullSizeRequested = Signal(str)  # path
     decoded = Signal(str)  # internal: worker thread -> GUI thread relay
 
     LABEL_HEIGHT = 28
@@ -59,6 +51,9 @@ class ThumbnailGridWidget(QWidget):
 
     def __init__(self, cache_bytes=256 * 1024 * 1024, parent=None):
         super().__init__(parent)
+        # Click-to-focus so clicking a tile takes keyboard focus away from
+        # e.g. the tiles/page spinbox, letting number-key labeling through.
+        self.setFocusPolicy(Qt.ClickFocus)
         self.setContextMenuPolicy(Qt.CustomContextMenu)
         self.customContextMenuRequested.connect(self._show_context_menu)
 
@@ -88,12 +83,11 @@ class ThumbnailGridWidget(QWidget):
     # Public API
     # ------------------------------------------------------------------
 
-    def set_items(self, paths, dims=None):
+    def set_items(self, paths):
         self._paths = list(paths)
         self._selected = []
         self._selected_set.clear()
         self._anchor = None
-        self._worker.set_dims(dims)
         self._relayout()
         self.update()
 
@@ -344,7 +338,7 @@ class ThumbnailGridWidget(QWidget):
         h = metrics.height() + 2
         badge_rect = QRect(image_rect.x() + 4, image_rect.y() + 4, w, h)
         painter.drawRoundedRect(badge_rect, 3, 3)
-        painter.setPen(QColor(_readable_text_color(color.name())))
+        painter.setPen(QColor(readable_text_color(color.name())))
         painter.drawText(badge_rect, Qt.AlignCenter, text)
         if confidence is not None:
             pen = QPen(QColor("#ffffff"))
@@ -468,6 +462,12 @@ class ThumbnailGridWidget(QWidget):
         self.update()
         self.selectionChanged.emit(list(self._selected))
 
+    def select_all(self):
+        self._selected = list(self._paths)
+        self._selected_set = set(self._paths)
+        self.update()
+        self.selectionChanged.emit(list(self._selected))
+
     def clear_selection(self):
         self._selected = []
         self._selected_set.clear()
@@ -490,10 +490,8 @@ class ThumbnailGridWidget(QWidget):
         annotate_action = menu.addAction("Annotate...")
         annotate_action.triggered.connect(self.annotateRequested.emit)
         menu.addSeparator()
-        open_action = menu.addAction("Open in Viewer")
-        open_action.triggered.connect(
-            lambda: self.openInViewerRequested.emit(path)
+        full_size_action = menu.addAction("View Full Size")
+        full_size_action.triggered.connect(
+            lambda: self.viewFullSizeRequested.emit(path)
         )
-        info_action = menu.addAction("Show Info")
-        info_action.triggered.connect(lambda: self.showInfoRequested.emit(path))
         menu.exec_(self.mapToGlobal(pos))

@@ -1,4 +1,4 @@
-"""Read-only per-category population stats for a folder's tile annotations."""
+"""Read-only per-category population stats over a set of tiles."""
 
 from qtpy.QtCore import Qt
 from qtpy.QtGui import QKeySequence
@@ -25,10 +25,8 @@ class AnnotationStatsPanel(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(6, 6, 6, 6)
 
-        self.table = QTableWidget(0, 5)
-        self.table.setHorizontalHeaderLabels(
-            ["Category", "Count", "%", "Human-Annotated", "VICReg Pairing"]
-        )
+        self.table = QTableWidget(0, 4)
+        self.table.setHorizontalHeaderLabels(["Category", "Count", "%", "Human-Annotated"])
         self.table.verticalHeader().setVisible(False)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         # Selectable (not the prior NoSelection) so a user can grab just
@@ -77,29 +75,28 @@ class AnnotationStatsPanel(QWidget):
             return
         QApplication.clipboard().setText(self._table_text(rows))
 
-    def refresh(self, annotations, total_count):
-        """Rebuild the table from `annotations` (a TileAnnotations) against
-        `total_count` images total (un-annotated = total_count - tagged).
-        Percentages are of the tagged (classified) total, not of
-        `total_count` — the "Un-annotated" row has no percentage.
+    def refresh(self, annotations, paths):
+        """Rebuild the table for the tiles at `paths`, looked up in
+        `annotations` (a `TileAnnotations` or `PooledAnnotations`).
+        Percentages are of the tagged (classified) total, so the
+        "Un-annotated" row has none.
 
-        The "Human-Annotated" column counts, per category, how many of its
-        tagged tiles were set/confirmed by a human rather than left as an
-        unreviewed AI prediction (see `TileAnnotations`'s module docstring
-        for how the two are told apart on disk).
-
-        The "VICReg Pairing" column flags categories with fewer than 2
-        examples: `training.vicreg.ClassPairDataset` can't draw two distinct
-        crops from a singleton category, so it falls back to pairing that
-        category's one crop with itself -- worth knowing before pretraining."""
+        "Human-Annotated" counts, per category, the tags set/confirmed by a
+        human rather than left as an unreviewed AI prediction (see
+        `TileAnnotations`'s module docstring)."""
         counts = {}
         human_counts = {}
-        for _relpath, category, confidence in annotations.tagged_items():
+        untagged = 0
+        for path in paths:
+            key = annotations.relpath(path)
+            category = annotations.get(key)
+            if not category:
+                untagged += 1
+                continue
             counts[category] = counts.get(category, 0) + 1
-            if confidence is None:
+            if annotations.confidence(key) is None:
                 human_counts[category] = human_counts.get(category, 0) + 1
         tagged_total = sum(counts.values())
-        untagged = max(total_count - tagged_total, 0)
 
         vocabulary = annotations.categories()
         rows = [("Un-annotated", untagged, False)]
@@ -134,12 +131,3 @@ class AnnotationStatsPanel(QWidget):
             human_item.setTextAlignment(Qt.AlignCenter)
             self.table.setItem(r, 3, human_item)
 
-            if not has_pct:
-                pairing_text = ""
-            elif count < 2:
-                pairing_text = "singleton (same-crop pair)"
-            else:
-                pairing_text = "ready"
-            pairing_item = QTableWidgetItem(pairing_text)
-            pairing_item.setTextAlignment(Qt.AlignCenter)
-            self.table.setItem(r, 4, pairing_item)

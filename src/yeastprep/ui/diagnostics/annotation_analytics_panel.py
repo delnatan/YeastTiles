@@ -297,8 +297,8 @@ class AnnotationAnalyticsPanel(QWidget):
 
     def _refresh_stats(self, pooled, fov_dirs):
         annotations = pooled if pooled is not None else PooledAnnotations([])
-        total_count = sum(len(scan_container(f)) for f in fov_dirs) if fov_dirs else 0
-        self.stats_panel.refresh(annotations, total_count)
+        paths = [p for f in fov_dirs for p in scan_container(f)]
+        self.stats_panel.refresh(annotations, paths)
 
     def _refresh_fov_table(self, fov_dirs: list[str]):
         current_paths = set(fov_dirs)

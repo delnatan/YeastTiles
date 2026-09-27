@@ -1,23 +1,20 @@
 """Main window: a paged, annotatable grid of image tiles.
 
-Distilled from pyvistra's ``TiledViewer`` -- specifically just its
-"fast mode" path (the pure-Qt ``ThumbnailGridWidget`` compositor for
-folders of small images). The vispy per-tile viewer, T/Z/C navigation,
-and axis-reordering machinery that ``TiledViewer`` also carries for
-large multi-dimensional images don't apply here and aren't ported.
+Every command is a QAction with its shortcut, listed in the View/Annotate
+menus -- there's no separate keyPressEvent handling. Number keys 1-9 apply
+the first nine categories (in vocabulary order, shown in the legend under
+the toolbar) to the selected tiles.
 """
 
 from pathlib import Path
 
 from qtpy.QtCore import Qt
-from qtpy.QtGui import QImage, QPixmap
+from qtpy.QtGui import QAction, QImage, QKeySequence, QPixmap
 from qtpy.QtWidgets import (
     QApplication,
-    QCheckBox,
     QComboBox,
     QDialog,
     QDockWidget,
-    QFileDialog,
     QHBoxLayout,
     QInputDialog,
     QLabel,
@@ -33,15 +30,18 @@ from qtpy.QtWidgets import (
 
 from .classifiers import CLASSIFIERS
 from .data.overlay_state import OverlayStateList, default_channel_state
-from .data.palette import category_color
+from .data.palette import category_color, readable_text_color
 from .data.pooled_annotations import PooledAnnotations
 from .data.visual_state import VisualState
-from .load_thumbnail import load_plane
 from .widgets.annotation_stats_panel import AnnotationStatsPanel
 from .widgets.manage_categories_dialog import ManageCategoriesDialog
 from .widgets.thumbnail_colors_panel import ThumbnailColorsPanel
 from .widgets.thumbnail_grid import ThumbnailGridWidget
-from .widgets.tiled_display_settings_dialog import TiledDisplaySettingsDialog
+
+TILE_SIZE_RANGE = (50, 400)
+TILE_SIZE_STEP = 25
+TILES_PER_PAGE_MAX = 300
+NUMBER_KEY_CATEGORIES = 9
 
 
 class MainWindow(QMainWindow):
@@ -54,33 +54,18 @@ class MainWindow(QMainWindow):
         self.current_page = 0
         self.tile_size = 80
 
-        # Per-window (not persisted) limits for the tile-size slider and
-        # tiles-per-page spinbox -- see show_display_limits_dialog.
-        self._tile_size_min = 50
-        self._tile_size_max = 400
-        self._tiles_per_page_min = 1
-        self._tiles_per_page_max = 300
-
         # None = show all, "" = un-annotated only, else exact category name.
         self._category_filter = None
 
         self.max_C = 1
-        self.show_info = False
-        self._current_dims = None
 
-        # One TileAnnotations per pooled folder (see data/pooled_annotations.py) --
-        # each keeps its own sidecar file, dispatched to by absolute path.
-        # Colors assigned to category names in first-seen order and kept
-        # stable for the session.
+        # One TileAnnotations per pooled container (see
+        # data/pooled_annotations.py) -- each keeps its own sidecar file.
         self.annotations = PooledAnnotations(folders)
         self._category_colors = {}
-        for category in self.annotations.categories():
-            self._category_color(category)
+        self._recompute_category_colors()
 
         self._classifier_instances = {}  # name -> loaded TileClassifier
-
-        if self.annotations.dims:
-            self._current_dims = self.annotations.dims
 
         self.visual_proxy = VisualState(self)
 
@@ -102,6 +87,7 @@ class MainWindow(QMainWindow):
 
         self._setup_ui()
         self._setup_menu()
+        self._refresh_categories()
         self._load_current_page()
 
     # ------------------------------------------------------------------
@@ -110,16 +96,46 @@ class MainWindow(QMainWindow):
 
     def _category_color(self, category):
         """Hex color for category, assigned in first-seen order and
-        kept stable for the life of this window."""
+        kept stable until the vocabulary changes."""
         if category not in self._category_colors:
             index = len(self._category_colors)
             self._category_colors[category] = category_color(index)
         return self._category_colors[category]
 
+    def _recompute_category_colors(self):
+        self._category_colors = {}
+        for category in self.annotations.categories():
+            self._category_color(category)
+
+    def _refresh_categories(self):
+        """Vocabulary may have changed: recolor, and rebuild the legend and
+        the filter dropdown."""
+        self._recompute_category_colors()
+        self._refresh_legend()
+        self._refresh_category_filter_combo()
+
+    def _refresh_legend(self):
+        chips = []
+        for i, name in enumerate(self.annotations.categories()):
+            color = self._category_color(name)
+            key = f"{i + 1} " if i < NUMBER_KEY_CATEGORIES else ""
+            chips.append(
+                f'<span style="background-color:{color}; color:{readable_text_color(color)};">'
+                f"&nbsp;{key}{name}&nbsp;</span>"
+            )
+        if chips:
+            text = "&nbsp; ".join(chips)
+            text += (
+                '&nbsp;&nbsp; <span style="color:#888;">T: pick &nbsp; '
+                "A: accept AI &nbsp; Del: clear</span>"
+            )
+        else:
+            text = '<span style="color:#888;">No categories yet -- Annotate &gt; Manage Categories...</span>'
+        self.legend_label.setText(text)
+
     def _refresh_badges(self):
-        """Rebuild the whole folder's path -> (category, color) map and
-        push it to the thumbnail grid. Cheap: just dict lookups over
-        already-loaded annotations, no file I/O."""
+        """Rebuild the path -> (category, color, confidence) map and push
+        it to the grid. Cheap: dict lookups only, no file I/O."""
         badges = {}
         for path in self.image_paths:
             relpath = self.annotations.relpath(path)
@@ -128,6 +144,16 @@ class MainWindow(QMainWindow):
                 confidence = self.annotations.confidence(relpath)
                 badges[path] = (category, self._category_color(category), confidence)
         self.thumbnail_grid.set_annotations(badges)
+
+    def _after_annotations_changed(self):
+        if self._category_filter is not None:
+            # Relabeled tiles may no longer match the filter.
+            self._load_current_page()
+        else:
+            self._refresh_badges()
+        self._update_status()
+        self._refresh_annotation_stats()
+        self._refresh_categories()
 
     def _update_channel_state(self):
         """Channel count can only grow as more images finish decoding in
@@ -196,9 +222,8 @@ class MainWindow(QMainWindow):
     def _on_thumbnail_decoded(self, path):
         self._update_channel_state()
 
-    def _open_in_viewer(self, path):
-        """"Open in Viewer": a full-resolution zoom popup for per-pixel
-        inspection -- there's no full ImageWindow in this project."""
+    def _view_full_size(self, path):
+        """Full-resolution zoom popup for per-pixel inspection."""
         rgb = self.thumbnail_grid.full_resolution_rgb(path)
         if rgb is None:
             return
@@ -217,32 +242,15 @@ class MainWindow(QMainWindow):
         dlg.resize(min(w, 900), min(h, 900))
         dlg.exec_()
 
-    def _show_metadata(self, path):
-        try:
-            plane = load_plane(path, dims=self._current_dims)
-        except Exception as exc:
-            QMessageBox.warning(self, "Show Info", f"Could not read {path}:\n{exc}")
-            return
-        C, H, W = plane.shape
-        QMessageBox.information(
-            self,
-            "Image Info",
-            f"{path}\n\nChannels: {C}\nHeight: {H}\nWidth: {W}\nDtype: {plane.dtype}",
-        )
-
     def show_manage_categories_dialog(self):
+        filter_before = self._category_filter
         dlg = ManageCategoriesDialog(self.annotations, parent=self)
         dlg.exec_()
-        # Colors are assigned in first-seen order over the vocabulary too,
-        # so a rename/delete/add can shift them -- recompute from scratch.
-        self._category_colors = {}
-        for category in self.annotations.categories():
-            self._category_color(category)
+        # Colors are assigned in vocabulary order, so a rename/delete/add
+        # can shift them.
+        self._refresh_categories()
         self._refresh_badges()
         self._refresh_annotation_stats()
-
-        filter_before = self._category_filter
-        self._refresh_category_filter_combo()
         if filter_before is not None and self._category_filter is None:
             self._load_current_page()
 
@@ -264,75 +272,34 @@ class MainWindow(QMainWindow):
             self.annotation_stats_panel is not None
             and self._annotation_stats_dock.isVisible()
         ):
-            self.annotation_stats_panel.refresh(self.annotations, len(self.image_paths))
+            self.annotation_stats_panel.refresh(self.annotations, self.image_paths)
 
-    def add_project_folders(self):
-        """Pool in more already-annotated tile containers at runtime, so
-        VICReg pretraining / classifier training / stats can see them
-        without relaunching with different command-line arguments.
+    # ------------------------------------------------------------------
+    # Manual annotation
+    # ------------------------------------------------------------------
 
-        Deliberately annotations-pool-only: newly-added containers' tiles
-        are NOT added to this window's browsable thumbnail grid.
-        `image_paths` is built once in `__main__.py` before this window
-        exists, and `PooledAnnotations.dims` is a single value shared by
-        the whole grid -- extending the grid at runtime would need
-        per-tile axis-order handling this app doesn't have. Open a
-        container directly (`tiled_viewer <fov_id>.tiles`) to browse/
-        annotate it.
-        """
-        paths, _filter = QFileDialog.getOpenFileNames(
-            self,
-            "Add Tile Container(s)",
-            self.annotations.folders[-1] if self.annotations.folders else "",
-            "Tile containers (*.tiles)",
-        )
-        if not paths:
-            return
-
-        added = self.annotations.add_folders(paths)
-        if not added:
-            QMessageBox.information(
-                self, "Add Tile Container(s)", "Already pooled -- nothing to add."
-            )
-            return
-
-        self._category_colors = {}
-        for category in self.annotations.categories():
-            self._category_color(category)
-        self._refresh_badges()
-        self._refresh_annotation_stats()
-        self._refresh_category_filter_combo()
-
-        QMessageBox.information(
-            self,
-            "Add Tile Container(s)",
-            f"Added {len(added)} container(s) to the annotation pool for stats, "
-            "category management, and training. Their tiles are NOT shown in "
-            "this window's grid -- open them directly (tiled_viewer <fov_id>.tiles) "
-            "to browse/annotate them.",
-        )
-
-    def annotate_selected_tiles(self):
-        """Prompt for a category and apply it to every selected tile.
-
-        The picker only offers this folder's predefined category
-        vocabulary (see ManageCategoriesDialog) -- no free text entry --
-        so a typo can't silently create a near-duplicate category.
-        """
+    def _annotate_selection(self, category):
+        """Tag every selected tile with `category` ("" clears). The single
+        path every manual labeling action goes through -- it always drops
+        any AI confidence, marking the tag as human-set."""
         paths = self.thumbnail_grid.selected_paths
         if not paths:
             return
+        self.annotations.update((self.annotations.relpath(p), category) for p in paths)
+        self._after_annotations_changed()
 
-        items = [""] + self.annotations.categories()
-        current = (
-            self.annotations.get(self.annotations.relpath(paths[0])) or ""
-            if len(paths) == 1
-            else ""
-        )
-        if current and current not in items:
-            items.append(current)
-        start_idx = items.index(current) if current in items else 0
+    def annotate_with_number(self, number):
+        """Number key N applies the N-th vocabulary category."""
+        categories = self.annotations.categories()
+        if number <= len(categories):
+            self._annotate_selection(categories[number - 1])
 
+    def annotate_selected_tiles(self):
+        """Pick a category from the vocabulary for the selected tiles --
+        no free text, so a typo can't create a near-duplicate category."""
+        paths = self.thumbnail_grid.selected_paths
+        if not paths:
+            return
         if not self.annotations.categories():
             QMessageBox.information(
                 self,
@@ -342,36 +309,55 @@ class MainWindow(QMainWindow):
             )
             return
 
+        items = [""] + self.annotations.categories()
+        current = (
+            self.annotations.get(self.annotations.relpath(paths[0])) or ""
+            if len(paths) == 1
+            else ""
+        )
+        if current not in items:
+            items.append(current)
         if len(paths) == 1:
             prompt = f"Category for {Path(paths[0]).name}:"
         else:
             prompt = f"Category for {len(paths)} images:"
 
         text, ok = QInputDialog.getItem(
-            self, "Annotate", prompt, items, start_idx, editable=False
+            self, "Annotate", prompt, items, items.index(current), editable=False
         )
-        if not ok:
-            return
+        if ok:
+            self._annotate_selection(text.strip())
 
-        category = text.strip()
-        self.annotations.update(
-            (self.annotations.relpath(p), category) for p in paths
-        )
-        if self._category_filter is not None:
-            self._load_current_page()
-        else:
-            self._refresh_badges()
-        self._update_status()
-        self._refresh_annotation_stats()
-        self._refresh_category_filter_combo()
+    def clear_selected_annotations(self):
+        self._annotate_selection("")
+
+    def accept_predictions(self):
+        """Confirm the AI prediction on every selected tile that has one,
+        keeping its category but marking it human-reviewed."""
+        updates = []
+        for path in self.thumbnail_grid.selected_paths:
+            relpath = self.annotations.relpath(path)
+            if self.annotations.confidence(relpath) is not None:
+                updates.append((relpath, self.annotations.get(relpath)))
+        if not updates:
+            return
+        self.annotations.update(updates)
+        self._after_annotations_changed()
+
+    def select_all(self):
+        self.thumbnail_grid.select_all()
+
+    # ------------------------------------------------------------------
+    # AI predictions
+    # ------------------------------------------------------------------
 
     def _get_classifier(self, name):
         """Lazily instantiate (and cache) the named registered classifier.
 
         Instantiating is what actually imports torch/torchvision (see
         ``classifiers/yeast_efficientnet.py``) -- so this is also where a
-        missing ``[classification]`` extra install surfaces, as a friendly dialog
-        rather than a crash.
+        missing ``classification`` extra surfaces, as a dialog rather than
+        a crash.
         """
         if name not in self._classifier_instances:
             try:
@@ -382,7 +368,7 @@ class MainWindow(QMainWindow):
                     "Auto-Annotate",
                     "This classifier needs extra packages that aren't "
                     f"installed:\n{exc}\n\nInstall with:\n"
-                    "  pip install -e '.[classification]'",
+                    "  uv sync --extra classification",
                 )
                 return None
         return self._classifier_instances[name]
@@ -390,13 +376,10 @@ class MainWindow(QMainWindow):
     def auto_annotate_page(self):
         """Run a classifier over the *current page only* and tag every
         tile that isn't already annotated (existing tags -- manual or a
-        prior AI pass -- are left untouched; re-run after correcting a
-        few tiles and only the rest get (re-)predicted).
-
-        Applied tags are also recorded in ``_tile_confidence`` so the
-        grid can badge them as "unconfirmed" until a human reviews them
-        via ``annotate_selected_tiles``.
-        """
+        prior AI pass -- are left untouched; use Clear AI Predictions
+        first to re-predict). Tags carry the model's confidence, so the
+        grid badges them as unconfirmed until a human accepts or relabels
+        them."""
         paths = self.thumbnail_grid.paths
         if not paths:
             return
@@ -447,14 +430,35 @@ class MainWindow(QMainWindow):
             updates.append((relpath, label, confidence))
 
         self.annotations.update_with_confidence(updates)
-        self._refresh_badges()
-        self._update_status()
-        self._refresh_annotation_stats()
-        self._refresh_category_filter_combo()
+        self._after_annotations_changed()
 
         message = f"Tagged {len(updates)} of {len(paths)} tiles on this page"
         message += f" ({skipped} already annotated, left untouched)." if skipped else "."
         QMessageBox.information(self, "Auto-Annotate", message)
+
+    def clear_ai_predictions(self):
+        """Drop every unconfirmed AI prediction across this window's
+        containers (human-set tags are kept), so a newer model can
+        re-predict those tiles."""
+        n_predictions = sum(
+            1 for _key, _category, confidence in self.annotations.tagged_items()
+            if confidence is not None
+        )
+        if not n_predictions:
+            QMessageBox.information(
+                self, "Clear AI Predictions", "There are no unconfirmed AI predictions."
+            )
+            return
+        answer = QMessageBox.question(
+            self,
+            "Clear AI Predictions",
+            f"Remove {n_predictions} unconfirmed AI prediction(s) from "
+            f"{self.annotations.label()}? Human-set and accepted annotations are kept.",
+        )
+        if answer != QMessageBox.Yes:
+            return
+        self.annotations.clear_unconfirmed()
+        self._after_annotations_changed()
 
     # ------------------------------------------------------------------
 
@@ -487,10 +491,9 @@ class MainWindow(QMainWindow):
         """Rearrange the current page's tiles so tiles sharing the same
         category -- including un-annotated, grouped first -- sit in one
         contiguous block, and within each block AI-predicted tiles sort by
-        ascending confidence with manually-annotated/confirmed tiles
-        (no confidence score) pushed to the end -- so the network's least
-        confident calls for a given category surface first and its
-        human-reviewed ground truth for that category is easy to compare
+        ascending confidence with human-set tiles pushed to the end -- so
+        the network's least confident calls for a given category surface
+        first and its human-reviewed ground truth is easy to compare
         against at a glance."""
         paths = self.thumbnail_grid.paths
         if not paths:
@@ -546,7 +549,9 @@ class MainWindow(QMainWindow):
 
         toolbar_layout.addWidget(QLabel("Tiles/page:"))
         self.per_page_spin = QSpinBox()
-        self.per_page_spin.setRange(self._tiles_per_page_min, self._tiles_per_page_max)
+        # Callers like the embedding-lasso viewer pass one page of however
+        # many tiles were selected.
+        self.per_page_spin.setRange(1, max(TILES_PER_PAGE_MAX, self.tiles_per_page))
         self.per_page_spin.setValue(self.tiles_per_page)
         self.per_page_spin.setFixedWidth(70)
         self.per_page_spin.setKeyboardTracking(False)
@@ -557,7 +562,7 @@ class MainWindow(QMainWindow):
 
         toolbar_layout.addWidget(QLabel("Tile size:"))
         self.size_slider = QSlider(Qt.Horizontal)
-        self.size_slider.setRange(self._tile_size_min, self._tile_size_max)
+        self.size_slider.setRange(*TILE_SIZE_RANGE)
         self.size_slider.setValue(self.tile_size)
         self.size_slider.setFixedWidth(150)
         self.size_slider.valueChanged.connect(self._on_tile_size_changed)
@@ -569,17 +574,9 @@ class MainWindow(QMainWindow):
 
         toolbar_layout.addSpacing(20)
 
-        self.show_info_check = QCheckBox("Show Info (I)")
-        self.show_info_check.setChecked(False)
-        self.show_info_check.toggled.connect(self._on_show_info_toggled)
-        toolbar_layout.addWidget(self.show_info_check)
-
-        toolbar_layout.addSpacing(20)
-
         toolbar_layout.addWidget(QLabel("Filter:"))
         self.category_filter_combo = QComboBox()
         self.category_filter_combo.setMinimumWidth(120)
-        self._refresh_category_filter_combo()
         self.category_filter_combo.currentIndexChanged.connect(
             self._on_category_filter_changed
         )
@@ -588,6 +585,12 @@ class MainWindow(QMainWindow):
         toolbar_layout.addStretch()
         main_layout.addWidget(toolbar)
 
+        self.legend_label = QLabel()
+        self.legend_label.setTextFormat(Qt.RichText)
+        self.legend_label.setWordWrap(True)
+        self.legend_label.setContentsMargins(5, 0, 5, 0)
+        main_layout.addWidget(self.legend_label)
+
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
         self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -595,11 +598,10 @@ class MainWindow(QMainWindow):
 
         self.thumbnail_grid = ThumbnailGridWidget()
         self.thumbnail_grid.set_tile_size(self.tile_size)
-        self.thumbnail_grid.set_show_info(self.show_info)
+        self.thumbnail_grid.set_show_info(False)
         self.thumbnail_grid.selectionChanged.connect(self._on_selection_changed)
         self.thumbnail_grid.annotateRequested.connect(self.annotate_selected_tiles)
-        self.thumbnail_grid.openInViewerRequested.connect(self._open_in_viewer)
-        self.thumbnail_grid.showInfoRequested.connect(self._show_metadata)
+        self.thumbnail_grid.viewFullSizeRequested.connect(self._view_full_size)
         self.thumbnail_grid.decoded.connect(self._on_thumbnail_decoded)
         self.scroll_area.setWidget(self.thumbnail_grid)
         main_layout.addWidget(self.scroll_area, 1)
@@ -611,69 +613,62 @@ class MainWindow(QMainWindow):
 
         self._update_page_controls()
 
+    def _add_action(self, menu, text, slot, shortcuts=()):
+        action = QAction(text, self)
+        action.setShortcuts([QKeySequence(s) for s in shortcuts])
+        action.triggered.connect(slot)
+        if menu is None:
+            self.addAction(action)
+        else:
+            menu.addAction(action)
+        return action
+
     def _setup_menu(self):
-        adjust_menu = self.menuBar().addMenu("&Adjust")
-
-        colors_action = adjust_menu.addAction("Colors...")
-        colors_action.triggered.connect(self.show_colors_panel)
-
-        auto_action = adjust_menu.addAction("Auto Contrast All")
-        auto_action.setShortcut("C")
-        auto_action.triggered.connect(self._auto_contrast_all)
-
-        adjust_menu.addSeparator()
-
-        limits_action = adjust_menu.addAction("Tile Size / Page Limits...")
-        limits_action.triggered.connect(self.show_display_limits_dialog)
+        view_menu = self.menuBar().addMenu("&View")
+        self._add_action(view_menu, "Previous Page", self._prev_page, ["Left", "PgUp"])
+        self._add_action(view_menu, "Next Page", self._next_page, ["Right", "PgDown"])
+        self._add_action(view_menu, "First Page", self._first_page, ["Home"])
+        self._add_action(view_menu, "Last Page", self._last_page, ["End"])
+        view_menu.addSeparator()
+        self._add_action(
+            view_menu, "Larger Tiles", lambda: self._step_tile_size(+1), ["+", "="]
+        )
+        self._add_action(view_menu, "Smaller Tiles", lambda: self._step_tile_size(-1), ["-"])
+        show_names = self._add_action(
+            view_menu, "Show Names", self.thumbnail_grid.set_show_info, ["I"]
+        )
+        show_names.setCheckable(True)
+        view_menu.addSeparator()
+        self._add_action(view_menu, "Colors...", self.show_colors_panel)
+        self._add_action(view_menu, "Auto Contrast All", self._auto_contrast_all, ["C"])
 
         annotate_menu = self.menuBar().addMenu("&Annotate")
-
-        annotate_action = annotate_menu.addAction("Annotate Selected...")
-        annotate_action.setShortcut("T")
-        annotate_action.triggered.connect(self.annotate_selected_tiles)
-
-        auto_annotate_action = annotate_menu.addAction("Auto-Annotate Page (AI)...")
-        auto_annotate_action.setShortcut("Shift+T")
-        auto_annotate_action.triggered.connect(self.auto_annotate_page)
-
-        group_action = annotate_menu.addAction("Group by Category")
-        group_action.setShortcut("G")
-        group_action.triggered.connect(self.sort_by_annotation)
-
+        self._add_action(annotate_menu, "Annotate Selected...", self.annotate_selected_tiles, ["T"])
+        self._add_action(annotate_menu, "Accept AI Prediction", self.accept_predictions, ["A"])
+        self._add_action(
+            annotate_menu,
+            "Clear Annotation",
+            self.clear_selected_annotations,
+            ["Delete", "Backspace"],
+        )
+        self._add_action(
+            annotate_menu, "Select All on Page", self.select_all, [QKeySequence.SelectAll]
+        )
         annotate_menu.addSeparator()
-
-        manage_action = annotate_menu.addAction("Manage Categories...")
-        manage_action.triggered.connect(self.show_manage_categories_dialog)
-
-        stats_action = annotate_menu.addAction("Annotation Stats...")
-        stats_action.triggered.connect(self.show_annotation_stats)
-
-        add_folders_action = annotate_menu.addAction("Add Tile Container(s)...")
-        add_folders_action.triggered.connect(self.add_project_folders)
-
-    def show_display_limits_dialog(self):
-        dlg = TiledDisplaySettingsDialog(
-            {
-                "tile_size_min": self._tile_size_min,
-                "tile_size_max": self._tile_size_max,
-                "tiles_per_page_min": self._tiles_per_page_min,
-                "tiles_per_page_max": self._tiles_per_page_max,
-            },
-            parent=self,
+        self._add_action(
+            annotate_menu, "Auto-Annotate Page (AI)", self.auto_annotate_page, ["Shift+T"]
         )
-        if not dlg.exec_():
-            return
-
-        cfg = dlg.get_config()
-        self._tile_size_min = cfg["tile_size_min"]
-        self._tile_size_max = cfg["tile_size_max"]
-        self._tiles_per_page_min = cfg["tiles_per_page_min"]
-        self._tiles_per_page_max = cfg["tiles_per_page_max"]
-
-        self.size_slider.setRange(self._tile_size_min, self._tile_size_max)
-        self.per_page_spin.setRange(
-            self._tiles_per_page_min, self._tiles_per_page_max
+        self._add_action(annotate_menu, "Clear AI Predictions...", self.clear_ai_predictions)
+        self._add_action(annotate_menu, "Group by Category", self.sort_by_annotation, ["G"])
+        annotate_menu.addSeparator()
+        self._add_action(
+            annotate_menu, "Manage Categories...", self.show_manage_categories_dialog
         )
+        self._add_action(annotate_menu, "Annotation Stats...", self.show_annotation_stats)
+
+        # Not in a menu: the legend under the toolbar lists them.
+        for n in range(1, NUMBER_KEY_CATEGORIES + 1):
+            self._add_action(None, f"Category {n}", lambda _=False, n=n: self.annotate_with_number(n), [str(n)])
 
     # ------------------------------------------------------------------
     # Paging
@@ -734,7 +729,7 @@ class MainWindow(QMainWindow):
         end = min(start + self.tiles_per_page, len(visible))
         page_paths = visible[start:end]
 
-        self.thumbnail_grid.set_items(page_paths, dims=self._current_dims)
+        self.thumbnail_grid.set_items(page_paths)
 
         # Decode the current page first, then the rest of the visible
         # (filtered) set in the background so paging around later tends
@@ -758,6 +753,14 @@ class MainWindow(QMainWindow):
             self.current_page += 1
             self._load_current_page()
 
+    def _first_page(self):
+        self.current_page = 0
+        self._load_current_page()
+
+    def _last_page(self):
+        self.current_page = self._total_pages() - 1
+        self._load_current_page()
+
     def _on_per_page_changed(self, value):
         self.tiles_per_page = value
         self.current_page = 0
@@ -768,6 +771,9 @@ class MainWindow(QMainWindow):
         self.size_label.setText(f"{value}px")
         self.thumbnail_grid.set_tile_size(value)
 
+    def _step_tile_size(self, direction):
+        self.size_slider.setValue(self.tile_size + direction * TILE_SIZE_STEP)
+
     def _auto_contrast_all(self):
         """Every image's own per-image auto-contrast is already its
         default clim (baked in at decode time) -- this just reverts any
@@ -777,46 +783,7 @@ class MainWindow(QMainWindow):
         if self.colors_panel is not None and self._colors_dock.isVisible():
             self.colors_panel.refresh_ui()
 
-    def _on_show_info_toggled(self, checked):
-        self.show_info = checked
-        self.thumbnail_grid.set_show_info(checked)
-
-    def _toggle_show_info(self):
-        self.show_info_check.setChecked(not self.show_info_check.isChecked())
-
     # ------------------------------------------------------------------
-    # Keyboard / lifecycle
-    # ------------------------------------------------------------------
-
-    def keyPressEvent(self, event):
-        key = event.key()
-
-        if key == Qt.Key_Left or key == Qt.Key_PageUp:
-            self._prev_page()
-        elif key == Qt.Key_Right or key == Qt.Key_PageDown:
-            self._next_page()
-        elif key == Qt.Key_Home:
-            self.current_page = 0
-            self._load_current_page()
-        elif key == Qt.Key_End:
-            self.current_page = self._total_pages() - 1
-            self._load_current_page()
-        elif key == Qt.Key_C:
-            self._auto_contrast_all()
-        elif key == Qt.Key_I:
-            self._toggle_show_info()
-        elif key == Qt.Key_Plus or key == Qt.Key_Equal:
-            new_size = min(self._tile_size_max, self.tile_size + 25)
-            self.size_slider.setValue(new_size)
-        elif key == Qt.Key_Minus:
-            new_size = max(self._tile_size_min, self.tile_size - 25)
-            self.size_slider.setValue(new_size)
-        elif key == Qt.Key_T:
-            self.annotate_selected_tiles()
-        elif key == Qt.Key_G:
-            self.sort_by_annotation()
-        else:
-            super().keyPressEvent(event)
 
     def closeEvent(self, event):
         self.thumbnail_grid.close()

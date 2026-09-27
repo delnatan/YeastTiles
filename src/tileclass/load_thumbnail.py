@@ -14,8 +14,6 @@ from PIL import Image
 
 from .tile_container import container_and_cell, get_container, is_container_ref
 
-TARGET_ORDER = "tzcyx"
-
 TIFF_SUFFIXES = (".tif", ".tiff")
 
 # Anything PIL can open. Extend as needed.
@@ -24,27 +22,8 @@ PIL_SUFFIXES = (".png", ".jpg", ".jpeg", ".bmp", ".gif")
 SUPPORTED_SUFFIXES = TIFF_SUFFIXES + PIL_SUFFIXES
 
 
-def _to_5d(data, dims=None):
-    """Reorder/reshape *data* to ``(T, Z, C, Y, X)``.
-
-    ``dims``: axis-order string matching ``data.ndim`` (e.g. ``"zcyx"``),
-    or ``None`` to fall back to ndim-based heuristics.
-    """
-    if dims:
-        dims = dims.lower()
-        if len(dims) != data.ndim:
-            raise ValueError(
-                f"dims string length ({len(dims)}) must match data ndim ({data.ndim})"
-            )
-        present = [d for d in TARGET_ORDER if d in dims]
-        perm = [dims.index(d) for d in present]
-        data = np.transpose(data, perm)
-        target_shape = [
-            data.shape[present.index(d)] if d in present else 1
-            for d in TARGET_ORDER
-        ]
-        return data.reshape(target_shape)
-
+def _to_5d(data):
+    """Reshape *data* to ``(T, Z, C, Y, X)`` by its ndim."""
     ndim = data.ndim
     if ndim == 2:  # (Y, X)
         return data[np.newaxis, np.newaxis, np.newaxis, :, :]
@@ -57,7 +36,7 @@ def _to_5d(data, dims=None):
     raise ValueError(f"Unsupported array ndim: {ndim}")
 
 
-def load_plane(path, dims=None):
+def load_plane(path):
     """Load *path* and return a ``(C, H, W)`` plane (T=0, middle Z).
 
     Raises whatever the underlying decoder raises on a corrupt/unreadable
@@ -76,7 +55,7 @@ def load_plane(path, dims=None):
         else:
             arr = np.asarray(Image.open(path))
 
-    data = _to_5d(arr, dims=dims)
+    data = _to_5d(arr)
     _T, Z, _C, _H, _W = data.shape
     z_mid = Z // 2
     return np.array(data[0, z_mid, :, :, :], copy=True)
