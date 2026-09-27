@@ -774,11 +774,18 @@ class ClassifierVicregWorker(QObject):
     # to save) -- see `pretrain_vicreg`'s docstring.
     cancelled = Signal(object)
 
-    def __init__(self, records, params: VICRegParams = VICRegParams(), output_dir: Path | None = None):
+    def __init__(
+        self,
+        records,
+        params: VICRegParams = VICRegParams(),
+        output_dir: Path | None = None,
+        backbone_weights_path=None,
+    ):
         super().__init__()
         self._records = list(records)
         self._params = params
         self._output_dir = output_dir
+        self._backbone_weights_path = backbone_weights_path
         self._cancel_requested = False
 
     def cancel(self):
@@ -792,6 +799,7 @@ class ClassifierVicregWorker(QObject):
                 progress_callback=self.progress.emit,
                 cancel_check=lambda: self._cancel_requested,
                 output_dir=self._output_dir,
+                backbone_weights_path=self._backbone_weights_path,
             )
         except TrainingCancelled:
             self.cancelled.emit(None)

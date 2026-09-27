@@ -56,10 +56,10 @@ class SupervisedTrainParamsPanel(QWidget):
             "Two stages, run back to back: <b>Probe</b> freezes the backbone "
             "and trains only the classifier head; <b>Finetune</b> then "
             "unfreezes the whole network and trains end-to-end, with the "
-            "backbone at a lower learning rate than the head. See the "
-            "'Starting point' panel below to choose the backbone's initial "
-            "weights -- a VICReg-pretrained backbone is recommended over "
-            "generic ImageNet weights whenever one is available."
+            "backbone at a lower learning rate than the head. 'Starting "
+            "point' below picks the backbone's initial weights -- a "
+            "VICReg-pretrained backbone is recommended over generic "
+            "ImageNet weights whenever one is available."
         )
         description.setWordWrap(True)
         description.setToolTip(
@@ -187,20 +187,16 @@ class VicregTrainParamsPanel(QWidget):
 
         description = QLabel(
             "Self-supervised backbone pretraining: learns an embedding space "
-            "directly from tile crops, no annotations required. Always "
-            "starts from an ImageNet-pretrained stem; optionally warm-starts "
-            "from the deployed backbone (see below) to keep building on what "
-            "a prior run already learned. Deploying a backbone from this tab "
-            "feeds both <i>future VICReg runs</i> here and Supervised "
-            "Training's 'Starting Point' backbone picker on that tab -- "
-            "pretrain and deploy a backbone here first if you want "
-            "Supervised Training to build on it instead of generic "
-            "ImageNet weights."
+            "from tile crops, pairing different crops of the same annotated "
+            "category. 'Starting point' below continues from an existing "
+            "backbone or starts from ImageNet weights. A deployed backbone "
+            "is the default starting point for both this tab and "
+            "Supervised Training."
         )
         description.setWordWrap(True)
         outer.addWidget(description)
 
-        # Basic: run length + the two toggles almost every run cares about.
+        # Basic: run length + sampling.
         # The VICReg loss coefficients, learning rate, and other tuning
         # knobs below have well-tested defaults -- tucked behind "Advanced"
         # so they don't crowd out the handful of settings worth changing
@@ -212,21 +208,11 @@ class VicregTrainParamsPanel(QWidget):
 
         self.epochs_spin = _ispin(defaults.epochs, 1, 2000)
         self.batch_size_spin = _ispin(defaults.batch_size, 1, 1024)
-        self.warm_start_cb = QCheckBox("Warm start from deployed backbone")
-        self.warm_start_cb.setChecked(defaults.warm_start)
-        self.warm_start_cb.setToolTip(
-            "Checked (default): initialize from the currently deployed VICReg "
-            "backbone if one exists, so this run builds on what it's already "
-            "learned. Unchecked: always start cold from an ImageNet-pretrained "
-            "stem, discarding the deployed backbone as a starting point (it "
-            "stays deployed until this run's result is explicitly promoted)."
-        )
         self.balanced_sampling_cb = QCheckBox("Balanced sampling")
         self.balanced_sampling_cb.setChecked(defaults.balanced_sampling)
 
         basic_form.addRow("Epochs:", self.epochs_spin)
         basic_form.addRow("Batch size:", self.batch_size_spin)
-        basic_form.addRow(self.warm_start_cb)
         basic_form.addRow(self.balanced_sampling_cb)
         outer.addWidget(basic_widget)
 
@@ -267,7 +253,6 @@ class VicregTrainParamsPanel(QWidget):
             self.seed_spin,
         ):
             box.valueChanged.connect(self._emit_params)
-        self.warm_start_cb.stateChanged.connect(self._emit_params)
         self.balanced_sampling_cb.stateChanged.connect(self._emit_params)
 
         return group
@@ -276,7 +261,6 @@ class VicregTrainParamsPanel(QWidget):
         return VICRegParams(
             epochs=self.epochs_spin.value(),
             batch_size=self.batch_size_spin.value(),
-            warm_start=self.warm_start_cb.isChecked(),
             balanced_sampling=self.balanced_sampling_cb.isChecked(),
             lr=self.lr_spin.value(),
             weight_decay=self.weight_decay_spin.value(),

@@ -24,12 +24,7 @@ def _settings() -> QSettings:
 
 
 def _recent(key: str) -> list[str]:
-    value = _settings().value(key, [])
-    if value is None:
-        return []
-    if isinstance(value, str):
-        return [value]
-    return list(value)
+    return _as_list(_settings().value(key, []))
 
 
 def _add_recent(key: str, path: str):
@@ -252,3 +247,28 @@ def restore_splitter_state(key: str, splitter) -> bool:
         splitter.restoreState(state)
         return True
     return False
+
+
+def get_classifier_pool() -> tuple[list[str], list[str]]:
+    """(project roots, excluded FOV container paths) of the shared
+    classification pool -- see `ui/classifier_pool.py`."""
+    s = _settings()
+    return _as_list(s.value("classifier_pool/roots", [])), _as_list(
+        s.value("classifier_pool/excluded_fovs", [])
+    )
+
+
+def set_classifier_pool(roots: list[str], excluded_fovs: list[str]):
+    s = _settings()
+    s.setValue("classifier_pool/roots", list(roots))
+    s.setValue("classifier_pool/excluded_fovs", list(excluded_fovs))
+
+
+def _as_list(value) -> list[str]:
+    # QSettings returns a bare string for a one-element list on some
+    # platforms, and None for an empty one.
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value]
+    return list(value)

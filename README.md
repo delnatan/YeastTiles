@@ -202,8 +202,13 @@ unconfirmed prediction so a newer model can redo them.
 
 Training the classifier (supervised fine-tuning, and VICReg backbone
 pretraining) happens on yeastprep's Classifier Training page, and running it
-over whole pooled projects on its Classify Tiles page -- both use only
-human-set or accepted annotations as ground truth. An already-exported
+over whole projects on its Classify Tiles page. Both pages share one
+classification pool of projects, kept between sessions (select a project's
+05 · Tiles entry in the tree and choose "Add Project to Classification
+Pool", or use "Add project..."), and both use only human-set or accepted
+annotations as ground truth. A training run saves to the first pooled
+project's `06_classifier/` folder; "Deploy Latest" then makes it the model
+the tile viewer and Classify Tiles use. An already-exported
 project with loose per-cell tifs from before the packed-container format can
 be converted with `uv run yeastprep-pack-tiles <project_root>`.
 

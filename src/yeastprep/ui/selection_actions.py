@@ -17,8 +17,10 @@ from .project_tree_panel import ProjectTreePanel
 @dataclass(frozen=True)
 class Action:
     label: str
+    # The page that loads the selection, or "" for an action the shell
+    # carries out itself without switching pages.
     page_key: str
-    mode: str  # "live" | "saved" | "open_viewer_fov"
+    mode: str  # "live" | "saved" for pages; "open_tile_viewer" | "add_to_pool" for the shell
 
 
 # Which page owns each stage as a *consumer* -- i.e. the page a selection
@@ -63,9 +65,8 @@ def actions_for_selection(stage: str, path: str, tree_panel: ProjectTreePanel) -
         # `path` here is a FOV id, not a file path (see
         # ProjectTreePanel._refresh_tiles_children / _on_current_changed).
         return [
-            Action("Open in Tile Viewer (this FOV)", "tile_generation", "open_viewer_fov"),
-            Action("Train Classifier...", "classifier_training", "open_viewer_fov"),
-            Action("Classify Tiles...", "classify_tiles", "open_viewer_fov"),
+            Action("Open in Tile Viewer", "", "open_tile_viewer"),
+            Action("Add Project to Classification Pool", "", "add_to_pool"),
         ]
 
     if stage == stages_core.STAGE_RAW:

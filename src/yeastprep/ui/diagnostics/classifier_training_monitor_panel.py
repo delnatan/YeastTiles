@@ -1,26 +1,17 @@
-"""Right-side diagnostics for the Classifier Training page -- the "rich
-information about the classification and various tasks" a training session
-needs to be reviewable before its checkpoint gets deployed. Modeled on
-`training_monitor_panel.TrainingMonitorPanel` (same loss-plot-over-log
-layout for live progress), extended with one more tab this task needs that
-denoise training doesn't: a pooled-dataset summary (so a bad/empty pool is
-obvious before a run is even started). The embedding scatter that used to
-live in a third tab here has moved to the Classify Tiles page's "Explore
-Embeddings" group (`diagnostics.embedding_scatter_widget.EmbeddingScatterWidget`)
--- training-time hyperparameters/progress and inference-time exploration are
-deliberately separate pages now.
+"""Right-side diagnostics for the Classifier Training page: live loss
+(+ validation accuracy) plots over a log, and a Dataset tab with the
+pool's per-category counts, so a bad or empty pool is obvious before a
+run starts. Only human-annotated tiles are trained on.
 """
 
 from qtpy.QtWidgets import (
-    QHeaderView,
     QPlainTextEdit,
     QSplitter,
-    QTableWidget,
-    QTableWidgetItem,
     QTabWidget,
     QVBoxLayout,
     QWidget,
 )
+from tileclass.widgets.annotation_stats_panel import AnnotationStatsPanel
 from qtpy.QtCore import Qt, Signal
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
@@ -158,42 +149,13 @@ class ClassifierTrainingMonitorPanel(QWidget):
         self.log_view.appendPlainText(text)
 
     # ------------------------------------------------------------------
-    # Dataset tab: pooled human-confirmed category counts, singleton
-    # -category warnings -- reuses PooledAnnotations' own summary methods
-    # directly rather than cross-importing tileclass's AnnotationStatsPanel
-    # widget (see module docstring). Confirmed-only: what a training run
-    # actually draws on. AI-predicted counts (a classify-time concern) live
-    # on the Classify Tiles page's own results summary instead.
+    # Dataset tab
 
     def _build_dataset_tab(self) -> QWidget:
-        tab = QWidget()
-        tab_layout = QVBoxLayout(tab)
-        tab_layout.setContentsMargins(4, 4, 4, 4)
+        self.dataset_stats = AnnotationStatsPanel()
+        return self.dataset_stats
 
-        self.dataset_table = QTableWidget(0, 2)
-        self.dataset_table.setHorizontalHeaderLabels(["Category", "Confirmed"])
-        self.dataset_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        self.dataset_table.verticalHeader().setVisible(False)
-        tab_layout.addWidget(self.dataset_table)
-        return tab
-
-    def set_dataset_summary(self, pooled) -> None:
-        """`pooled`: a `tileclass.data.pooled_annotations.PooledAnnotations`
-        built from the currently checked FOV folders. Flags a category with
-        exactly one confirmed tile as a "singleton" the way
-        `tileclass.widgets.annotation_stats_panel.AnnotationStatsPanel`
-        does, since a singleton category can't be split into train/val and
-        (for VICReg) can't form a same-category pair from two *different*
-        crops."""
-        confirmed = {}
-        for _, category, confidence in pooled.tagged_items():
-            if confidence is None:
-                confirmed[category] = confirmed.get(category, 0) + 1
-
-        categories = sorted(confirmed)
-        self.dataset_table.setRowCount(len(categories))
-        for row, category in enumerate(categories):
-            n_confirmed = confirmed[category]
-            label = str(n_confirmed) + (" (singleton)" if n_confirmed == 1 else "")
-            self.dataset_table.setItem(row, 0, QTableWidgetItem(category))
-            self.dataset_table.setItem(row, 1, QTableWidgetItem(label))
+    def set_dataset_summary(self, pooled, paths) -> None:
+        """`pooled`: a `PooledAnnotations` over the checked FOVs; `paths`:
+        every tile in them."""
+        self.dataset_stats.refresh(pooled, paths)

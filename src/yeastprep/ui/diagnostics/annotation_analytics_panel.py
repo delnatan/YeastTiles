@@ -1,15 +1,8 @@
-"""Light analytics over already-annotated tiles in the Classify Tiles
-page's pool -- brings the ad hoc "read each FOV's annotation sidecar with
-polars, map FOV to an experimental variable (time, condition, ...), plot
-class distribution with seaborn" workflow a user was previously running by
-hand into the app itself.
-
-Reads the checked-FOV pool straight from the page's own
-`ClassifierPoolWidget` (`checked_fov_dirs()`/`pooled_annotations()`)
-rather than keeping a second, independent FOV selection that could drift
-out of sync with it. A FOV only participates in the plot once it's both
-checked *and* mapped to a variable value (via the regex extractor or by
-hand) -- see `_on_plot_clicked`.
+"""Annotation analytics over the classification pool: per-category counts,
+plus class distribution plotted against an experimental variable (time,
+condition, ...) mapped from FOV names. Uses the pool's checked FOVs; a FOV
+is plotted once it's also mapped to a variable value (by the regex
+extractor or by hand) -- see `_on_plot_clicked`.
 """
 
 import re
@@ -48,9 +41,9 @@ _INCLUDE_COL, _PROJECT_COL, _FOV_COL, _INDEX_COL, _VARIABLE_COL = range(5)
 
 
 class AnnotationAnalyticsPanel(QWidget):
-    def __init__(self, pool_widget, parent=None):
+    def __init__(self, pool, parent=None):
         super().__init__(parent)
-        self.pool_widget = pool_widget
+        self.pool = pool
 
         # Per-FOV state survives table rebuilds (keyed by FOV path) so an
         # unrelated pool change (checking/unchecking some other FOV)
@@ -283,13 +276,13 @@ class AnnotationAnalyticsPanel(QWidget):
         return group
 
     # ------------------------------------------------------------------
-    # Refresh from pool -- called on ClassifierPoolWidget.pool_changed and
+    # Refresh from pool -- called on ClassifierPool.changed and
     # whenever this tab becomes the visible one (annotation files can
     # change on disk from an external tileclass viewer session).
 
     def refresh_from_pool(self):
-        fov_dirs = self.pool_widget.checked_fov_dirs()
-        pooled = self.pool_widget.pooled_annotations()
+        fov_dirs = self.pool.checked_fov_dirs()
+        pooled = self.pool.pooled_annotations()
 
         self._refresh_fov_table(fov_dirs)
         self._refresh_category_checks(pooled)
@@ -412,7 +405,7 @@ class AnnotationAnalyticsPanel(QWidget):
     # Plot
 
     def _on_plot_clicked(self):
-        pooled = self.pool_widget.pooled_annotations()
+        pooled = self.pool.pooled_annotations()
         if pooled is None:
             QMessageBox.warning(self, "yeastprep", "No FOVs checked in the pool to plot.")
             return

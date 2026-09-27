@@ -180,22 +180,46 @@ def test_pretrain_vicreg_records_trained_on_paths(tmp_path, monkeypatch):
     trained_on = meta["trained_on"]
     assert set(trained_on) == {str(tmp_path / "fov.tiles")}
     assert len(trained_on[str(tmp_path / "fov.tiles")]) == len(records)
-    assert meta["params"]["warm_start"] is True
+    assert meta["started_from"] == "imagenet"
 
 
-def test_pretrain_vicreg_warm_starts_by_default(tmp_path, monkeypatch):
+def test_pretrain_vicreg_continues_from_given_backbone(tmp_path, monkeypatch):
     """With `epochs=0` no gradient step ever runs, so whatever the
     backbone was initialized from is exactly what gets saved -- letting
-    this assert warm-starting happened (or didn't) by comparing state
-    dicts directly, rather than relying on it changing the loss."""
+    this compare state dicts directly."""
+    import torch
+
+    weights_dir = tmp_path / "vicreg_weights"
+    monkeypatch.setattr("tileclass.training.vicreg.VICREG_WEIGHTS_DIR", weights_dir)
+    monkeypatch.setattr("tileclass.training.vicreg.VICREG_WEIGHTS_PATH", weights_dir / "backbone.pth")
+    monkeypatch.setattr("tileclass.training.vicreg.VICREG_META_PATH", weights_dir / "meta.json")
+
+    seed_path = tmp_path / "seed_backbone.pth"
+    seed_backbone = build_yeast_efficientnet(num_classes=None, pretrained=False)
+    torch.save(seed_backbone.state_dict(), seed_path)
+
+    records = _make_records(tmp_path, n_per_class=8)
+    pretrain_vicreg(
+        records,
+        params=VICRegParams(epochs=0, batch_size=4, num_workers=0),
+        backbone_weights_path=seed_path,
+    )
+
+    saved = torch.load(weights_dir / "backbone.pth", map_location="cpu")
+    for key, value in seed_backbone.state_dict().items():
+        assert torch.equal(value, saved[key])
+    meta = json.loads((weights_dir / "meta.json").read_text())
+    assert meta["started_from"] == str(seed_path)
+
+
+def test_pretrain_vicreg_without_backbone_ignores_live_slot(tmp_path, monkeypatch):
     import torch
 
     weights_dir = tmp_path / "vicreg_weights"
     weights_path = weights_dir / "backbone.pth"
-    meta_path = weights_dir / "meta.json"
     monkeypatch.setattr("tileclass.training.vicreg.VICREG_WEIGHTS_DIR", weights_dir)
     monkeypatch.setattr("tileclass.training.vicreg.VICREG_WEIGHTS_PATH", weights_path)
-    monkeypatch.setattr("tileclass.training.vicreg.VICREG_META_PATH", meta_path)
+    monkeypatch.setattr("tileclass.training.vicreg.VICREG_META_PATH", weights_dir / "meta.json")
 
     weights_dir.mkdir()
     seed_backbone = build_yeast_efficientnet(num_classes=None, pretrained=False)
@@ -203,31 +227,6 @@ def test_pretrain_vicreg_warm_starts_by_default(tmp_path, monkeypatch):
 
     records = _make_records(tmp_path, n_per_class=8)
     pretrain_vicreg(records, params=VICRegParams(epochs=0, batch_size=4, num_workers=0))
-
-    saved = torch.load(weights_path, map_location="cpu")
-    for key, value in seed_backbone.state_dict().items():
-        assert torch.equal(value, saved[key])
-
-
-def test_pretrain_vicreg_warm_start_false_ignores_live_slot(tmp_path, monkeypatch):
-    import torch
-
-    weights_dir = tmp_path / "vicreg_weights"
-    weights_path = weights_dir / "backbone.pth"
-    meta_path = weights_dir / "meta.json"
-    monkeypatch.setattr("tileclass.training.vicreg.VICREG_WEIGHTS_DIR", weights_dir)
-    monkeypatch.setattr("tileclass.training.vicreg.VICREG_WEIGHTS_PATH", weights_path)
-    monkeypatch.setattr("tileclass.training.vicreg.VICREG_META_PATH", meta_path)
-
-    weights_dir.mkdir()
-    seed_backbone = build_yeast_efficientnet(num_classes=None, pretrained=False)
-    torch.save(seed_backbone.state_dict(), weights_path)
-
-    records = _make_records(tmp_path, n_per_class=8)
-    pretrain_vicreg(
-        records,
-        params=VICRegParams(epochs=0, batch_size=4, num_workers=0, warm_start=False),
-    )
 
     saved = torch.load(weights_path, map_location="cpu")
     assert any(

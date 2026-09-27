@@ -226,11 +226,9 @@ def _save_weights(
     what went into this specific checkpoint.
 
     `category_counts`: number of annotated crops per category across this
-    run's whole pool (train + val, unlike `trained_on_paths`) -- lets
-    someone peeking at meta.json later (see `_CheckpointFilePicker`'s
-    "View Metadata..." in yeastprep's Classifier Training page) see how
-    lopsided the training data was without cross-referencing
-    `trained_on_paths` by hand.
+    run's whole pool (train + val, unlike `trained_on_paths`) -- shown
+    wherever a checkpoint is described (yeastprep's checkpoint dropdowns
+    and Deploy group), so a lopsided training set is visible at a glance.
     """
     import torch
 

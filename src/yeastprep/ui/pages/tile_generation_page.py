@@ -7,8 +7,6 @@ on disk -- requires only that Segmentation has run (in this session or a
 previous one) on the active source stage.
 """
 
-import subprocess
-import sys
 from pathlib import Path
 
 from qtpy.QtCore import QThread, Signal
@@ -31,6 +29,7 @@ from ..batch_progress_bar import BatchProgressBar
 from ..common.preview_source_label import PreviewSourceLabel
 from ..diagnostics.tile_generation_preview_panel import TileGenerationPreviewPanel
 from ..project_tree_panel import ProjectTreePanel
+from ..tile_viewer import open_tile_viewer
 from ..tile_params_panel import TileParamsPanel
 from ..worker import TileBatchWorker
 from .page_progress import PageProgress
@@ -115,7 +114,7 @@ class TileGenerationPage(QWidget):
         self.tile_params_panel.reset_defaults_requested.connect(self._reset_project_defaults)
 
         self.export_btn.clicked.connect(self._start_batch)
-        self.open_tile_viewer_btn.clicked.connect(lambda _checked=False: self._open_tile_viewer())
+        self.open_tile_viewer_btn.clicked.connect(self._open_tile_viewer)
 
     # ------------------------------------------------------------------
     # Project handling
@@ -131,9 +130,6 @@ class TileGenerationPage(QWidget):
     # tile export never runs segmentation itself)
 
     def load_selection(self, stage: str, path: str, mode: str = "live"):
-        if mode == "open_viewer_fov":
-            self._open_tile_viewer(fov_filter=[path])
-            return
         self.preview_source_label.set_path(path)
         masks = load_saved_masks(seg_npy_path(path))
         if masks is None:
@@ -272,46 +268,24 @@ class TileGenerationPage(QWidget):
         self._batch_thread = None
         self._batch_worker = None
 
-    def _open_tile_viewer(self, fov_filter: list[str] | None = None):
-        """Launch the standalone tile-annotation viewer as a subprocess,
-        scoped to `fov_filter` if given (a single-FOV selection action --
-        see `load_selection`'s "open_viewer_fov" mode), else to whichever
-        FOVs are currently checked under the active 2D stage -- same scope
-        `open_tile_viewer_btn`'s label already advertises
-        (`_tile_viewer_label`), so what opens always matches what was shown
-        before the click.
-
-        Each FOV's crops live in their own `05_tiles/<fov_id>.tiles`
-        container (see core/tiles.py's `export_tiles`), so every target FOV
-        is passed to tileclass as its own positional container file rather
-        than as a `--fov` filter on the shared root -- tileclass's
-        `PooledAnnotations` then gives each FOV its own annotation sidecar
-        file instead of one shared file covering every FOV."""
+    def _open_tile_viewer(self):
+        """Open the tile viewer on whichever FOVs are checked under the
+        active 2D stage (all of them if none or all are checked) -- the
+        scope `open_tile_viewer_btn`'s label advertises. Each FOV is its own
+        `05_tiles/<fov_id>.tiles` container with its own annotation file."""
         paths_root = self.tree_panel.project_paths()
-        if paths_root is None or not paths_root.tiles.is_dir():
-            QMessageBox.warning(self, "yeastprep", "No tiles exported yet.")
-            return
-
-        if fov_filter is None:
-            source_stage = self.tree_panel.active_2d_stage()
-            if source_stage:
-                all_paths = self.tree_panel.all_paths_for_stage(source_stage)
-                checked_paths = self.tree_panel.checked_paths_for_stage(source_stage)
-                if checked_paths and len(checked_paths) < len(all_paths):
-                    fov_filter = [Path(p).stem for p in checked_paths]
-
-        if fov_filter:
-            fov_files = [paths_root.tiles / f"{fov_id}.tiles" for fov_id in fov_filter]
-        else:
-            fov_files = sorted(paths_root.tiles.glob("*.tiles"))
-        fov_files = [f for f in fov_files if f.is_file()]
-
+        fov_files = sorted(paths_root.tiles.glob("*.tiles")) if paths_root else []
+        source_stage = self.tree_panel.active_2d_stage()
+        if source_stage and fov_files:
+            all_paths = self.tree_panel.all_paths_for_stage(source_stage)
+            checked = self.tree_panel.checked_paths_for_stage(source_stage)
+            if checked and len(checked) < len(all_paths):
+                wanted = {Path(p).stem for p in checked}
+                fov_files = [f for f in fov_files if f.stem in wanted]
         if not fov_files:
             QMessageBox.warning(self, "yeastprep", "No tiles exported yet.")
             return
-
-        cmd = [sys.executable, "-m", "tileclass", *[str(f) for f in fov_files]]
-        subprocess.Popen(cmd, start_new_session=True)
+        open_tile_viewer(fov_files)
 
     # ------------------------------------------------------------------
 

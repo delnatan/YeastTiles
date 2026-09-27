@@ -235,12 +235,6 @@ class VICRegParams:
     cov_coeff: float = 1.0
     num_workers: int = 4
     seed: int = 0
-    # Whether to warm-start from the live-slot backbone (VICREG_WEIGHTS_PATH)
-    # if one exists, vs. always starting cold from ImageNet -- see
-    # `pretrain_vicreg`'s docstring for why warm-starting is the deliberate
-    # default here (unlike `training.supervised.train_classifier`, which
-    # never warm-starts at all).
-    warm_start: bool = True
 
 
 @dataclass
@@ -283,6 +277,7 @@ def _save_backbone(
     trained_on_paths,
     category_counts: dict[str, int] | None = None,
     output_dir: Path | None = None,
+    started_from: Path | None = None,
 ) -> Path:
     """Write `backbone.pth`/`meta.json` into `output_dir` if given, else
     into the live warm-start slot (`VICREG_WEIGHTS_DIR`) -- backing up
@@ -299,7 +294,10 @@ def _save_backbone(
 
     `category_counts`: number of annotated crops per category that fed
     this run's pairing -- see `training/supervised.py`'s `_save_weights`
-    for the matching field on the classifier side."""
+    for the matching field on the classifier side.
+
+    `started_from`: the backbone this run was initialized from, or `None`
+    for the ImageNet-pretrained stem -- recorded as `started_from`."""
     import json
     import shutil
 
@@ -335,8 +333,8 @@ def _save_backbone(
             "sim_coeff": params.sim_coeff,
             "std_coeff": params.std_coeff,
             "cov_coeff": params.cov_coeff,
-            "warm_start": params.warm_start,
         },
+        "started_from": str(started_from) if started_from is not None else "imagenet",
         "last_trained": datetime.now(timezone.utc).isoformat(),
         "description": (
             "VICReg-pretrained EfficientNet-B0 backbone (brightfield + "
@@ -386,6 +384,7 @@ def pretrain_vicreg(
     progress_callback=None,
     cancel_check=None,
     output_dir: Path | None = None,
+    backbone_weights_path: Path | None = None,
 ) -> VICRegResult:
     """`records`: list of (crop_path, category) pairs, e.g. from
     `PooledAnnotations.tagged_items()` filtered to human-confirmed tags.
@@ -395,23 +394,14 @@ def pretrain_vicreg(
     later run with a different (or larger) set of categories can freely
     warm-start from whatever backbone is currently saved.
 
-    `params.warm_start` (default `True`): whether to initialize from the
-    live-slot backbone (`VICREG_WEIGHTS_PATH`) if one exists, vs. always
-    starting cold from an ImageNet-pretrained stem. Warm-starting is safe
-    to default on here in a way it isn't for `supervised.train_classifier`
-    (which never warm-starts, full stop): VICReg pretraining has no
-    held-out validation split, so there's no "the model already trained on
-    what's now supposed to be held out" leakage bug to worry about --
-    repeat exposure to the same crops across pretraining rounds is just
-    more self-supervised training, same as more epochs. Set it `False`
-    for a clean, from-scratch run when that's what's wanted instead (e.g.
-    comparing against a known baseline, or deliberately discarding a
-    backbone trained on since-corrected annotations). Either way, this
-    always reads from the live slot regardless of `output_dir` -- only
-    where the *result* lands changes (see `train_classifier`'s matching
-    parameter for the rationale). Use `warm_start_overlap` to check how
-    much of `records` a given live backbone has already seen before
-    deciding.
+    `backbone_weights_path`: a backbone to continue from (e.g. the deployed
+    one), or `None` to start from an ImageNet-pretrained stem -- the same
+    choice `supervised.train_classifier` takes. Continuing from a backbone
+    is safe here in a way warm-starting the classifier head isn't: VICReg
+    has no held-out validation split to leak into, so repeat exposure to
+    the same crops is just more self-supervised training. Use
+    `warm_start_overlap` to check how much of `records` a backbone has
+    already seen.
 
     Raises `ValueError` for too little data. If `cancel_check()` goes true
     between epochs: raises `TrainingCancelled` if no epoch has finished yet
@@ -456,10 +446,10 @@ def pretrain_vicreg(
         drop_last=drop_last,
     )
 
-    if params.warm_start and VICREG_WEIGHTS_PATH.exists():
+    if backbone_weights_path is not None:
         backbone = build_yeast_efficientnet(num_classes=None, pretrained=False)
         backbone.load_state_dict(
-            torch.load(VICREG_WEIGHTS_PATH, map_location="cpu")
+            torch.load(backbone_weights_path, map_location="cpu")
         )
     else:
         backbone = build_yeast_efficientnet(num_classes=None, pretrained=True)
@@ -540,6 +530,7 @@ def pretrain_vicreg(
             paths,
             category_counts=category_counts,
             output_dir=output_dir,
+            started_from=backbone_weights_path,
         )
         return VICRegResult(
             categories=categories,
@@ -560,6 +551,7 @@ def pretrain_vicreg(
         paths,
         category_counts=category_counts,
         output_dir=output_dir,
+        started_from=backbone_weights_path,
     )
 
     return VICRegResult(

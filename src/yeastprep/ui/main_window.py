@@ -42,6 +42,7 @@ from yeastprep.core import stages as stages_core
 from yeastprep.optional_deps import missing
 
 from . import selection_actions, settings
+from .classifier_pool import ClassifierPool
 from .common.stage_breadcrumb import PipelineBreadcrumb
 from .pages.classifier_training_page import ClassifierTrainingPage
 from .pages.classify_tiles_page import ClassifyTilesPage
@@ -52,6 +53,7 @@ from .pages.preview_page import PreviewPage
 from .pages.tile_generation_page import TileGenerationPage
 from .project_tree_panel import ProjectTreePanel
 from .selection_actions_panel import SelectionActionsPanel
+from .tile_viewer import open_tile_viewer
 
 
 class YeastPrepWindow(QMainWindow):
@@ -68,8 +70,9 @@ class YeastPrepWindow(QMainWindow):
         self.deconvolve_page = DeconvolvePage(self.tree_panel)
         self.segmentation_page = self._build_segmentation_page()
         self.tile_generation_page = TileGenerationPage(self.tree_panel)
-        self.classifier_training_page = ClassifierTrainingPage(self.tree_panel)
-        self.classify_tiles_page = ClassifyTilesPage(self.tree_panel)
+        self.classifier_pool = ClassifierPool(self)
+        self.classifier_training_page = ClassifierTrainingPage(self.classifier_pool)
+        self.classify_tiles_page = ClassifyTilesPage(self.classifier_pool)
         # page_key (see selection_actions.py) -> page, in stack order.
         self._pages = {
             "data_reduction": self.data_reduction_page,
@@ -165,9 +168,6 @@ class YeastPrepWindow(QMainWindow):
         self.breadcrumb.page_requested.connect(self._show_page)
         self.tree_panel.file_selected.connect(self._on_tree_selection)
         self.selection_panel.action_triggered.connect(self._on_action_triggered)
-        self.classifier_training_page.checkpointTrained.connect(
-            self.classify_tiles_page.set_default_checkpoint
-        )
 
         for key, page in self._pages.items():
             page.progress_changed.connect(
@@ -183,6 +183,14 @@ class YeastPrepWindow(QMainWindow):
         self.selection_panel.set_selection(stage, path, actions)
 
     def _on_action_triggered(self, page_key: str, stage: str, path: str, mode: str):
+        if mode == "open_tile_viewer":
+            # `path` is a FOV id for a tiles-stage selection.
+            open_tile_viewer([self.tree_panel.project_paths().tiles / f"{path}.tiles"])
+            return
+        if mode == "add_to_pool":
+            self.classifier_pool.add_project(self.tree_panel.project_root())
+            self._show_page("classifier_training")
+            return
         page = self._pages.get(page_key)
         if page is None:
             return
