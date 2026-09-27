@@ -1,34 +1,27 @@
-"""YeastPrepWindow: the app shell. A single narrow left column stacks the
-compact stage list (one row per pipeline stage, each showing a small
-progress indicator for that stage's background work) on top of the
-persistent `ProjectTreePanel` -- the single project folder picker +
-checkable batch-selection tree shared by every page (see
-project_tree_panel.py's module docstring) -- and the `SelectionActionsPanel`
-below that, rather than putting the tree and page list in two side-by-side
-columns, so the rest of the window is free for image previews. That column
+"""YeastPrepWindow: the app shell. Two ways to reach a page:
+
+- the navigation strip across the top (`PipelineBreadcrumb`): one chip per
+  pipeline stage plus the classification pages. Clicking a chip just shows
+  that page; the strip also underlines the current page and shows each
+  page's background-run progress. Switching pages doesn't stop a page's
+  worker -- QStackedWidget only hides the widget -- so a batch run on a page
+  you've navigated away from keeps going and keeps reporting to its chip.
+- the `SelectionActionsPanel` under the project tree: the tasks valid for
+  the selected tree item, each of which shows its page *and* loads the file
+  into it.
+
+The left column (`ProjectTreePanel` -- the single project folder picker +
+checkable batch-selection tree shared by every page, see
+project_tree_panel.py's module docstring -- over the `SelectionActionsPanel`)
 sits in a QSplitter (`main_splitter`) against a QStackedWidget holding the
-actual pages, rather than a fixed-width column, so it can be dragged wider
-for a long project path without stealing width from every other page's own
-plots/previews by default; the sash position persists across sessions (see
-`settings.save_splitter_state`/`restore_splitter_state`). Switching pages doesn't
-stop a page's background worker: QStackedWidget only hides the widget, so
-a batch run on a page you've navigated away from keeps going and keeps
-updating its stage-list progress bar.
+pages, so it can be dragged wider for a long project path; the sash position
+persists across sessions (see `settings.save_splitter_state`/
+`restore_splitter_state`).
 
 Pages read/write the project's folder tree only through `tree_panel` --
 there's no per-page folder state, and no hand-wired "use X output"
 buttons: every page just asks the shared tree which stage is currently the
 active 2D source.
-
-Clicking a file in the tree does not by itself load anything into a page.
-It updates `selection_panel` with the list of tasks valid for that file
-(`selection_actions.actions_for_selection`, e.g. a 01_reduced file offers
-Denoise/Deconvolve/Segment/Preview, filtered to whatever the project's
-current stage-resolution state actually supports) and clicking one of
-those action buttons is what switches the stack to the owning page *and*
-loads the file into it (`_on_action_triggered`) -- one click, and the
-actions panel always shows exactly what a click on the currently-selected
-item can do next.
 
 Denoise and Segmentation need the `prep` extra's jssl-denoise/cellpose, so
 on an install without them those two slots get a `MissingExtraPage` saying
@@ -37,18 +30,15 @@ Tiles, ...) still works -- see yeastprep/optional_deps.py.
 """
 
 from qtpy.QtWidgets import (
-    QHBoxLayout,
-    QLabel,
-    QListWidget,
-    QListWidgetItem,
     QMainWindow,
-    QProgressBar,
     QSplitter,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
 
+from yeastprep.core import project as project_core
+from yeastprep.core import stages as stages_core
 from yeastprep.optional_deps import missing
 
 from . import selection_actions, settings
@@ -58,7 +48,6 @@ from .pages.classify_tiles_page import ClassifyTilesPage
 from .pages.data_reduction_page import DataReductionPage
 from .pages.deconvolve_page import DeconvolvePage
 from .pages.missing_extra_page import MissingExtraPage
-from .pages.page_progress import PageProgress
 from .pages.preview_page import PreviewPage
 from .pages.tile_generation_page import TileGenerationPage
 from .project_tree_panel import ProjectTreePanel
@@ -81,20 +70,8 @@ class YeastPrepWindow(QMainWindow):
         self.tile_generation_page = TileGenerationPage(self.tree_panel)
         self.classifier_training_page = ClassifierTrainingPage(self.tree_panel)
         self.classify_tiles_page = ClassifyTilesPage(self.tree_panel)
-        self._pages = [
-            ("Data Reduction", self.data_reduction_page),
-            ("Preview", self.preview_page),
-            ("Denoise", self.denoise_page),
-            ("Deconvolve", self.deconvolve_page),
-            ("Segmentation", self.segmentation_page),
-            ("Tile Generation", self.tile_generation_page),
-            ("Classifier Training", self.classifier_training_page),
-            ("Classify Tiles", self.classify_tiles_page),
-        ]
-        # page_key (see selection_actions.py) -> page instance, used by
-        # _on_action_triggered to route a SelectionActionsPanel button
-        # click to the page it names.
-        self._page_by_key = {
+        # page_key (see selection_actions.py) -> page, in stack order.
+        self._pages = {
             "data_reduction": self.data_reduction_page,
             "preview": self.preview_page,
             "denoise": self.denoise_page,
@@ -140,11 +117,20 @@ class YeastPrepWindow(QMainWindow):
         self.setCentralWidget(central)
         outer = QVBoxLayout(central)
 
-        # Spans the full window width, above the sidebar/stack split, so the
-        # linear-workflow guide stays visible no matter which page is
-        # showing -- previously it only lived inside Data Reduction's own
-        # layout and vanished on every other page.
-        self.breadcrumb = PipelineBreadcrumb(self.tree_panel)
+        self.breadcrumb = PipelineBreadcrumb(
+            self.tree_panel,
+            stage_pages={
+                project_core.STAGE_REDUCED: "data_reduction",
+                project_core.STAGE_DENOISED: "denoise",
+                project_core.STAGE_DECONVOLVED: "deconvolve",
+                stages_core.STAGE_SEGMENTATION: "segmentation",
+                project_core.STAGE_TILES: "tile_generation",
+            },
+            extra_pages=[
+                ("Classifier Training", "classifier_training"),
+                ("Classify Tiles", "classify_tiles"),
+            ],
+        )
         outer.addWidget(self.breadcrumb)
 
         self.main_splitter = QSplitter()
@@ -153,23 +139,15 @@ class YeastPrepWindow(QMainWindow):
         sidebar = QWidget()
         sidebar_layout = QVBoxLayout(sidebar)
         sidebar_layout.setContentsMargins(0, 0, 0, 0)
-        # Narrower default than before -- this column is a page picker + a
-        # navigation tree, neither of which needs much width -- but still a
-        # QSplitter, not a fixed size, so it can be dragged wider for a long
-        # project path/filename. Sash position persists across sessions
-        # (see `settings.restore_splitter_state` below and `closeEvent`).
         sidebar.setMinimumWidth(220)
-        self.main_splitter.addWidget(sidebar)
-
-        self.page_list = QListWidget()
-        sidebar_layout.addWidget(self.page_list)
-
         sidebar_layout.addWidget(self.tree_panel, 1)
-
         self.selection_panel = SelectionActionsPanel()
         sidebar_layout.addWidget(self.selection_panel)
+        self.main_splitter.addWidget(sidebar)
 
         self.stack = QStackedWidget()
+        for page in self._pages.values():
+            self.stack.addWidget(page)
         self.main_splitter.addWidget(self.stack)
         self.main_splitter.setStretchFactor(0, 0)
         self.main_splitter.setStretchFactor(1, 1)
@@ -178,83 +156,45 @@ class YeastPrepWindow(QMainWindow):
         if not settings.restore_splitter_state("main_sidebar", self.main_splitter):
             self.main_splitter.setSizes([280, self.width() - 280])
 
-        self._progress_bars = {}
-        for name, page in self._pages:
-            item = QListWidgetItem()
-            self.page_list.addItem(item)
-
-            row = QWidget()
-            row_layout = QHBoxLayout(row)
-            row_layout.setContentsMargins(8, 6, 8, 6)
-            row_layout.addWidget(QLabel(name), 1)
-
-            progress = QProgressBar()
-            progress.setFixedWidth(50)
-            progress.setFixedHeight(14)
-            progress.setTextVisible(False)
-            progress.setVisible(False)
-            row_layout.addWidget(progress)
-
-            item.setSizeHint(row.sizeHint())
-            self.page_list.setItemWidget(item, row)
-            self._progress_bars[id(page)] = progress
-
-            self.stack.addWidget(page)
-
-        # The stage list only ever holds a handful of short rows -- cap its
-        # height to what those rows actually need so the tree panel below
-        # it (a much longer, more useful list) gets the rest of the column.
-        row_height = self.page_list.sizeHintForRow(0)
-        frame = 2 * self.page_list.frameWidth()
-        self.page_list.setMaximumHeight(row_height * len(self._pages) + frame + 4)
-
-        self.page_list.setCurrentRow(0)
+        self._show_page("data_reduction")
 
     # ------------------------------------------------------------------
     # Wiring
 
     def _wire_up(self):
-        self.page_list.currentRowChanged.connect(self.stack.setCurrentIndex)
+        self.breadcrumb.page_requested.connect(self._show_page)
         self.tree_panel.file_selected.connect(self._on_tree_selection)
         self.selection_panel.action_triggered.connect(self._on_action_triggered)
         self.classifier_training_page.checkpointTrained.connect(
             self.classify_tiles_page.set_default_checkpoint
         )
 
-        for _name, page in self._pages:
+        for key, page in self._pages.items():
             page.progress_changed.connect(
-                lambda p, page=page: self._on_progress_changed(page, p)
+                lambda progress, key=key: self.breadcrumb.set_progress(key, progress)
             )
+
+    def _show_page(self, page_key: str):
+        self.stack.setCurrentWidget(self._pages[page_key])
+        self.breadcrumb.set_current_page(page_key)
 
     def _on_tree_selection(self, stage: str, path: str):
         actions = selection_actions.actions_for_selection(stage, path, self.tree_panel)
         self.selection_panel.set_selection(stage, path, actions)
 
     def _on_action_triggered(self, page_key: str, stage: str, path: str, mode: str):
-        page = self._page_by_key.get(page_key)
+        page = self._pages.get(page_key)
         if page is None:
             return
-        index = self.stack.indexOf(page)
-        if index >= 0:
-            self.page_list.setCurrentRow(index)
+        self._show_page(page_key)
         page.load_selection(stage, path, mode)
-
-    def _on_progress_changed(self, page, progress: PageProgress):
-        bar = self._progress_bars[id(page)]
-        if not progress.active:
-            bar.setVisible(False)
-            return
-        bar.setVisible(True)
-        bar.setRange(0, max(progress.total, 1))
-        bar.setValue(progress.done)
-        bar.setToolTip(progress.message)
 
     # ------------------------------------------------------------------
 
     def closeEvent(self, event):
         settings.save_window_geometry(self)
         settings.save_splitter_state("main_sidebar", self.main_splitter)
-        for _name, page in self._pages:
+        for page in self._pages.values():
             page.shutdown()
         self.tree_panel.shutdown()
         super().closeEvent(event)

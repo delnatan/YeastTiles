@@ -163,9 +163,12 @@ this; it self-heals if the archive is ever remounted.
 uv run yeastprep [path-to-project-folder]
 ```
 
-The window has three parts: a pipeline breadcrumb across the top (stage ->
-stage status at a glance), a sidebar with the page list and the project
-tree, and the current page filling the rest.
+The window has three parts: a navigation strip across the top, a sidebar
+with the project tree, and the current page filling the rest. The strip has
+one chip per pipeline stage (colored by that stage's status), followed by
+the Classifier Training and Classify Tiles pages. Click a chip to open its
+page; the current page is underlined, and a thin bar under a chip shows a
+batch or training run still going on that page.
 
 The project tree lists every stage's files. **Click a file** to select it --
 a "Selection" panel under the tree then lists exactly which tasks apply to
