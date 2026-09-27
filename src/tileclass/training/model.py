@@ -6,8 +6,7 @@ so they can never architecturally drift apart -- a training run
 producing weights the inference side can't load would otherwise be a
 silent, late-discovered bug.
 
-Ported from NN_workflow/yeastVIC.py's `get_modified_efficientnet`,
-including its `num_classes=None` -> `nn.Identity()` branch: VICReg
+`num_classes=None` gives an `nn.Identity()` head: VICReg
 pretraining (`training/vicreg.py`) needs the raw 1280-dim feature vector
 with no classification head at all, since that head only exists once
 supervised training builds one on top of the pretrained backbone.

@@ -1,19 +1,14 @@
-"""Training-time dataset + label-set utilities, ported from
-NN_workflow/yeastVIC.py -- only the supervised-training pieces (the
-VICReg-pair transform and `load_annotations`'s txt-file parsing aren't
-needed here: records come from `PooledAnnotations.tagged_items()`
-in-process, not from re-reading files off disk; see
-`training/supervised.py`).
+"""Training-time dataset + label-set utilities for `training/supervised.py`
+(records come from `PooledAnnotations.tagged_items()`).
 """
 
 import random
 from collections import Counter
 
 import numpy as np
-import tifffile
 from torch.utils.data import Dataset
 
-from ..tile_container import container_and_cell, get_container, is_container_ref
+from ..tile_container import container_and_cell, get_container
 
 
 class RandomGaussianNoise:
@@ -42,7 +37,7 @@ class ClampTensor:
 
 class ClassificationTransform:
     """Light augmentation for supervised fine-tuning -- `train=False`
-    (validation) is a no-op, matching NN_workflow/yeastVIC.py exactly."""
+    (validation) is a no-op."""
 
     def __init__(self, train=True):
         self._train = train
@@ -76,14 +71,11 @@ def load_masked_crop(path):
     `classifiers.yeast_efficientnet`, and `vicreg.ClassPairDataset` so
     the three can't silently diverge on how a crop is decoded.
 
-    `path` may be a real tiff file or a virtual `<fov_id>.tiles/<cell_id>.tif`
-    container reference (see `tile_container.py`) -- either way this
-    returns the same (3, H, W) uint8 array before mask-application below."""
-    if is_container_ref(path):
-        container_path, cell_id = container_and_cell(path)
-        img = get_container(container_path).read(cell_id)
-    else:
-        img = tifffile.imread(path)
+    `path` is a virtual `<fov_id>.tiles/<cell_id>.tif` container
+    reference (see `tile_container.py`)."""
+    container_path, cell_id = container_and_cell(path)
+    img = get_container(container_path).read(cell_id)
+    # Containers packed from legacy channel-last tifs.
     if img.shape[-1] == 3:
         img = img.transpose(2, 0, 1)
 

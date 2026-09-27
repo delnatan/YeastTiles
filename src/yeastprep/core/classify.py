@@ -107,9 +107,7 @@ def classify_pool(pooled, classifier) -> ClassifyPoolResult:
     e.g. a `YeastEfficientNetClassifier` pointed at a just-trained,
     not-yet-deployed session checkpoint) over every tile crop under
     `pooled`'s folders (a `tileclass.data.pooled_annotations.PooledAnnotations`),
-    tagging any tile that has no existing tag yet -- ported from
-    `NN_workflow/08_classify_tile_set.py`'s standalone script into a
-    reusable, Qt-free function.
+    tagging any tile that has no existing tag yet.
 
     A tile that already carries a tag -- human-confirmed *or* a
     still-standing AI prediction -- is never overwritten, matching

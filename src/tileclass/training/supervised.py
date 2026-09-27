@@ -1,16 +1,9 @@
-"""Supervised fine-tuning of the deployed yeast-tile classifier.
+"""Supervised fine-tuning of the yeast-tile classifier: a frozen-backbone
+linear probe, then a full unfreeze at a low LR. A plain, Qt-free function
+run from a background QThread (yeastprep's `ClassifierTrainingWorker`),
+reporting through `progress_callback` and stoppable via `cancel_check`.
 
-Ported from NN_workflow/02_supervised_training.py's two-stage procedure
-(frozen-backbone linear probe, then full unfreeze at a low LR) into a
-plain, Qt-free function callable from a background QThread (see
-`tileclass/workers.py`) -- `progress_callback`/`cancel_check` stand in for
-that script's `print()`s and its lack of any way to stop early.
-
-Differences from the original script, both deliberate:
-
-- Records come from `PooledAnnotations.tagged_items()` in-process (a list
-  of already-resolved (path, label) pairs), not by re-parsing
-  `crops_F*.txt` files off disk -- tileclass already has this data loaded.
+- Records are (path, label) pairs from `PooledAnnotations.tagged_items()`.
 - Every run trains from scratch -- an ImageNet-pretrained stem (or a
   VICReg backbone via `backbone_weights_path`) with a freshly initialized
   head, never a warm start from whatever's currently deployed. This is a

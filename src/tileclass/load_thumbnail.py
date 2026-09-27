@@ -1,58 +1,19 @@
-"""Minimal single-plane image loader: tifffile + PIL + numpy only.
-
-Returns one ``(C, H, W)`` plane -- all a classification tile ever needs.
-Multi-page TIFFs / stacks are collapsed to T=0 and the middle Z slice.
-"""
-
-from pathlib import Path
+"""Decode one tile from a packed `.tiles` container into the ``(C, H, W)``
+plane the thumbnail grid composites."""
 
 import numpy as np
-from PIL import Image
 
-from .tile_container import container_and_cell, get_container, is_container_ref
-
-TIFF_SUFFIXES = (".tif", ".tiff")
-
-# Anything PIL can open. Extend as needed.
-PIL_SUFFIXES = (".png", ".jpg", ".jpeg", ".bmp", ".gif")
-
-SUPPORTED_SUFFIXES = TIFF_SUFFIXES + PIL_SUFFIXES
-
-
-def _to_5d(data):
-    """Reshape *data* to ``(T, Z, C, Y, X)`` by its ndim."""
-    ndim = data.ndim
-    if ndim == 2:  # (Y, X)
-        return data[np.newaxis, np.newaxis, np.newaxis, :, :]
-    if ndim == 3:
-        return data[np.newaxis, np.newaxis, :, :, :]  # (C, Y, X)
-    if ndim == 4:  # (Z, C, Y, X)
-        return data[np.newaxis, :, :, :, :]
-    if ndim == 5:  # (T, Z, C, Y, X)
-        return data
-    raise ValueError(f"Unsupported array ndim: {ndim}")
+from .tile_container import container_and_cell, get_container
 
 
 def load_plane(path):
-    """Load *path* and return a ``(C, H, W)`` plane (T=0, middle Z).
-
-    Raises whatever the underlying decoder raises on a corrupt/unreadable
-    file -- callers (``ThumbnailDecodeWorker``) already treat decode
-    failure as skip-and-continue.
-    """
-    if is_container_ref(path):
-        container_path, cell_id = container_and_cell(path)
-        arr = get_container(container_path).read(cell_id)
-    else:
-        suffix = Path(path).suffix.lower()
-        if suffix in TIFF_SUFFIXES:
-            import tifffile
-
-            arr = tifffile.imread(path)
-        else:
-            arr = np.asarray(Image.open(path))
-
-    data = _to_5d(arr)
-    _T, Z, _C, _H, _W = data.shape
-    z_mid = Z // 2
-    return np.array(data[0, z_mid, :, :, :], copy=True)
+    """Return the ``(C, H, W)`` plane for a `<container>.tiles/<cell_id>.tif`
+    reference (see tile_container.py). A 2D tile comes back as one
+    channel. Raises on an unreadable container or unknown cell --
+    `ThumbnailDecodeWorker` treats that as skip-and-continue."""
+    container_path, cell_id = container_and_cell(path)
+    arr = get_container(container_path).read(cell_id)
+    if arr.ndim == 2:
+        arr = arr[np.newaxis]
+    # read() returns a read-only view onto the decompressed buffer.
+    return np.array(arr, copy=True)

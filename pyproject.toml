@@ -22,8 +22,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Run/fine-tune the tile classifier (Auto-Annotate, Train in `tiled_viewer`;
-# also NN_workflow's classification/training scripts). Combined with the
+# Run/fine-tune the tile classifier (Auto-Annotate in `tiled_viewer`,
+# yeastprep's Classifier Training / Classify Tiles pages). Combined with the
 # base install this is the "classification-only" profile -- what a less
 # powerful machine can still handle for inference and light fine-tuning.
 # VICReg pretraining is compute-heavy but needs no extra packages beyond

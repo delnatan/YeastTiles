@@ -202,8 +202,7 @@ class VicregTrainParamsPanel(QWidget):
 
         # Basic: run length + the two toggles almost every run cares about.
         # The VICReg loss coefficients, learning rate, and other tuning
-        # knobs below have well-tested defaults from the NN_workflow
-        # scripts this training was ported from -- tucked behind "Advanced"
+        # knobs below have well-tested defaults -- tucked behind "Advanced"
         # so they don't crowd out the handful of settings worth changing
         # per run.
         basic_widget = QWidget()
