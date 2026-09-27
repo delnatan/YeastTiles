@@ -8,9 +8,7 @@ real disk round trip, and a project with hundreds of raw stacks can turn
 into thousands of them. Kept here as one plain function with no Qt
 dependency so `ui/worker.py`'s `SimplePipelineWorker` can run it on a
 background `QThread` (see `ProjectScanController`) instead of blocking the
-GUI thread -- previously `ProjectTreePanel.refresh()` and
-`PipelineBreadcrumb.refresh()` each did this same walk synchronously,
-independently, on every project open.
+GUI thread, and both the tree and the navigation strip share its result.
 """
 
 from __future__ import annotations

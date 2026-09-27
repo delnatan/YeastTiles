@@ -1,7 +1,6 @@
 """Pure helpers for computing display contrast limits.
 
-No Qt, no vispy. Used by renderers (one-shot auto-contrast on data load)
-and by the channel panel (interactive percentile tighten/loosen).
+No Qt. Used for one-shot per-image auto-contrast at decode time.
 """
 
 import numpy as np

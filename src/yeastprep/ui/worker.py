@@ -67,8 +67,7 @@ class DebouncedController(QObject):
     request_id)`-shaped pipeline worker: owns the worker's QThread,
     debounces rapid parameter changes, and tags each request with a
     monotonic id so the GUI can tell which params a given result
-    corresponds to. Behaviorally identical to what used to be four
-    hand-duplicated ~90-line Controller classes.
+    corresponds to.
 
     `dedupe_key_fn(payload, source_id, params)`, if given, makes `schedule`
     a no-op when neither the upstream source nor the params changed since
@@ -681,14 +680,10 @@ class TrainingWorker(QObject):
 
 
 class ClassifierTrainingWorker(QObject):
-    """Wraps `tileclass.training.supervised.train_classifier` -- ported
-    from tileclass's own `workers.TrainingWorker` (now removed there, see
-    the Classifier Training page) verbatim except for the added
-    `output_dir`: a yeastprep-driven run always writes its resulting
-    checkpoint to a project-local session folder rather than tileclass's
-    live inference slot (see `core.classify.supervised_output_dir` and
-    `train_classifier`'s `output_dir` docstring) -- promoting it there is
-    a separate, explicit "Deploy to Tile Classifier" step."""
+    """Wraps `tileclass.training.supervised.train_classifier`. A run
+    always writes its checkpoint to a session folder rather than
+    tileclass's live inference slot (see `core.classify.supervised_output_dir`)
+    -- promoting it there is a separate, explicit Deploy step."""
 
     progress = Signal(object)  # tileclass.training.supervised.TrainingProgress
     finished = Signal(object)  # tileclass.training.supervised.TrainingResult
@@ -768,9 +763,8 @@ class ClassifierInferenceWorker(QObject):
 
 
 class ClassifierVicregWorker(QObject):
-    """Wraps `tileclass.training.vicreg.pretrain_vicreg` -- ported from
-    tileclass's own `workers.VICRegWorker` (now removed there), with the
-    same `output_dir` addition as `ClassifierTrainingWorker` above."""
+    """Wraps `tileclass.training.vicreg.pretrain_vicreg`, writing to
+    `output_dir` like `ClassifierTrainingWorker` above."""
 
     progress = Signal(object)  # tileclass.training.vicreg.VICRegProgress
     finished = Signal(object)  # tileclass.training.vicreg.VICRegResult

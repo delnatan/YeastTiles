@@ -24,5 +24,5 @@ def require(module: str, extra: str):
     except ModuleNotFoundError as exc:
         raise ImportError(
             f"{exc.name or module!r} isn't installed; it comes with the "
-            f"'{extra}' extra: pip install 'tileclass[{extra}]'"
+            f"'{extra}' extra: add --extra {extra} to your uv sync command"
         ) from exc

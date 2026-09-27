@@ -21,7 +21,7 @@ class MissingExtraPage(QWidget):
             f"<p>It needs {', '.join(missing_packages)}, which "
             f"{'is' if len(missing_packages) == 1 else 'are'} not installed.</p>"
             f"<p>Install the <b>{extra}</b> extra to enable it:<br>"
-            f"<code>pip install 'tileclass[{extra}]'</code></p>"
+            f"<code>uv sync --extra classification --extra {extra}</code></p>"
         )
         label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)

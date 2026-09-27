@@ -1,16 +1,15 @@
 """Single-project folder layout: the project root IS the folder holding the
 raw 3D stacks (`raw_pattern` glob, e.g. `*.ims`) -- there is no separate
 "raw input folder" picker. Numbered stage subfolders live right alongside
-those raw files in the same root, replacing the old scheme of four
-independently picked stage folders connected only by hand-wired "use X
-output" buttons in ui/main_window.py.
+those raw files in the same root.
 
     <project_root>/
       <stem>.ims / .czi / .nd2   raw multi-channel Z-stacks (untouched)
       01_reduced/        <stem>.tiff   16-bit, 2ch (CYX): [brightfield, target]
       02_denoised/       <stem>.tiff   16-bit, 2ch          -- optional stage
       03_deconvolved/    <stem>.tiff   16-bit, 2ch          -- optional stage
-      05_tiles/          <fov>/<fov>_cell#####.tif  8-bit, 3ch + tile_index.csv
+      05_tiles/          <fov>.tiles  packed 8-bit 3ch cell crops (see
+                         tileclass/tile_container.py) + tile_index.csv
 
 Segmentation has no numbered folder of its own: cellpose's own GUI needs
 `_seg.npy` sitting directly next to the image it corrects

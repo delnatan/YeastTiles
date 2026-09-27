@@ -1,9 +1,7 @@
 """Deconvolve page: optional Poisson-ML deconvolution
 (`core/deconvolution`) of the target channel only, reading from
 02_denoised/ if that stage ran, else 01_reduced/, and writing into
-03_deconvolved/. Split out of the old enhance_page.py so deconvolution is
-independently toggleable from denoising (see denoise_page.py). Reads its
-input/batch-selection through the shared ProjectTreePanel (see
+03_deconvolved/. Reads its input/batch-selection through the shared ProjectTreePanel (see
 main_window.py) rather than owning its own folder panel.
 
 A second tab hosts the PSF Calculator (`psfkit`-backed), for producing the

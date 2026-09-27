@@ -1,8 +1,6 @@
 """Shared checkpoint-weights-file picker, used by both the Classifier
 Training page (Deploy, "Starting Point" backbone) and the Classify Tiles
-page (Run Inference weights, Explore Embeddings backbone) -- previously
-private to `classifier_training_page.py`, pulled out here so a second page
-can reuse it without reaching into that module's internals.
+page (Run Inference weights, Explore Embeddings backbone).
 """
 
 import json

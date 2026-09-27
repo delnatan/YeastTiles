@@ -1,8 +1,6 @@
 """Deconvolution driver: optional Poisson-ML deconvolution
 (`core/deconvolution`) of a combined-channel tiff's target channel only,
-writing into 03_deconvolved/. Split out of the old core/enhancement.py so
-deconvolution and denoising are independently toggleable stages (see
-core/denoise.py for the other half).
+writing into 03_deconvolved/.
 """
 
 from dataclasses import dataclass

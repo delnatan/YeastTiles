@@ -1,9 +1,7 @@
-"""Top-level pipeline-stage pages hosted by ui/main_window.py's page-list
-shell. Each page is a self-contained QWidget: it owns its own folder
-panel(s), worker thread(s), and status feedback, and works standalone as
-long as the right input files are present on disk (design.md's stage
-boundaries) -- pages don't reference each other directly. Any convenience
-wiring that legitimately needs to know about more than one page (e.g. the
-Segmentation page's "use the Data Reduction output folder" shortcut) is
-connected by the shell, the one place that holds references to both.
+"""Pages hosted by ui/main_window.py. Each page is a self-contained QWidget
+that owns its worker thread(s) and status feedback, reads the project
+through the shared ProjectTreePanel, and works as long as its input files
+are on disk -- pages don't reference each other directly. The little
+cross-page wiring there is (e.g. a freshly trained checkpoint defaulting
+Classify Tiles' pickers) is connected by the shell.
 """

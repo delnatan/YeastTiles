@@ -1,10 +1,7 @@
 """Minimal single-plane image loader: tifffile + PIL + numpy only.
 
-Unlike pyvistra's ``io.load_image`` (which returns a lazy 5D proxy for
-arbitrary T/Z/C navigation), this returns a single already-materialized
-``(C, H, W)`` plane -- all a classification tile ever needs. Multi-page
-TIFFs / stacks are collapsed to T=0 and the middle Z slice, same as
-``pyvistra.data.thumbnail_cache.DecodeCache.decode``'s ``proxy[0, z_mid]``.
+Returns one ``(C, H, W)`` plane -- all a classification tile ever needs.
+Multi-page TIFFs / stacks are collapsed to T=0 and the middle Z slice.
 """
 
 from pathlib import Path

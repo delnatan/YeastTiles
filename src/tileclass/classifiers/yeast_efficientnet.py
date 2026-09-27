@@ -29,8 +29,8 @@ class YeastEfficientNetClassifier(TileClassifier):
         caller (the `CLASSIFIERS` registry, tileclass's Auto-Annotate)
         wants. `weights_path`/`meta_path` let a caller point at some other
         (weights.pth, meta.json) pair instead -- e.g. yeastprep's
-        Classifier Training page running inference with a just-trained,
-        not-yet-deployed session checkpoint (see `core.classify.classify_pool`).
+        Classify Tiles page running inference with a not-yet-deployed
+        session checkpoint (see `core.classify.classify_pool`).
         Resolved here rather than as parameter defaults so a test (or any
         caller) that monkeypatches the module-level `WEIGHTS_PATH`/
         `META_PATH` still takes effect -- a parameter default binds once at

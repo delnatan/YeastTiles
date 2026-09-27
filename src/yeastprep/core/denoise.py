@@ -1,7 +1,5 @@
 """Denoise driver: an optional jssl-denoise pass over a combined-channel
-tiff, writing into 02_denoised/. Split out of the old core/enhancement.py
-so denoising and deconvolution are independently toggleable stages (see
-core/deconvolve.py for the other half).
+tiff, writing into 02_denoised/.
 
 Brightfield and the target/fluorescence channel are different imaging
 modalities, so each needs its own trained checkpoint -- denoising is done

@@ -1,10 +1,7 @@
 """Single project-tree panel: the one folder picker + batch file-selector
-for the whole app, replacing the old per-page quartet (`FolderPanel`,
-`EnhanceFolderPanel`, `SegmentationFolderPanel`, `TileFolderPanel`) and the
-per-page `FileListPanel` checkbox lists.
+for the whole app.
 
-Lives once in `main_window.py`, stacked above the page list -- not
-duplicated per page -- so the project's folder structure is always visible
+Lives once in `main_window.py`'s sidebar -- not duplicated per page -- so the project's folder structure is always visible
 (per the project's design goal) and a file's checked state survives
 switching pages. Each page reads/writes through this panel's stage-scoped
 API (`checked_paths_for_stage`, `mark_result`, ...) instead of owning its

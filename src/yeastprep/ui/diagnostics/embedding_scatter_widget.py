@@ -1,7 +1,5 @@
-"""Standalone t-SNE embedding scatter with lasso-select -- extracted from
-`ClassifierTrainingMonitorPanel`'s old Embeddings tab so it can be reused by
-the Classify Tiles page (see that page's "Explore Embeddings" group), which
-gives it real room to work rather than a cramped tab.
+"""t-SNE embedding scatter with lasso-select, for the Classify Tiles page's
+"Explore Embeddings" group.
 
 Populated on demand via `tileclass.training.linear_probe.tsne_2d`/
 `knn_accuracy`, with an optional pool of *unlabeled* points (see

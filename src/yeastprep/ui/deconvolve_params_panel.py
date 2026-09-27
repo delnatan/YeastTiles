@@ -1,7 +1,5 @@
 """Deconvolve parameter controls: target-channel-only PSF + solver
-settings. Split out of the old enhance_params_panel.py's "Deconvolve" group
-box so deconvolution is its own independently toggleable stage (see
-denoise_params_panel.py for the other half)."""
+settings."""
 
 from pathlib import Path
 

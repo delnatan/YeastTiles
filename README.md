@@ -41,9 +41,8 @@ The two packages have very different weight, and installs are split to match:
   ```
 
   `yeastprep` launches with just `classification`: its Classifier Training
-  page (the main entry point for batch-wise annotation/fine-tuning across a
-  pooled project) and Classify Tiles page work, and the Denoise and
-  Segmentation pages show which packages to install instead. Running it
+  and Classify Tiles pages work, and the Denoise and Segmentation pages show
+  which packages to install instead. Running it
   without `classification` shows a dialog naming the missing packages. `psf`
   is a further, separate extra -- it's only `psfkit`, used by the PSF
   Calculator convenience tab on the Deconvolve page. Deconvolution itself
@@ -70,8 +69,7 @@ The two packages have very different weight, and installs are split to match:
   uv sync --extra notebooks
   ```
 
-Within `tiled_viewer` itself, selecting a classifier (Auto-Annotate, Train)
-is what actually imports torch -- if the `classification` extra isn't installed, that
+Within `tiled_viewer` itself, Auto-Annotate is what actually imports torch -- if the `classification` extra isn't installed, that
 surfaces as a dialog rather than a crash, so the base install stays usable
 purely for browsing/annotating tiles even without deciding on `classification` up front.
 
@@ -186,17 +184,28 @@ uv run tiled_viewer <fov>.tiles [<more>.tiles ...] [--fov NAME ...]
 ```
 
 Also reachable from yeastprep's Tile Generation page ("Open in Tile
-Viewer"). Browses cropped cell tiles in a grid, lets you annotate/label
-them, and fine-tune an EfficientNet classifier (frozen-backbone probe, then
-full unfreeze) on the labeled set -- starting from whatever's currently
-deployed, or an ImageNet-pretrained stem for a first run. Pass multiple
-`.tiles` containers to pool tiles from several experiments into one
-session. An already-exported project with loose per-cell tifs from before
-the packed-container format can be converted with
-`uv run yeastprep-pack-tiles <project_root>`. Note: the
-self-supervised VICReg embedding-pretraining step described in design.md
-isn't wired into this app yet -- classifier training/fine-tuning doesn't
-depend on it.
+Viewer"). Browses the cell tiles of one or more `.tiles` containers in a
+grid (one container per FOV; tiles are shown by FOV and cell index), and
+annotates them. Each container keeps its own annotation sidecar
+(`<fov>.txt` next to it), so passing several containers pools tiles from
+several experiments into one session.
+
+Annotating: click / Shift-click / Ctrl-click (or Ctrl+A) to select tiles,
+then press a number key to apply that category -- the legend under the
+toolbar lists them (Annotate > Manage Categories... edits the list). T picks
+a category from a list instead, Delete clears it. Annotate > Auto-Annotate
+Page runs the deployed classifier on the current page's un-annotated tiles;
+its predictions show a confidence and a dashed outline until you accept them
+(A) or relabel them. Group by Category (G) sorts the page so the least
+confident predictions come first; Clear AI Predictions drops every
+unconfirmed prediction so a newer model can redo them.
+
+Training the classifier (supervised fine-tuning, and VICReg backbone
+pretraining) happens on yeastprep's Classifier Training page, and running it
+over whole pooled projects on its Classify Tiles page -- both use only
+human-set or accepted annotations as ground truth. An already-exported
+project with loose per-cell tifs from before the packed-container format can
+be converted with `uv run yeastprep-pack-tiles <project_root>`.
 
 ## Tests
 

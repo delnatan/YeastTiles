@@ -9,8 +9,9 @@ from tileclass.theme import apply_dark_theme
 def main():
     parser = argparse.ArgumentParser(
         prog="yeastprep",
-        description="Yeast image-processing pipeline: Data Reduction, Denoise, "
-        "Deconvolve, Segmentation, Tile Generation, and Train Denoiser pages.",
+        description="Yeast image-processing pipeline (Data Reduction, Denoise, "
+        "Deconvolve, Segmentation, Tile Generation) plus classifier training "
+        "and pooled tile classification.",
     )
     parser.add_argument(
         "input_folder", nargs="?", default=None, help="Folder of raw stacks to open"
@@ -32,7 +33,7 @@ def main():
             None,
             "yeastprep",
             "yeastprep needs extra packages that aren't installed:\n"
-            f"{exc}\n\nInstall with:\n  pip install -e '.[classification]'",
+            f"{exc}\n\nInstall with:\n  uv sync --extra classification",
         )
         sys.exit(1)
 

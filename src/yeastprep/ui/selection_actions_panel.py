@@ -1,9 +1,6 @@
 """Persistent "what can I do with the currently selected tree item" panel,
-docked directly under `ProjectTreePanel` in the sidebar. Replaces the old
-single-click auto-navigate (which silently routed some stages to a
-read-only page and others nowhere) and the double-click-loads-a-page
-pattern: every task a tree selection can trigger is listed here by name --
-see `selection_actions.actions_for_selection` for how the list is derived
+docked directly under `ProjectTreePanel` in the sidebar. Every task a
+tree selection can trigger is listed here by name -- see `selection_actions.actions_for_selection` for how the list is derived
 -- so there's exactly one place to look for "what happens if I click this."
 """
 
