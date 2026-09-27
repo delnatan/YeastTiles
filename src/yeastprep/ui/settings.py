@@ -40,14 +40,6 @@ def add_recent_project_root(path: str):
     _add_recent("recent_project_roots", path)
 
 
-def get_recent_denoise_checkpoints() -> list[str]:
-    return _recent("recent_denoise_checkpoints")
-
-
-def add_recent_denoise_checkpoint(path: str):
-    _add_recent("recent_denoise_checkpoints", path)
-
-
 def get_default_params() -> FlattenFieldParams:
     s = _settings()
     s.beginGroup("default_params")

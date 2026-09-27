@@ -110,9 +110,8 @@ def pipeline_status(
             has_masks = mask_dir is not None and _has_any(mask_dir, "*_seg.npy")
             status = "done" if has_masks else "empty"
         elif spec.key == project.STAGE_TILES:
-            # Crops live one level deeper now (05_tiles/<fov_id>/*.tif), so
-            # the tile index -- always written alongside them -- is a
-            # cheaper and layout-agnostic "done" signal than a recursive glob.
+            # The tile index -- always written alongside the containers --
+            # is a cheaper "done" signal than opening any of them.
             status = "done" if tile_index_path(paths.tiles).exists() else "empty"
         else:
             status = _folder_stage_status(paths, spec.key, config)

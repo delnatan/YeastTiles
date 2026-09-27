@@ -11,7 +11,7 @@ yesterday's result.
 
 jssl_denoise (the `prep` extra) is imported only when a checkpoint is
 actually loaded, so `DenoiseParams` and the checkpoint-lookup helpers stay
-importable on a classification-only install (core/project.py needs them).
+importable on a `lite` install (core/project.py needs them).
 """
 
 from __future__ import annotations

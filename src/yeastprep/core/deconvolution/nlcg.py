@@ -299,9 +299,9 @@ def nlcg_with_operator(
 
     Convergence: stop via Morozov's discrepancy principle once the mean
     per-pixel data-model I-divergence reaches ``0.5 * slack`` (``slack``
-    interprets ``Var[data] = mean`` -- adjust it, e.g. via
-    :meth:`.photon_calibration.SolveUnits.discrepancy_scale`, if solving in
-    units where that doesn't hold). Eq. 17 -- the relative (mass-normalized,
+    interprets ``Var[data] = mean`` -- multiply it by ``gain`` when solving
+    in :class:`.photon_calibration.SolveUnits`'s ``raw_counts`` mode, where
+    that doesn't hold). Eq. 17 -- the relative (mass-normalized,
     5-iteration averaged) I-divergence between successive iterates dropping
     below ``tol`` -- runs alongside as a fallback, in case the discrepancy
     target is unreachable (``slack=0`` disables the discrepancy test and

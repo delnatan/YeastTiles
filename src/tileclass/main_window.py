@@ -356,7 +356,8 @@ class MainWindow(QMainWindow):
                     "Auto-Annotate",
                     "This classifier needs extra packages that aren't "
                     f"installed:\n{exc}\n\nInstall with:\n"
-                    "  uv sync --extra classification",
+                    "  uv sync --extra lite\n"
+                    "or, on a GPU workstation:\n  uv sync --extra gpu",
                 )
                 return None
         return self._classifier_instances[name]

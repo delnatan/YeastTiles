@@ -17,10 +17,10 @@ def _natsort_key(path):
 
 
 def scan_container(path):
-    """Return a virtual `"<container>.tiles/<cell_id>.tif"` reference for
+    """Return a virtual `"<container>.tiles/<cell_id>"` reference for
     every cell in the `.tiles` container at `path`, sorted naturally."""
     container = TileContainer(path)
-    paths = [f"{path}/{cell_id}.tif" for cell_id in container.cell_ids()]
+    paths = [f"{path}/{cell_id}" for cell_id in container.cell_ids()]
     paths.sort(key=_natsort_key)
     return paths
 

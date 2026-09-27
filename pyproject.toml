@@ -1,10 +1,12 @@
-# DE note: you can run `uv sync --extra full` to make sure all the packages
-# are installed.
+# Install with one machine profile:
+#   uv sync --extra gpu       # NVIDIA GPU workstation: whole pipeline + training
+#   uv sync --extra gpu-amd   # AMD GPU workstation (Linux): same, on ROCm
+#   uv sync --extra lite      # anything else: browse, classify, plot
 
 [project]
 name = "tileclass"
-version = "0.1.0"
-description = "Minimal, fast tile-grid viewer for browsing and classifying folders of small microscopy/image tiles."
+version = "0.2.0"
+description = "Yeast-cell microscopy pipeline: raw stacks to per-cell tiles (yeastprep), and a tile viewer/classifier (tileclass)."
 requires-python = ">=3.11"
 # Base install: just the tile-grid viewer/annotator (`tiled_viewer`), no
 # classification and no FOV-processing pipeline. Light enough for a Windows
@@ -23,9 +25,9 @@ dependencies = [
 
 [project.optional-dependencies]
 # Run/fine-tune the tile classifier (Auto-Annotate in `tiled_viewer`,
-# yeastprep's Classifier Training / Classify Tiles pages). Combined with the
-# base install this is the "classification-only" profile -- what a less
-# powerful machine can still handle for inference and light fine-tuning.
+# yeastprep's Classifier Training / Classify Tiles pages). The core of the
+# `lite` profile -- what a less powerful machine can still handle for
+# inference and light fine-tuning.
 # VICReg pretraining is compute-heavy but needs no extra packages beyond
 # this, just more time/a GPU, so it isn't a separate extra.
 # pyvistra/qtkit are here because `yeastprep` itself (its Classifier
@@ -47,8 +49,9 @@ classification = [
 # yeastprep's raw-stack-to-tiles pipeline (Data Reduction, Denoise,
 # Deconvolve, Segmentation, Tile Generation) -- the heavy, GPU-segmentation
 # stack. cellpose and jssl-denoise are what actually gate the Segmentation
-# and Denoise pages; `yeastprep` launches without them. Only needed on the machine doing FOV processing, not on one that
-# just annotates/classifies already-generated tiles. Deconvolution itself
+# and Denoise pages; `yeastprep` launches without them. Only needed on the
+# machine doing FOV processing, not on one that just annotates/classifies
+# already-generated tiles. Deconvolution itself
 # only needs a PSF tiff file, not psfkit -- see the separate `psf` extra.
 prep = [
     "cellpose[gui]",
@@ -73,18 +76,43 @@ notebooks = [
     "jupyter",
     "ipykernel",
 ]
-# Everything: the full raw-stacks-through-classification pipeline.
-full = [
+# Machine profiles -- pick exactly one (they're declared `conflicts` below).
+# The extras above are the building blocks; these bundle them and also pick
+# the torch build, which is what makes them mutually exclusive. On macOS
+# they all get the plain PyPI torch (MPS); the build choice only matters on
+# Linux/Windows -- see [tool.uv.sources].
+# NVIDIA GPU workstation: raw stacks through tiles, plus VICReg/classifier
+# training, on the CUDA 13.2 torch build.
+gpu = [
+    "torch",
+    "torchvision",
+    "tileclass[classification,prep,psf]",
+]
+# Same as `gpu`, for an AMD GPU workstation, on the ROCm 7.2 torch build.
+# Linux x86_64 only -- PyTorch publishes no ROCm wheels for Windows. ROCm
+# torch drives the GPU through the same `torch.cuda` API, so no code
+# differs between the two. triton-rocm is torch's own dependency, listed
+# here only so [tool.uv.sources] can point it at the ROCm index (the only
+# place it's published) -- sources apply to direct dependencies only.
+gpu-amd = [
+    "torch",
+    "torchvision",
+    "triton-rocm; sys_platform == 'linux'",
+    "tileclass[classification,prep,psf]",
+]
+# Any other machine: tile browsing, classification and plotting, on the
+# CPU-only torch build -- a few hundred MB instead of multiple GB of CUDA
+# libraries.
+lite = [
+    "torch",
+    "torchvision",
     "tileclass[classification]",
-    "tileclass[prep]",
-    "tileclass[psf]",
 ]
 
 [project.scripts]
 tiled_viewer = "tileclass.__main__:main"
 yeastprep = "yeastprep.__main__:main"
 yeastprep-batch = "yeastprep.core.cli:main"
-yeastprep-pack-tiles = "yeastprep.core.pack_tiles_cli:main"
 
 [build-system]
 requires = ["setuptools>=61.0"]
@@ -93,17 +121,50 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.uv]
+conflicts = [[{ extra = "gpu" }, { extra = "gpu-amd" }, { extra = "lite" }]]
+
+# torch/torchvision come from the CUDA index under `gpu`, the ROCm index
+# under `gpu-amd` and the CPU index under `lite` (Linux/Windows only).
+# macOS is pinned to PyPI explicitly: with extra-keyed sources, leaving it
+# unmatched makes uv resolve the macOS fork against the profile's index
+# too, which has no macOS wheels. Without any profile (e.g. just
+# --extra classification), torch is plain PyPI.
 [tool.uv.sources]
 torch = [
-    { index = "pytorch-cu132", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { index = "pytorch-cu132", extra = "gpu", marker = "sys_platform != 'darwin'" },
+    { index = "pytorch-rocm72", extra = "gpu-amd", marker = "sys_platform != 'darwin'" },
+    { index = "pytorch-cpu", extra = "lite", marker = "sys_platform != 'darwin'" },
+    { index = "pypi", marker = "sys_platform == 'darwin'" },
 ]
 torchvision = [
-    { index = "pytorch-cu132", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { index = "pytorch-cu132", extra = "gpu", marker = "sys_platform != 'darwin'" },
+    { index = "pytorch-rocm72", extra = "gpu-amd", marker = "sys_platform != 'darwin'" },
+    { index = "pytorch-cpu", extra = "lite", marker = "sys_platform != 'darwin'" },
+    { index = "pypi", marker = "sys_platform == 'darwin'" },
 ]
+triton-rocm = [
+    { index = "pytorch-rocm72", extra = "gpu-amd" },
+]
+
+[[tool.uv.index]]
+name = "pypi"
+url = "https://pypi.org/simple"
+explicit = true
 
 [[tool.uv.index]]
 name = "pytorch-cu132"
 url = "https://download.pytorch.org/whl/cu132"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-rocm72"
+url = "https://download.pytorch.org/whl/rocm7.2"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
 explicit = true
 
 [dependency-groups]

@@ -1,7 +1,7 @@
 """t-SNE embedding scatter with lasso-select, for the Classify Tiles page's
 "Explore Embeddings" group.
 
-Populated on demand via `tileclass.training.linear_probe.tsne_2d`/
+Populated on demand via `tileclass.training.embeddings.tsne_2d`/
 `knn_accuracy`, with an optional pool of *unlabeled* points (see
 `core.classify.sample_unlabeled`) rendered in a fixed neutral color/marker
 outside the per-category color cycle -- still selectable via lasso, so an
@@ -55,7 +55,7 @@ class EmbeddingScatterWidget(QWidget):
     def show_embedding_scatter(
         self, xy, labels, paths: list[str] | None = None, knn_acc: float | None = None
     ) -> None:
-        """`xy`: (N, 2) array from `tileclass.training.linear_probe.tsne_2d`.
+        """`xy`: (N, 2) array from `tileclass.training.embeddings.tsne_2d`.
         `labels`: length-N category names, colored by matplotlib's default
         cycle -- except `UNLABELED_LABEL`, always drawn last in a fixed
         neutral gray outside that cycle, so an unlabeled sample never steals

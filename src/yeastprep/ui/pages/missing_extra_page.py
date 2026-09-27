@@ -1,5 +1,5 @@
 """Stand-in for a page whose packages aren't installed (e.g. Denoise or
-Segmentation on a `classification`-only install -- see
+Segmentation on a `lite` install -- see
 yeastprep/optional_deps.py). Keeps the page's slot in the stage list and
 the `progress_changed`/`load_selection`/`shutdown` shape the shell expects,
 and just says which extra to install.
@@ -20,8 +20,9 @@ class MissingExtraPage(QWidget):
             f"<h3>{title} isn't available</h3>"
             f"<p>It needs {', '.join(missing_packages)}, which "
             f"{'is' if len(missing_packages) == 1 else 'are'} not installed.</p>"
-            f"<p>Install the <b>{extra}</b> extra to enable it:<br>"
-            f"<code>uv sync --extra classification --extra {extra}</code></p>"
+            f"<p>{'It comes' if len(missing_packages) == 1 else 'They come'} "
+            f"with the <b>{extra}</b> extra, part of the GPU "
+            f"workstation profile:<br><code>uv sync --extra gpu</code></p>"
         )
         label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)

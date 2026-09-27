@@ -14,7 +14,6 @@ import torch
 from yeastprep.core.deconvolution import (
     NLCGResult,
     PhotonCalibration,
-    SolveUnits,
     deconvolve,
     make_forward_model,
 )
@@ -193,12 +192,10 @@ def test_deconvolve_end_to_end_recovers_gaussian_blur_2d():
     assert correlation.item() > 0.9
 
 
-def test_photon_calibration_round_trip():
+def test_photon_calibration_to_photons():
     cal = PhotonCalibration(gain=2.5, offset=100.0, read_variance=4.0, offset_was_measured=True)
     photons = torch.tensor([0.0, 10.0, 50.0])
-    adu = cal.to_adu(photons)
-    torch.testing.assert_close(cal.to_photons(adu), photons)
-    assert cal.pedestal > 0.0
+    torch.testing.assert_close(cal.to_photons(photons * 2.5 + 100.0), photons)
 
 
 def test_estimate_photon_calibration_recovers_known_gain():
@@ -217,12 +214,3 @@ def test_estimate_photon_calibration_recovers_known_gain():
     cal = estimate_photon_calibration(adu)
     assert cal.r_squared > 0.5
     assert abs(cal.gain - gain) / gain < 0.25
-
-
-def test_solve_units_raw_counts_discrepancy_scale_matches_gain():
-    cal = PhotonCalibration(gain=4.0, offset=100.0, offset_was_measured=True)
-    photon_units = SolveUnits(calibration=cal)
-    raw_units = SolveUnits(calibration=cal, raw_counts=True)
-
-    assert photon_units.discrepancy_scale() == 1.0
-    assert raw_units.discrepancy_scale() == 4.0

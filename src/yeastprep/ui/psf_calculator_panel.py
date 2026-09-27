@@ -203,7 +203,7 @@ class PSFCalculatorPanel(QWidget):
         except ImportError as exc:
             self.status_label.setText(
                 "PSF Calculator needs psfkit, which isn't installed "
-                f"({exc}). Install with: uv sync --extra full -- or skip "
+                f"({exc}). Install with: uv sync --extra gpu -- or skip "
                 "this tab and point Deconvolve at a PSF tiff file you "
                 "already have."
             )

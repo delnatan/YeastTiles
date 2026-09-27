@@ -65,17 +65,17 @@ class ClassificationTransform:
 
 
 def load_masked_crop(path):
-    """Read a (brightfield, fluorescence, mask) crop TIFF into a (2, H, W)
+    """Read a (brightfield, fluorescence, mask) crop into a (2, H, W)
     float32 array in [0, 1], zeroing pixels outside the mask (255 =
     valid). Shared by `MaskedMicroscopyDataset`,
     `classifiers.yeast_efficientnet`, and `vicreg.ClassPairDataset` so
     the three can't silently diverge on how a crop is decoded.
 
-    `path` is a virtual `<fov_id>.tiles/<cell_id>.tif` container
+    `path` is a virtual `<fov_id>.tiles/<cell_id>` container
     reference (see `tile_container.py`)."""
     container_path, cell_id = container_and_cell(path)
     img = get_container(container_path).read(cell_id)
-    # Containers packed from legacy channel-last tifs.
+    # Containers packed from the old per-cell tifs store channel-last.
     if img.shape[-1] == 3:
         img = img.transpose(2, 0, 1)
 

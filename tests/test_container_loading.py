@@ -1,7 +1,7 @@
 """Confirms the two pixel-reading chokepoints (tileclass.load_thumbnail's
 load_plane, tileclass.training.dataset's load_masked_crop) transparently
 read through a packed .tiles container via its virtual
-"<fov_id>.tiles/<cell_id>.tif" reference, same as they'd read a real file.
+"<fov_id>.tiles/<cell_id>" reference, same as they'd read a real file.
 """
 
 import numpy as np
@@ -26,7 +26,7 @@ def test_load_plane_reads_through_container(tmp_path):
     container_path = tmp_path / "fov.tiles"
     crop = _write_masked_crop_container(container_path)
 
-    plane = load_plane(f"{container_path}/fov_cell00001.tif")
+    plane = load_plane(f"{container_path}/fov_cell00001")
     assert np.array_equal(plane, crop)
 
 
@@ -34,7 +34,7 @@ def test_load_masked_crop_reads_through_container(tmp_path):
     container_path = tmp_path / "fov.tiles"
     _write_masked_crop_container(container_path)
 
-    result = load_masked_crop(f"{container_path}/fov_cell00001.tif")
+    result = load_masked_crop(f"{container_path}/fov_cell00001")
     assert result.shape == (2, 8, 8)
     assert result.dtype == np.float32
     # Inside the mask (255): brightfield/fluorescence scaled to [0, 1].
@@ -55,7 +55,7 @@ def test_scan_container_returns_natsorted_virtual_paths(tmp_path):
 
     paths = scan_container(container_path)
     assert paths == [
-        f"{container_path}/fov_cell00001.tif",
-        f"{container_path}/fov_cell00002.tif",
-        f"{container_path}/fov_cell00010.tif",
+        f"{container_path}/fov_cell00001",
+        f"{container_path}/fov_cell00002",
+        f"{container_path}/fov_cell00010",
     ]

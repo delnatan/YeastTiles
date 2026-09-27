@@ -10,7 +10,6 @@ from tileclass.tile_container import (
     TileContainer,
     container_and_cell,
     get_container,
-    is_container_ref,
     write_container,
 )
 
@@ -54,15 +53,9 @@ def test_bad_magic_is_rejected(tmp_path):
         TileContainer(bad_path)
 
 
-def test_is_container_ref_detects_virtual_paths(tmp_path):
-    container_path = tmp_path / "fov.tiles"
-    assert is_container_ref(f"{container_path}/fov_cell00001.tif")
-    assert not is_container_ref(tmp_path / "fov" / "fov_cell00001.tif")
-
-
 def test_container_and_cell_splits_virtual_path(tmp_path):
     container_path = tmp_path / "fov.tiles"
-    ref = f"{container_path}/fov_cell00001.tif"
+    ref = f"{container_path}/fov_cell00001"
     parsed_container, cell_id = container_and_cell(ref)
     assert parsed_container == container_path
     assert cell_id == "fov_cell00001"
@@ -86,10 +79,13 @@ def test_zero_cells_still_produces_valid_container(tmp_path):
     assert container.path.read_bytes().startswith(MAGIC)
 
 
-def test_tile_display_name_shows_fov_and_cell_index_not_tif():
+def test_tile_display_name_shows_fov_and_cell_index():
     from tileclass.tile_container import tile_display_name
 
-    ref = "/data/05_tiles/2026-08-27_WT_T0.tiles/2026-08-27_WT_T0_cell00017.tif"
+    ref = "/data/05_tiles/2026-08-27_WT_T0.tiles/2026-08-27_WT_T0_cell00017"
     assert tile_display_name(ref) == "2026-08-27_WT_T0 · cell 17"
     assert tile_display_name(ref, with_fov=False) == "cell 17"
-    assert tile_display_name("/elsewhere/crop.png") == "crop"
+    # A dot in the FOV name is part of the cell_id, not an extension.
+    dotted = "/data/05_tiles/WT_1.5um.tiles/WT_1.5um_cell00003"
+    assert tile_display_name(dotted) == "WT_1.5um · cell 3"
+    assert tile_display_name("/data/05_tiles/x.tiles/odd_name") == "odd_name"

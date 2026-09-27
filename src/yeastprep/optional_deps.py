@@ -1,5 +1,5 @@
 """Checks for the packages that only some install profiles have (see the
-extras in pyproject.toml). A `classification`-only install has no
+extras in pyproject.toml). A `lite` install has no
 cellpose/jssl-denoise, so modules that need those import them inside the
 function that uses them (via `require`, for a message that names the
 extra to install), and ui/main_window.py uses `missing` to show an
@@ -24,5 +24,6 @@ def require(module: str, extra: str):
     except ModuleNotFoundError as exc:
         raise ImportError(
             f"{exc.name or module!r} isn't installed; it comes with the "
-            f"'{extra}' extra: add --extra {extra} to your uv sync command"
+            f"'{extra}' extra, part of the GPU workstation profile: "
+            f"uv sync --extra gpu"
         ) from exc

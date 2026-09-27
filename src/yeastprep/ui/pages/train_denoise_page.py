@@ -46,7 +46,6 @@ from yeastprep.core import project as project_core
 from yeastprep.core.denoise import checkpoint_filename_for_channel
 from yeastprep.core.fs_status import list_visible
 
-from .. import settings
 from ..batch_progress_bar import BatchProgressBar
 from ..diagnostics.training_monitor_panel import TrainingMonitorPanel
 from ..train_params_panel import TrainParamsPanel
@@ -409,7 +408,6 @@ class TrainDenoisePage(QWidget):
         if path:
             try:
                 save_checkpoint(path, checkpoint)
-                settings.add_recent_denoise_checkpoint(path)
                 self.monitor_panel.log(f"saved checkpoint to {path}")
                 self.checkpoint_trained.emit(self.channel_combo.currentData(), path)
             except Exception as exc:

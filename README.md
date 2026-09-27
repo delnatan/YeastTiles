@@ -9,93 +9,98 @@ Two installable packages live under `src/`:
 
 ## Setup
 
-This project uses [uv](https://docs.astral.sh/uv/) for environment management.
+This project uses [uv](https://docs.astral.sh/uv/) for environment
+management. Clone the repo, then sync the profile that matches the machine:
 
-The two packages have very different weight, and installs are split to match:
+```bash
+uv sync --extra gpu       # NVIDIA GPU workstation
+uv sync --extra gpu-amd   # AMD GPU workstation (Linux only)
+uv sync --extra lite      # laptop / tablet / anything else
+```
 
-- **Just classifying/annotating tiles** (`tileclass` / `tiled_viewer`) --
-  light enough for a Windows tablet or any modest laptop. The base install
-  is just the Qt viewer (no torch, no GPU-segmentation stack); add the
-  `classification` extra for running or fine-tuning the classifier:
+- **`gpu`** -- the whole pipeline: `yeastprep` data reduction, denoise,
+  deconvolution, segmentation, tile generation, and VICReg/classifier
+  training. Pulls the CUDA 13.2 torch build on Linux/Windows.
+- **`gpu-amd`** -- the same as `gpu`, on the ROCm 7.2 torch build (Linux
+  x86_64 only; see "Installation notes" below).
+- **`lite`** -- `tiled_viewer` browsing and annotation, running and
+  fine-tuning the classifier, and plotting. Pulls the CPU-only torch build
+  on Linux/Windows (a few hundred MB instead of several GB of CUDA
+  libraries). A project can consist of nothing but its packed `.tiles`
+  containers -- `tiled_viewer` has no notion of FOVs, raw stacks, or a
+  `yeastprep` project, so point it at container files directly (see "Using
+  tileclass" below). `yeastprep` also launches here: its Classifier Training
+  and Classify Tiles pages work, and the Denoise and Segmentation pages say
+  which packages they'd need.
 
-  ```bash
-  uv sync --extra classification
-  ```
+The profiles are declared conflicting, so one environment holds one of
+them. Pass the same `--extra` on every later `uv sync` -- a bare `uv sync`
+removes the extras again. (`uv run` doesn't; it leaves an already-synced
+environment alone.)
 
-  A project can consist of nothing but its packed `.tiles` containers --
-  `tiled_viewer` has no notion of FOVs, raw stacks, or a `yeastprep`
-  project at all, so there's nothing to remove: point it at container
-  files directly (see "Using tileclass" below) and it works the same
-  whether or not any upstream FOV data exists on the machine. This is the
-  intended workflow
-  for fixing annotations and running the classifier day-to-day, keeping
-  the (much heavier) VICReg/full-network training for a more capable
-  machine.
+Tests and the dev group: `uv sync --extra gpu` already includes the `dev`
+group (pytest) by default. Notebooks under `notebooks/` need
+`--extra notebooks` on top of `gpu`.
 
-- **Full pipeline, raw stacks through tiles** (`yeastprep`) -- needs both
-  `prep` (cellpose, jssl-denoise) and `classification` (torch, pyvistra,
-  qtkit):
+### Installation notes
 
-  ```bash
-  uv sync --extra classification --extra prep
-  ```
+- **macOS (Apple silicon).** Every profile uses the regular PyPI torch,
+  which runs on the GPU through Apple's Metal backend (MPS); the profiles
+  only differ in which packages come along.
+- **Intel Macs, including iMacs with AMD Radeon GPUs, can't run any
+  profile.** PyTorch stopped publishing Intel-Mac wheels after 2.2, and
+  ROCm doesn't exist on macOS, so there's no torch build to install. They
+  can still run the base install (`uv sync` with no extras) to browse and
+  hand-annotate tiles in `tiled_viewer`; run classification on another
+  machine. Supporting them would take a separate old stack (torch 2.2.2 on
+  Python 3.12 or older, against the 3.13 pin), with unreliable MPS on those
+  GPUs, so it isn't set up.
+- **AMD GPUs (`gpu-amd`) are Linux x86_64 only** -- PyTorch publishes no
+  ROCm wheels for Windows or macOS. The machine needs a ROCm-supported
+  Radeon/Instinct GPU with AMD's Linux driver installed. ROCm torch drives
+  the GPU through the same `torch.cuda` API, so the code is the same as on
+  NVIDIA; the training page's device picker just labels it "ROCm".
+- **Windows.** `gpu` (NVIDIA) and `lite` both work; there's no AMD GPU
+  option.
 
-  `yeastprep` launches with just `classification`: its Classifier Training
-  and Classify Tiles pages work, and the Denoise and Segmentation pages show
-  which packages to install instead. Running it
-  without `classification` shows a dialog naming the missing packages. `psf`
-  is a further, separate extra -- it's only `psfkit`, used by the PSF
-  Calculator convenience tab on the Deconvolve page. Deconvolution itself
-  just needs a PSF tiff file, so skipping `psf` doesn't block it; that tab
-  just shows a friendly message instead of computing a PSF for you.
+### Building-block extras
 
-  ```bash
-  uv sync --extra classification --extra prep --extra psf   # + PSF Calculator
-  ```
+The profiles are bundles of smaller extras, which can still be combined by
+hand for an unusual machine:
 
-  Equivalently, `uv sync --extra full` bundles `classification` + `prep` + `psf`.
+- `classification` -- torch, pyvistra/qtkit, scikit-learn, plotting.
+- `prep` -- cellpose, jssl-denoise, scipy/vispy (Denoise, Segmentation).
+- `psf` -- `psfkit`, only for the PSF Calculator tab on the Deconvolve
+  page. Deconvolution itself just needs a PSF tiff file.
+- `notebooks` -- jupyter.
 
-- **Development / running the test suite** needs both extras plus the dev
-  group:
-
-  ```bash
-  uv sync --extra classification --extra prep --extra psf --group dev
-  ```
-
-- **Notebooks** under `notebooks/` (field-flattening, cookie-cutting) need
-  `prep` (pyvistra/cellpose) plus:
-
-  ```bash
-  uv sync --extra notebooks
-  ```
-
-Within `tiled_viewer` itself, Auto-Annotate is what actually imports torch -- if the `classification` extra isn't installed, that
-surfaces as a dialog rather than a crash, so the base install stays usable
-purely for browsing/annotating tiles even without deciding on `classification` up front.
+Without a profile, torch comes from plain PyPI (CUDA 13.0 on Linux
+x86_64, CPU-only on Windows). The base install with no extras at all is
+just the Qt tile viewer; Auto-Annotate then shows a dialog about the
+missing `classification` packages rather than crashing.
 
 ### Third-party packages
 
-`jssl-denoise` (`prep` extra), `pyvistra` and `qtkit` (`classification` extra),
-and `psfkit` (`psf` extra) are
-listed directly as git-URL dependencies in `pyproject.toml` -- `uv sync`
-clones them itself; no manual cloning or local path setup needed. `resolvde` isn't
-a dependency at all: its deconvolution code is vendored directly into
-`src/yeastprep/core/deconvolution/` (see that package's docstring).
+`jssl-denoise` (`prep`), `pyvistra` and `qtkit` (`classification`), and
+`psfkit` (`psf`) are git-URL dependencies in `pyproject.toml` -- `uv sync`
+clones them itself. `resolvde` isn't a dependency at all: its
+deconvolution code is vendored into `src/yeastprep/core/deconvolution/`
+(see that package's docstring).
 
 ### GPU / PyTorch
 
-`pyproject.toml` pins `torch`/`torchvision` to a CUDA 13.2 build on Linux
-(and Windows) via the `pytorch-cu132` index in `[tool.uv.sources]` /
-`[[tool.uv.index]]`. Adjust `[[tool.uv.index]]` if the target machine has a
-different CUDA version or no GPU.
+The torch build per profile is set in `[tool.uv.sources]` /
+`[[tool.uv.index]]` in `pyproject.toml`: the `pytorch-cu132` index for
+`gpu`, `pytorch-rocm72` for `gpu-amd`, `pytorch-cpu` for `lite`, PyPI on
+macOS. For a GPU machine whose driver doesn't support CUDA 13.2 or ROCm 7.2,
+point that index at a different `download.pytorch.org/whl/cuXXX` or
+`.../rocmX.Y` URL and re-run `uv lock`.
 
-This only works through `uv sync` (or `uv lock`/`uv add`) -- `[tool.uv.sources]`
-is a uv-project-workflow feature, not something `pip install` or
-`uv pip install` reads, so either of those would fall back to a plain PyPI
-`torch` wheel (CPU-only on Linux) instead of the pinned CUDA build. Since
-`uv.lock` is committed, plain `uv sync` on a new machine reproduces the
-exact same resolved versions (including the CUDA wheel and the pinned git
-commits above) without needing to re-resolve anything.
+This only works through `uv sync` / `uv run` (uv's project workflow) -- `pip
+install` doesn't read `[tool.uv.sources]`. `uv.lock` and `.python-version`
+are committed, so `uv sync` on a new machine installs Python 3.13 if needed
+and reproduces the exact resolved versions, including the pinned git
+commits, without re-resolving.
 
 ## Data model
 
@@ -208,9 +213,7 @@ classification pool of projects, kept between sessions (select a project's
 Pool", or use "Add project..."), and both use only human-set or accepted
 annotations as ground truth. A training run saves to the first pooled
 project's `06_classifier/` folder; "Deploy Latest" then makes it the model
-the tile viewer and Classify Tiles use. An already-exported
-project with loose per-cell tifs from before the packed-container format can
-be converted with `uv run yeastprep-pack-tiles <project_root>`.
+the tile viewer and Classify Tiles use.
 
 ## Tests
 

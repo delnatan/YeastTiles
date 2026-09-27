@@ -1,7 +1,6 @@
-"""Single-file-per-FOV tile container: replaces one-tif-per-cell storage
-under `05_tiles/<fov_id>/` with one `05_tiles/<fov_id>.tiles` file holding
-every cell crop, each compressed independently so a single cell can be
-read back without touching any other.
+"""Single-file-per-FOV tile container: one `05_tiles/<fov_id>.tiles` file
+holding every cell crop, each compressed independently so a single cell can
+be read back without touching any other.
 
 File layout: `MAGIC`, an 8-byte little-endian index length, a JSON index
 (`{"cells": [{cell_id, label, offset, nbytes, shape, dtype, codec}, ...]}`),
@@ -13,11 +12,11 @@ Every existing consumer of a tile's "path" (the thumbnail grid,
 `TileAnnotations`, `PooledAnnotations`, `classify_pool`) already treats it
 as an opaque identity string built with plain `os.path` operations, never
 opening it itself -- see their module docstrings. That lets a virtual path
-`"<fov_id>.tiles/<cell_id>.tif"` (a string that *looks* like a file living
+`"<fov_id>.tiles/<cell_id>"` (a string that *looks* like a file living
 inside the container "directory") stand in for a real crop path everywhere
 except the two functions that actually decode pixels
 (`load_thumbnail.load_plane`, `training/dataset.load_masked_crop`) --
-`is_container_ref`/`container_and_cell` are the parse those two use.
+`container_and_cell` is the parse those two use.
 """
 
 import json
@@ -33,17 +32,10 @@ MAGIC = b"YTLC1\n"
 _HEADER_LEN_FMT = "<Q"
 
 
-def is_container_ref(path) -> bool:
-    """True if `path` is a virtual `<container>.tiles/<cell_id>.<ext>`
-    reference rather than a real file. Pure string check (parent's suffix),
-    no disk I/O -- safe to call on every load without extra stat() cost."""
-    return Path(path).parent.suffix == ".tiles"
-
-
 def container_and_cell(path) -> tuple[Path, str]:
     """Split a virtual reference into (container_path, cell_id)."""
     p = Path(path)
-    return p.parent, p.stem
+    return p.parent, p.name
 
 
 # cell_id is `{fov_id}_cell{label:05d}` (core/tiles.py's export_tiles).
@@ -52,13 +44,11 @@ _CELL_ID = re.compile(r"^(?P<fov>.*)_cell(?P<index>\d+)$")
 
 def tile_display_name(path, with_fov=True) -> str:
     """How the UI names a tile: "<fov_id> · cell 17", or just "cell 17".
-    The `.tif` in a tile reference is only part of its identity string
-    (and of the annotation sidecar's keys), never something to show.
-    Anything not named like an exported cell falls back to its stem."""
-    stem = Path(path).stem
-    match = _CELL_ID.match(stem)
+    Anything not named like an exported cell falls back to its cell_id."""
+    cell_id = Path(path).name
+    match = _CELL_ID.match(cell_id)
     if match is None:
-        return stem
+        return cell_id
     cell = f"cell {int(match['index'])}"
     return f"{match['fov']} · {cell}" if with_fov else cell
 

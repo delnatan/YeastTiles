@@ -142,19 +142,12 @@ class PhotonCalibration:
         clamps where it needs to."""
         return (image - self.offset) / self.gain
 
-    def to_adu(self, photons: Tensor) -> Tensor:
-        """Inverse of :meth:`to_photons` -- for a *measured-like* quantity
-        that should carry the camera pedestal, such as a forward prediction
-        laid over the raw frame."""
-        return photons * self.gain + self.offset
-
     def signal_to_adu(self, photons: Tensor) -> Tensor:
         """Scale a background-free quantity -- a reconstruction ``f``, which
         is an object estimate with no pedestal in it -- back to ADU.
 
-        Distinct from :meth:`to_adu` on purpose: adding ``offset`` to a
-        deconvolved object would reintroduce a camera pedestal that was never
-        part of the object.
+        No ``+ offset``: adding it to a deconvolved object would reintroduce
+        a camera pedestal that was never part of the object.
         """
         return photons * self.gain
 
@@ -424,9 +417,13 @@ class SolveUnits:
       photon-unit solve, it is algebraically the *same* MLE point estimate
       in different units: for an (unshifted) Poisson data term, dividing
       the whole objective by ``gain`` doesn't move its minimizer, and
-      dropping a ``gain``-only additive term doesn't either -- see
-      :meth:`discrepancy_scale` for the one place ``gain`` still has to
-      enter explicitly. The reconstruction then comes back *without* a ``*
+      dropping a ``gain``-only additive term doesn't either. The one place
+      ``gain`` still has to enter explicitly is :func:`.nlcg.nlcg_with_operator`'s
+      ``slack``: its discrepancy threshold assumes ``Var[data] = mean``, but
+      here ``Var[data] = gain*mean + read_var``, so pass ``slack * gain`` for
+      the same physical stopping point -- left at the photon-units value the
+      solver overfits (rel-RMSE 1.43 vs. 0.22 on a real test scene). The
+      reconstruction then comes back *without* a ``*
       gain`` step -- it's already ``gain`` times the true photon count,
       i.e. on the camera's own ADU-equivalent scale, which is the point of
       this mode: no round-trip conversion, everything (data, background,
@@ -505,25 +502,6 @@ class SolveUnits:
         if not add_background:
             return out
         return out + float(self.background_adu) / float(zoom)
-
-    def discrepancy_scale(self) -> float:
-        """Multiplier for :func:`.nlcg.nlcg_with_operator`'s ``slack``
-        (its Morozov-discrepancy-principle noise-floor threshold), which is
-        calibrated assuming ``Var[data] = mean``.
-
-        That holds in photon units (returns ``1.0``) but not in
-        ``raw_counts`` mode, where ``Var[data] = gain*mean + read_var`` --
-        the expected per-pixel Poisson I-divergence at the true solution is
-        ``gain/2``, not ``0.5``, so a threshold tuned in photon units needs
-        multiplying by ``gain`` here to mean the same physical stopping
-        point. Left uncorrected the solver chases the data down to a
-        ``gain``-times-tighter fit than the noise supports -- measured
-        overfitting (rel-RMSE 1.43 unscaled vs. 0.22 scaled on a real test
-        scene), not a cosmetic difference.
-        """
-        if self.calibration is None or not self.raw_counts:
-            return 1.0
-        return float(self.calibration.gain)
 
     def describe(self) -> str:
         """One line for a solver log, or ``""`` when inactive."""

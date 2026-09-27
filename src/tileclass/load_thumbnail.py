@@ -7,7 +7,7 @@ from .tile_container import container_and_cell, get_container
 
 
 def load_plane(path):
-    """Return the ``(C, H, W)`` plane for a `<container>.tiles/<cell_id>.tif`
+    """Return the ``(C, H, W)`` plane for a `<container>.tiles/<cell_id>`
     reference (see tile_container.py). A 2D tile comes back as one
     channel. Raises on an unreadable container or unknown cell --
     `ThumbnailDecodeWorker` treats that as skip-and-continue."""

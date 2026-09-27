@@ -1,10 +1,8 @@
-"""Folder-level tile annotations: relative path -> category name.
+"""Per-container tile annotations: cell_id -> category name.
 
-Persisted as a tab-delimited text file named after the image folder and
-placed as a *sibling* of that folder (not inside it), so annotating a
-folder never mixes extra files in with the images themselves. Keys are
-paths relative to the common image directory rather than bare filenames,
-so a folder with nested subfolders still round-trips without collisions.
+Persisted as a tab-delimited text file next to the `<fov_id>.tiles`
+container, named `<fov_id>.txt`. Keys are tile refs relative to the
+container (see tile_container.py), i.e. the cell_id.
 
 Header lines (prefixed with "#", written before the relpath/category
 data) carry folder-level settings so they don't need to be re-entered
@@ -43,7 +41,7 @@ save per entry), plus the free `Mapping` extras (`.get()`, `in`, `len()`,
 A tag line optionally carries a 3rd tab-delimited column: the confidence
 of an AI-predicted category that hasn't been reviewed by a human yet --
 
-    relpath/to/tile.tif\tsingle\t0.923
+    fov_cell00017\tsingle\t0.923
 
 Absent (2-column line) means either a human set the tag directly, or a
 human has since confirmed/overridden an AI prediction -- every path
@@ -69,6 +67,10 @@ inference pass was running).
 
 import os
 from collections.abc import MutableMapping
+
+# Tile refs used to end in `.tif` (`<fov>.tiles/<cell_id>.tif`); a sidecar
+# still keyed that way is rewritten without it the first time it's loaded.
+_LEGACY_SUFFIX = ".tif"
 
 
 def normalized_category_key(name):
@@ -98,15 +100,7 @@ class TileAnnotations(MutableMapping):
         parent = os.path.dirname(root_dir)
         name = os.path.basename(root_dir)
         if name.endswith(".tiles"):
-            # root_dir is a packed tile_container.py container file, not a
-            # real folder -- strip the extension so a project's sidecar
-            # keeps the exact same name (`<fov_id>.txt`) whether its cells
-            # live in a `<fov_id>/` folder or a `<fov_id>.tiles` container.
-            # Without this, packing an already-annotated project's tiles
-            # would silently orphan its existing tags: the viewer would
-            # look for `<fov_id>.tiles.txt`, find nothing, and a save from
-            # that point on would create a second, divergent sidecar file
-            # instead of updating the one that actually holds the data.
+            # `<fov_id>.tiles` keeps its tags in `<fov_id>.txt`.
             name = name[: -len(".tiles")]
         if not name:
             # root_dir was the filesystem root; nothing to nest alongside.
@@ -122,6 +116,7 @@ class TileAnnotations(MutableMapping):
         self.channel_colors = {}
         if not os.path.exists(self.file_path):
             return
+        migrated = False
         with open(self.file_path, "r", encoding="utf-8") as f:
             for raw_line in f:
                 line = raw_line.rstrip("\n")
@@ -139,12 +134,17 @@ class TileAnnotations(MutableMapping):
                 if len(parts) not in (2, 3) or not parts[0]:
                     continue
                 relpath, category = parts[0], parts[1]
+                if relpath.endswith(_LEGACY_SUFFIX):
+                    relpath = relpath[: -len(_LEGACY_SUFFIX)]
+                    migrated = True
                 self._categories[relpath] = category
                 if len(parts) == 3:
                     try:
                         self.confidences[relpath] = float(parts[2])
                     except ValueError:
                         pass
+        if migrated:
+            self.save()
 
     @staticmethod
     def _is_categories_header(line):

@@ -103,8 +103,8 @@ def test_classify_pool_tags_only_untagged_tiles(tmp_path):
     sidecar = fov.parent / "fov_001.txt"
     sidecar.write_text(
         "#categories\tsingle\tjunk\n#dims\tCYX\n"
-        "fov_001_cell00000.tif\tsingle\n"  # human-confirmed
-        "fov_001_cell00001.tif\tjunk\t0.5\n"  # existing AI prediction
+        "fov_001_cell00000\tsingle\n"  # human-confirmed
+        "fov_001_cell00001\tjunk\t0.5\n"  # existing AI prediction
     )
     pooled = PooledAnnotations([str(fov)])
 
@@ -114,10 +114,10 @@ def test_classify_pool_tags_only_untagged_tiles(tmp_path):
     assert result.n_total == 4
     assert result.n_newly_tagged == 2  # cell00002, cell00003 only
     tagged = dict((path, (category, confidence)) for path, category, confidence in pooled.tagged_items())
-    assert tagged[f"{fov}/fov_001_cell00000.tif"] == ("single", None)  # untouched
-    assert tagged[f"{fov}/fov_001_cell00001.tif"] == ("junk", 0.5)  # untouched
-    assert tagged[f"{fov}/fov_001_cell00002.tif"] == ("single", 0.9)  # newly tagged
-    assert tagged[f"{fov}/fov_001_cell00003.tif"] == ("single", 0.9)  # newly tagged
+    assert tagged[f"{fov}/fov_001_cell00000"] == ("single", None)  # untouched
+    assert tagged[f"{fov}/fov_001_cell00001"] == ("junk", 0.5)  # untouched
+    assert tagged[f"{fov}/fov_001_cell00002"] == ("single", 0.9)  # newly tagged
+    assert tagged[f"{fov}/fov_001_cell00003"] == ("single", 0.9)  # newly tagged
 
 
 def test_classify_pool_computes_agreement_with_human_confirmed(tmp_path):
@@ -125,8 +125,8 @@ def test_classify_pool_computes_agreement_with_human_confirmed(tmp_path):
     sidecar = fov.parent / "fov_001.txt"
     sidecar.write_text(
         "#categories\tsingle\tjunk\n#dims\tCYX\n"
-        "fov_001_cell00000.tif\tsingle\n"
-        "fov_001_cell00001.tif\tjunk\n"
+        "fov_001_cell00000\tsingle\n"
+        "fov_001_cell00001\tjunk\n"
     )
     pooled = PooledAnnotations([str(fov)])
 

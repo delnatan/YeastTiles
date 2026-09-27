@@ -28,7 +28,7 @@ from qtpy.QtWidgets import (
 from tileclass.classifiers.device import select_device
 from tileclass.classifiers.yeast_efficientnet import YeastEfficientNetClassifier
 from tileclass.main_window import MainWindow
-from tileclass.training.linear_probe import extract_embeddings, knn_accuracy, tsne_2d
+from tileclass.training.embeddings import extract_embeddings, knn_accuracy, tsne_2d
 from tileclass.training.vicreg import load_backbone
 
 from yeastprep.core.classify import sample_unlabeled
@@ -38,7 +38,7 @@ from ..common.checkpoint_choice import CheckpointChoice
 from ..diagnostics.annotation_analytics_panel import AnnotationAnalyticsPanel
 from ..diagnostics.embedding_scatter_widget import UNLABELED_LABEL, EmbeddingScatterWidget
 from ..worker import ClassifierInferenceWorker
-from .page_progress import PageProgress
+from .page_progress import PageProgress  # noqa: F401 -- shape of progress_changed, never emitted here
 
 
 class ClassifyTilesPage(QWidget):

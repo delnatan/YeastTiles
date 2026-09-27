@@ -57,7 +57,8 @@ def _device_combo() -> QComboBox:
     combo.addItem("Auto", None)
     combo.addItem("CPU", "cpu")
     cuda_idx = combo.count()
-    combo.addItem("CUDA", "cuda")
+    # ROCm builds drive AMD GPUs through the same "cuda" device.
+    combo.addItem("ROCm" if torch.version.hip else "CUDA", "cuda")
     if not torch.cuda.is_available():
         combo.model().item(cuda_idx).setEnabled(False)
     mps_idx = combo.count()

@@ -82,7 +82,6 @@ def test_fit_focal_indices_to_poly2d_recovers_noiseless_quadratic():
     """A degree-2 fit to noiseless degree-2 data should have ~zero residual."""
     Ny, Nx = 64, 64
     tile = 16
-    num_tiles_y, num_tiles_x = 4, 4
 
     y, x = np.mgrid[0:Ny, 0:Nx]
     true_surface = 0.001 * (x - 32) ** 2 + 0.002 * (y - 32) ** 2 + 5

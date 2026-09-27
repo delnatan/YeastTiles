@@ -1,11 +1,10 @@
 """Tests for the class-conditioned VICReg pretraining
 (tileclass.training.vicreg) and its embedding-separability diagnostics
-(tileclass.training.linear_probe) -- same "real training loop, tiny
+(tileclass.training.embeddings) -- same "real training loop, tiny
 synthetic data" convention as test_training.py.
 """
 
 import json
-from pathlib import Path
 
 import numpy as np
 import pytest
@@ -14,14 +13,7 @@ import tifffile
 pytest.importorskip("torch")
 
 from tileclass.tile_container import write_container
-from tileclass.training.linear_probe import (
-    LinearProbeParams,
-    extract_embeddings,
-    knn_accuracy,
-    pca_2d,
-    train_linear_probe,
-    tsne_2d,
-)
+from tileclass.training.embeddings import extract_embeddings, knn_accuracy, tsne_2d
 from tileclass.training.model import build_yeast_efficientnet
 from tileclass.training.supervised import TrainingCancelled
 from tileclass.training.vicreg import (
@@ -60,7 +52,7 @@ def _make_records(tmp_path, n_per_class=6, classes=("single", "junk")):
         for i in range(n_per_class):
             cell_id = f"fov_cell{seed:05d}"
             cells.append((cell_id, seed, _synthetic_crop(seed)))
-            records.append((str(container_path / f"{cell_id}.tif"), label))
+            records.append((str(container_path / cell_id), label))
             seed += 1
     write_container(container_path, cells)
     return records
@@ -254,7 +246,7 @@ def test_warm_start_overlap(tmp_path, monkeypatch):
         unseen_container,
         [(f"unseen_cell{i:05d}", i, _synthetic_crop(100 + i)) for i in range(3)],
     )
-    unseen_paths = [f"{unseen_container}/unseen_cell{i:05d}.tif" for i in range(3)]
+    unseen_paths = [f"{unseen_container}/unseen_cell{i:05d}" for i in range(3)]
 
     trained_paths = [p for p, _ in records]
     probe_paths = trained_paths[:5] + unseen_paths
@@ -349,7 +341,7 @@ def test_pretrain_vicreg_cancel_after_progress_saves_best_weights(tmp_path, monk
     assert (weights_dir / "meta.json").exists()
 
 
-# --- linear_probe ----------------------------------------------------------
+# --- embeddings ------------------------------------------------------------
 
 
 def test_extract_embeddings_shape(tmp_path):
@@ -376,32 +368,10 @@ def _separable_embeddings(n_per_class=20, num_classes=3, dim=8, seed=0):
     return np.concatenate(embeddings).astype(np.float32), labels, categories
 
 
-def test_linear_probe_separates_well_separated_clusters():
-    embeddings, labels, categories = _separable_embeddings()
-    result = train_linear_probe(
-        embeddings, labels, categories, params=LinearProbeParams(epochs=200)
-    )
-    assert result.val_accuracy > 0.95
-    assert result.train_count > 0 and result.val_count > 0
-
-
 def test_knn_accuracy_separates_well_separated_clusters():
     embeddings, labels, _ = _separable_embeddings()
     acc = knn_accuracy(embeddings, labels, k=5)
     assert acc > 0.95
-
-
-def test_linear_probe_rejects_unrecognized_category():
-    embeddings, labels, categories = _separable_embeddings(n_per_class=5)
-    labels[0] = "not_a_real_category"
-    with pytest.raises(ValueError, match="not_a_real_category"):
-        train_linear_probe(embeddings, labels, categories)
-
-
-def test_pca_2d_shape():
-    embeddings, _, _ = _separable_embeddings(n_per_class=5)
-    coords = pca_2d(embeddings)
-    assert coords.shape == (embeddings.shape[0], 2)
 
 
 def test_tsne_2d_shape():

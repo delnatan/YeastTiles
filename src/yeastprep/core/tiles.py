@@ -27,8 +27,6 @@ from .segmentation import load_saved_masks, seg_npy_path
 
 Slices = tuple[slice, slice]
 
-CHANNEL_NAMES = ("brightfield", "target", "mask")
-
 TILE_INDEX_NAME = "tile_index.csv"
 
 
@@ -181,7 +179,7 @@ def export_tiles(
                     # Virtual reference, not a real path on disk -- see
                     # tile_container.py's module docstring. Every consumer
                     # of this column already treats it as an opaque string.
-                    "crop_path": f"{container_path}/{cell_id}.tif",
+                    "crop_path": f"{container_path}/{cell_id}",
                 }
             )
 
@@ -206,7 +204,10 @@ def append_tile_index(out_dir, records: pl.DataFrame):
         return
     index_path = tile_index_path(out_dir)
     if index_path.exists():
-        existing = pl.read_csv(index_path)
+        # Rows written before tile refs dropped their `.tif` suffix.
+        existing = pl.read_csv(index_path).with_columns(
+            pl.col("crop_path").str.strip_suffix(".tif")
+        )
         combined = pl.concat([existing, records], how="vertical_relaxed").unique(
             subset=["cell_id"], keep="last"
         )
@@ -235,9 +236,7 @@ def fov_tile_status(out_dir, mask_dir=None) -> dict[str, FovTileStatus]:
     image data.
 
     One container = one file, so this is one `stat()` (freshness) plus one
-    small index parse (cell count) per FOV, not per cell -- unlike the
-    former one-tif-per-cell layout, there's no "does this FOV's crop still
-    exist" ambiguity to resolve by scanning individual files."""
+    small index parse (cell count) per FOV, not per cell."""
     out_dir = Path(out_dir)
     mask_dir = Path(mask_dir) if mask_dir else None
     # Narrowed to `*_seg.npy` sidecars specifically (not "any file") --

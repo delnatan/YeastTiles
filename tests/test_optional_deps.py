@@ -44,7 +44,6 @@ def test_batch_clis_import_without_prep_extra():
     _run_without_prep(
         """
         import yeastprep.core.cli
-        import yeastprep.core.pack_tiles_cli
         import yeastprep.core.project
         """
     )

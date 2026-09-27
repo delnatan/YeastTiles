@@ -123,14 +123,6 @@ class AnnotationAnalyticsPanel(QWidget):
 
         return tab
 
-    @staticmethod
-    def _wrap_group(title: str, widget: QWidget) -> QGroupBox:
-        group = QGroupBox(title)
-        layout = QVBoxLayout(group)
-        layout.setContentsMargins(4, 4, 4, 4)
-        layout.addWidget(widget)
-        return group
-
     def _build_stats_group(self) -> QGroupBox:
         group = QGroupBox("Annotation Summary (pool)")
         v = QVBoxLayout(group)

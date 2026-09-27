@@ -33,7 +33,8 @@ def main():
             None,
             "yeastprep",
             "yeastprep needs extra packages that aren't installed:\n"
-            f"{exc}\n\nInstall with:\n  uv sync --extra classification",
+            f"{exc}\n\nInstall with:\n  uv sync --extra lite\n"
+            "or, on a GPU workstation:\n  uv sync --extra gpu",
         )
         sys.exit(1)
 

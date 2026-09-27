@@ -20,7 +20,7 @@ target channel too.
 
 cellpose (the `prep` extra) is imported inside the functions that run it,
 not at module level, so `SegmentationParams`/`seg_npy_path`/
-`load_saved_masks` stay importable on a classification-only install --
+`load_saved_masks` stay importable on a `lite` install --
 core/project.py, core/tiles.py and the Classify/Classifier Training pages
 all pull this module in without ever segmenting anything.
 """

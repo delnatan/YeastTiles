@@ -5,7 +5,6 @@ on CPU: 1 epoch per stage, ~20 crops across 2 categories.
 """
 
 import json
-from pathlib import Path
 
 import numpy as np
 import pytest
@@ -49,7 +48,7 @@ def _make_records(tmp_path, n_per_class=6):
         for i in range(n_per_class):
             cell_id = f"fov_cell{seed:05d}"
             cells.append((cell_id, seed, _synthetic_crop(seed)))
-            records.append((str(container_path / f"{cell_id}.tif"), label))
+            records.append((str(container_path / cell_id), label))
             seed += 1
     write_container(container_path, cells)
     return records
@@ -101,7 +100,6 @@ def test_train_classifier_backs_up_existing_weights_on_rerun(tmp_path, monkeypat
     back up whatever was there before overwriting it."""
     weights_dir = tmp_path / "weights"
     weights_path = weights_dir / "weights.pth"
-    meta_path = weights_dir / "meta.json"
     monkeypatch.setattr("tileclass.training.supervised.WEIGHTS_DIR", weights_dir)
     monkeypatch.setattr("tileclass.training.supervised.WEIGHTS_PATH", weights_path)
 

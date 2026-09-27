@@ -543,8 +543,8 @@ class DeconvolveBatchWorker(QObject):
 
 class TileBatchWorker(QObject):
     """Batch counterpart to SegmentationBatchWorker: crops every cell out
-    of each already-segmented tiff's saved masks, writing per-cell tiffs
-    under `out_dir` and appending each file's rows to that folder's running
+    of each already-segmented tiff's saved masks, writing one `.tiles`
+    container per FOV under `out_dir` and appending each file's rows to that folder's running
     tile index (core.tiles.append_tile_index) as it goes -- so a run that's
     cancelled partway still leaves a usable, consistent index."""
 
