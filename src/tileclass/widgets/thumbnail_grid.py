@@ -8,7 +8,6 @@ planes, so it's numpy-only work, never disk I/O, and safe to do inline in
 ``paintEvent``.
 """
 
-from pathlib import Path
 
 import numpy as np
 from qtpy.QtCore import QRect, Qt, Signal
@@ -17,6 +16,7 @@ from qtpy.QtWidgets import QMenu, QWidget
 
 from ..data.channel_state import default_channel_state
 from ..data.palette import readable_text_color
+from ..tile_container import tile_display_name
 from ..data.thumbnail_cache import (
     DecodeCache,
     ThumbnailDecodeWorker,
@@ -277,7 +277,7 @@ class ThumbnailGridWidget(QWidget):
 
         if self._show_info:
             painter.setPen(QColor("#aaaaaa"))
-            name = Path(path).stem
+            name = tile_display_name(path, with_fov=False)
             text_rect = QRect(
                 rect.x(),
                 image_rect.bottom() + 2,

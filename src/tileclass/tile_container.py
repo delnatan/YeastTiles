@@ -21,6 +21,7 @@ except the two functions that actually decode pixels
 """
 
 import json
+import re
 import struct
 import zlib
 from pathlib import Path
@@ -43,6 +44,23 @@ def container_and_cell(path) -> tuple[Path, str]:
     """Split a virtual reference into (container_path, cell_id)."""
     p = Path(path)
     return p.parent, p.stem
+
+
+# cell_id is `{fov_id}_cell{label:05d}` (core/tiles.py's export_tiles).
+_CELL_ID = re.compile(r"^(?P<fov>.*)_cell(?P<index>\d+)$")
+
+
+def tile_display_name(path, with_fov=True) -> str:
+    """How the UI names a tile: "<fov_id> · cell 17", or just "cell 17".
+    The `.tif` in a tile reference is only part of its identity string
+    (and of the annotation sidecar's keys), never something to show.
+    Anything not named like an exported cell falls back to its stem."""
+    stem = Path(path).stem
+    match = _CELL_ID.match(stem)
+    if match is None:
+        return stem
+    cell = f"cell {int(match['index'])}"
+    return f"{match['fov']} · {cell}" if with_fov else cell
 
 
 def write_container(path, cells, codec="zlib", level=6) -> None:

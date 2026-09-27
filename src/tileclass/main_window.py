@@ -6,7 +6,6 @@ the first nine categories (in vocabulary order, shown in the legend under
 the toolbar) to the selected tiles.
 """
 
-from pathlib import Path
 
 from qtpy.QtCore import Qt
 from qtpy.QtGui import QAction, QImage, QKeySequence, QPixmap
@@ -32,6 +31,7 @@ from .classifiers import CLASSIFIERS
 from .data.channel_state import ChannelStateList, default_channel_state
 from .data.palette import category_color, readable_text_color
 from .data.pooled_annotations import PooledAnnotations
+from .tile_container import tile_display_name
 from .widgets.annotation_stats_panel import AnnotationStatsPanel
 from .widgets.manage_categories_dialog import ManageCategoriesDialog
 from .widgets.thumbnail_colors_panel import ThumbnailColorsPanel
@@ -219,7 +219,7 @@ class MainWindow(QMainWindow):
         qimg = QImage(rgb.data, w, h, rgb.strides[0], QImage.Format_RGB888).copy()
 
         dlg = QDialog(self)
-        dlg.setWindowTitle(Path(path).name)
+        dlg.setWindowTitle(tile_display_name(path))
         layout = QVBoxLayout(dlg)
         label = QLabel()
         label.setPixmap(QPixmap.fromImage(qimg))
@@ -306,9 +306,9 @@ class MainWindow(QMainWindow):
         if current not in items:
             items.append(current)
         if len(paths) == 1:
-            prompt = f"Category for {Path(paths[0]).name}:"
+            prompt = f"Category for {tile_display_name(paths[0])}:"
         else:
-            prompt = f"Category for {len(paths)} images:"
+            prompt = f"Category for {len(paths)} tiles:"
 
         text, ok = QInputDialog.getItem(
             self, "Annotate", prompt, items, items.index(current), editable=False
@@ -504,7 +504,7 @@ class MainWindow(QMainWindow):
 
     def _setup_ui(self):
         self.setWindowTitle(
-            f"tileclass - {self.annotations.label()} - {len(self.image_paths)} images"
+            f"tileclass - {self.annotations.label()} - {len(self.image_paths)} tiles"
         )
         self.resize(1000, 800)
 
@@ -624,7 +624,7 @@ class MainWindow(QMainWindow):
         )
         self._add_action(view_menu, "Smaller Tiles", lambda: self._step_tile_size(-1), ["-"])
         show_names = self._add_action(
-            view_menu, "Show Names", self.thumbnail_grid.set_show_info, ["I"]
+            view_menu, "Show Cell Numbers", self.thumbnail_grid.set_show_info, ["I"]
         )
         show_names.setCheckable(True)
         view_menu.addSeparator()
@@ -698,12 +698,12 @@ class MainWindow(QMainWindow):
 
         n_shown = len(self.thumbnail_grid.paths)
         end = min(start + n_shown - 1, len(visible))
-        text = f"Showing {start}-{end} of {len(visible)} images{filter_suffix}"
+        text = f"Showing {start}-{end} of {len(visible)} tiles{filter_suffix}"
         selected = self.thumbnail_grid.selected_paths
         if len(selected) == 1:
-            text += f"   |   Selected: {Path(selected[0]).name}"
+            text += f"   |   Selected: {tile_display_name(selected[0])}"
         elif len(selected) > 1:
-            text += f"   |   Selected: {len(selected)} images"
+            text += f"   |   Selected: {len(selected)} tiles"
         self.status_label.setText(text)
 
     def _load_current_page(self):

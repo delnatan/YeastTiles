@@ -84,3 +84,12 @@ def test_zero_cells_still_produces_valid_container(tmp_path):
     container = TileContainer(container_path)
     assert len(container) == 0
     assert container.path.read_bytes().startswith(MAGIC)
+
+
+def test_tile_display_name_shows_fov_and_cell_index_not_tif():
+    from tileclass.tile_container import tile_display_name
+
+    ref = "/data/05_tiles/2026-08-27_WT_T0.tiles/2026-08-27_WT_T0_cell00017.tif"
+    assert tile_display_name(ref) == "2026-08-27_WT_T0 · cell 17"
+    assert tile_display_name(ref, with_fov=False) == "cell 17"
+    assert tile_display_name("/elsewhere/crop.png") == "crop"
