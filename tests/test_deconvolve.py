@@ -13,7 +13,6 @@ from yeastprep.core.deconvolve import (
     effective_background,
     psf_spacing_problem,
     read_pixel_size_um,
-    rescale_to_uint16,
     run_deconvolve,
 )
 
@@ -128,29 +127,52 @@ def test_deconvolve_and_save_runs_with_a_matching_psf(tmp_path):
     out_bf, out_target, scale = read_combined_tiff(result.output_path)
     assert out_target.shape == (16, 16)
     assert scale[2] == pytest.approx(0.065, rel=1e-4)
-    assert out_bf.dtype == out_target.dtype == np.uint16
-    assert out_target.min() == 0 and out_target.max() == 65535
+    assert out_bf.dtype == np.uint16
+    assert out_target.dtype == np.float32
+    assert out_target.min() >= 0
 
 
-def test_deconvolve_float_counts_past_uint16_are_rescaled_not_clipped(tmp_path):
+def test_deconvolve_keeps_float_counts_past_uint16(tmp_path):
     from yeastprep.core.psf_calc import save_psf
 
     psf = tmp_path / "psf.tif"
     save_psf(psf, _gaussian_psf(), (0.1, 0.065, 0.065))
-    # Summed counts well past 65535, as 01_reduced/ now stores them.
+    # Summed counts well past 65535, as 01_reduced/ stores them.
     target = (_synthetic_image(seed=1).astype(np.float32) + 100) * 1000
 
     out = run_deconvolve(
         target, DeconvolveParams(enabled=True, psf_path=str(psf), num_iter=2), 0.065, n_z=40
     )
-    assert out.dtype == np.uint16
-    assert out.min() == 0 and out.max() == 65535
-    # Clipping would pile the bright half of the image up at 65535.
-    assert np.count_nonzero(out == 65535) == 1
+    assert out.dtype == np.float32
+    assert out.min() >= 0
+    assert out.max() > 65535  # counts, not a 16-bit stretch
 
 
-def test_rescale_to_uint16_of_a_flat_image_is_all_zero():
-    assert np.all(rescale_to_uint16(np.full((3, 3), 7.0)) == 0)
+def test_a_zinger_does_not_crush_a_dim_cell(tmp_path):
+    """A single hot pixel 10^5x brighter than a dim spot: after
+    deconvolution the dim spot must still be there, in counts, and still
+    stretch to full range in a tile crop that doesn't include the zinger."""
+    from yeastprep.core.psf_calc import save_psf
+    from yeastprep.core.tiles import to_uint8
+
+    psf = tmp_path / "psf.tif"
+    save_psf(psf, _gaussian_psf(), (0.1, 0.065, 0.065))
+    n = 64
+    yy, xx = np.mgrid[:n, :n]
+    target = 50.0 + 20.0 * np.exp(-((yy - 16) ** 2 + (xx - 16) ** 2) / (2 * 2.0**2))
+    target[48, 48] = 5e6  # the zinger
+    target = target.astype(np.float32)
+
+    out = run_deconvolve(
+        target,
+        DeconvolveParams(enabled=True, psf_path=str(psf), camera_offset=0.0, background=50.0,
+                         num_iter=20),
+        0.065,
+    )
+    spot = out[8:25, 8:25]
+    assert spot[8, 8] > 10 * np.median(out[:, 32:40])  # dim spot well above its surroundings
+    crop = to_uint8(spot, 0.1, 99.9)
+    assert crop.max() == 255 and crop[8, 8] > 200
 
 
 def test_float_target_file_round_trips_uint16_brightfield(tmp_path):

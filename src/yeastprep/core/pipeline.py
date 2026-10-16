@@ -115,9 +115,11 @@ def sum_project(volume: LoadedVolume) -> np.ndarray:
     had nowhere to go but the clip. The camera offset is left in too: it's
     a flat camera_offset x Nz pedestal, which deconvolution models as its
     background (core/deconvolve.py's `effective_background`) rather than
-    having it clipped away slice by slice, which biased the noise. The
-    min-max rescale onto uint16 happens after deconvolution instead. A 2D
-    float32 plane is still a fraction of the raw stack's size."""
+    having it clipped away slice by slice, which biased the noise. It
+    stays float32 counts through deconvolution too: no stage ever min-max
+    rescales it (one zinger would crush every dim cell), and contrast is
+    set by percentile at tile export. A 2D float32 plane is still a
+    fraction of the raw stack's size."""
     summed = np.zeros(volume.projection3d.shape[1:], dtype=np.float64)
     for plane in volume.projection3d:  # one slice at a time: no float copy of the stack
         summed += plane

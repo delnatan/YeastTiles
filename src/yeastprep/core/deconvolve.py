@@ -102,12 +102,12 @@ def run_deconvolve(
 ) -> np.ndarray:
     """Deconvolve the target channel only -- brightfield has no PSF model
     here (see design.md). The input is float32 summed counts (see
-    core/pipeline.py's `sum_project`), deconvolved in float32 (per
-    core/deconvolution/model.py), and only then min-max rescaled onto the
-    full uint16 range (`rescale_to_uint16`) -- so sharpened peaks brighter
-    than anything in the input aren't clipped, and dim structure isn't
-    rounded away before deconvolution has seen it. Per FOV, so
-    intensities aren't comparable across FOVs.
+    core/pipeline.py's `sum_project`), and the result stays float32 counts
+    (background removed) rather than being rescaled to 16 bits: a single
+    zinger can be thousands of times brighter than a dim cell, and any
+    fixed min-max stretch would crush that cell to a handful of levels, or
+    to 0. Contrast is set later, robustly, by percentile -- per crop at
+    tile export (core/tiles.py's `to_uint8`) and in every viewer.
 
     `pixel_size_um` is the image's lateral pixel size; when both it and the
     PSF file's spacing are known, a mismatch raises ValueError rather than
@@ -132,18 +132,8 @@ def run_deconvolve(
         background=background,
         num_iter=params.num_iter,
     )
-    return rescale_to_uint16(result.restored.detach().cpu().numpy())
-
-
-def rescale_to_uint16(image: np.ndarray) -> np.ndarray:
-    """Min-max rescale onto the full uint16 range; all zeros for a flat
-    image."""
-    image = np.asarray(image, dtype=np.float64)
-    lo, hi = image.min(), image.max()
-    if hi <= lo:
-        return np.zeros(image.shape, dtype=np.uint16)
-    scaled = (image - lo) * (np.iinfo(np.uint16).max / (hi - lo))
-    return np.round(scaled).astype(np.uint16)
+    restored = result.restored.detach().cpu().numpy()
+    return np.maximum(restored, 0).astype(np.float32, copy=False)
 
 
 @dataclass

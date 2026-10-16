@@ -7,9 +7,11 @@ those raw files in the same root.
       <stem>.ims / .czi / .nd2   raw multi-channel Z-stacks (untouched)
       01_reduced/        <stem>.tiff   float32, 2ch (CYX): [brightfield, target]
       02_denoised/       <stem>.tiff   float32, 2ch         -- optional stage
-      03_deconvolved/    <stem>.tiff   16-bit, 2ch          -- optional stage
-      (float32 holds the target's raw summed counts until deconvolution
-      min-max rescales it to 16-bit; brightfield is uint16 values throughout)
+      03_deconvolved/    <stem>.tiff   float32, 2ch         -- optional stage
+      (the target stays float32 counts at every stage -- raw sums, then
+      background-free after deconvolution -- and is never min-max
+      rescaled, so a zinger can't crush dim cells; contrast is set by
+      percentile at tile export. Brightfield is uint16 values throughout)
       05_tiles/          <fov>.tiles  packed 8-bit 3ch cell crops (see
                          tileclass/tile_container.py) + tile_index.csv
 
