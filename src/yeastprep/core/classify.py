@@ -159,26 +159,29 @@ def classify_pool(pooled, classifier) -> ClassifyPoolResult:
     )
 
 
-def sample_unlabeled(pooled, n: int, rng: random.Random | None = None) -> list[str]:
-    """Randomly sample up to `n` not-yet-human-reviewed tile paths from
-    `pooled`'s checked folders -- for the Classify Tiles page's "Explore
-    Embeddings" group, which wants to show where unreviewed data falls
-    relative to labeled clusters without embedding an entire (possibly huge)
-    pool. Same path-gathering as `classify_pool` (`scan_container` per
-    folder, normalized abspath), filtered to whatever `pooled` has no
-    *human-confirmed* tag for -- a still-standing AI prediction still counts
-    as "unlabeled" here (unlike `classify_pool`'s own "never overwrite an
-    existing tag" convention, which does treat it as labeled): otherwise,
-    running "Run Inference on Pool" first -- which tags every untagged tile
-    with an AI prediction -- would leave nothing left for this to sample."""
-    rng = rng or random.Random()
+def unlabeled_paths(pooled) -> list[str]:
+    """Every not-yet-human-reviewed tile path in `pooled`'s checked folders
+    -- for the Classify Tiles page's "Explore Embeddings" group, which
+    plots them (in gray) alongside the annotated ones. Same path-gathering
+    as `classify_pool` (`scan_container` per folder, normalized abspath),
+    filtered to whatever `pooled` has no *human-confirmed* tag for -- a
+    still-standing AI prediction still counts as "unlabeled" here (unlike
+    `classify_pool`'s own "never overwrite an existing tag" convention,
+    which does treat it as labeled): otherwise, running "Run Inference on
+    Pool" first -- which tags every untagged tile with an AI prediction --
+    would leave nothing unlabeled to show."""
     paths = []
     for folder in pooled.folders:
         paths.extend(scan_container(folder))
     paths = [os.path.normpath(os.path.abspath(p)) for p in paths]
-    untagged = [
-        p for p in paths if pooled.get(p) is None or pooled.confidence(p) is not None
-    ]
+    return [p for p in paths if pooled.get(p) is None or pooled.confidence(p) is not None]
+
+
+def sample_unlabeled(pooled, n: int, rng: random.Random | None = None) -> list[str]:
+    """A random `n` of `unlabeled_paths(pooled)` (all of them if there are
+    no more than `n`) -- for a pool too big to embed whole."""
+    rng = rng or random.Random()
+    untagged = unlabeled_paths(pooled)
     if len(untagged) <= n:
         return untagged
     return rng.sample(untagged, n)

@@ -182,6 +182,16 @@ class ThumbnailGridWidget(QWidget):
         params = self._channel_params(default_clims)
         return composite_to_rgb(plane, params)
 
+    def rgb_for(self, path):
+        """Composited ``(H, W, 3)`` uint8 array for *path* in this grid's
+        current channel colors, decoding it synchronously first if it
+        isn't cached -- for a caller previewing a tile that isn't
+        necessarily in the grid (e.g. hovering a point on an embedding
+        plot). One small tile decodes in milliseconds."""
+        entry = self._cache.get(path) or self._cache.decode(path)
+        plane, default_clims = entry
+        return composite_to_rgb(plane, self._channel_params(default_clims))
+
     def close(self):
         self._worker.close()
 

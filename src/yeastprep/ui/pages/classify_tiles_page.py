@@ -9,7 +9,6 @@ from pathlib import Path
 
 from qtpy.QtCore import QThread, Signal
 from qtpy.QtWidgets import (
-    QCheckBox,
     QComboBox,
     QDoubleSpinBox,
     QFormLayout,
@@ -30,7 +29,7 @@ from qtpy.QtWidgets import (
 
 from tileclass.classifiers.device import select_device
 from tileclass.classifiers.yeast_efficientnet import YeastEfficientNetClassifier
-from tileclass.main_window import MainWindow
+from tileclass.main_window import TILES_PER_PAGE_MAX, MainWindow
 from tileclass.training.embeddings import (
     UMAP_METRICS,
     extract_embeddings,
@@ -39,15 +38,24 @@ from tileclass.training.embeddings import (
 )
 from tileclass.training.vicreg import load_backbone
 
-from yeastprep.core.classify import sample_unlabeled
+from yeastprep.core.classify import sample_unlabeled, unlabeled_paths
 
 from ..classifier_pool import ClassifierPool, ClassifierPoolWidget
 from ..common.background_task import BackgroundTask
 from ..common.checkpoint_choice import CheckpointChoice
 from ..diagnostics.annotation_analytics_panel import AnnotationAnalyticsPanel
-from ..diagnostics.embedding_scatter_widget import UNLABELED_LABEL, EmbeddingScatterWidget
+from ..diagnostics.embedding_explorer import EmbeddingExplorerWidget
+from ..diagnostics.embedding_scatter_widget import UNLABELED_LABEL
 from ..worker import ClassifierInferenceWorker
 from .page_progress import PageProgress  # noqa: F401 -- shape of progress_changed, never emitted here
+
+
+# (combo text, mode) for which unlabeled tiles Explore Embeddings plots.
+_UNLABELED_MODES = (
+    ("Random sample of", "sample"),
+    ("All", "all"),
+    ("None", "none"),
+)
 
 
 class ClassifyTilesPage(QWidget):
@@ -62,6 +70,8 @@ class ClassifyTilesPage(QWidget):
         # (embeddings, labels, paths, knn_acc) from the last Evaluate, so
         # Re-plot can re-run just UMAP when only its settings changed.
         self._last_embeddings = None
+        # The PooledAnnotations the plotted tiles' tags are written through.
+        self._embedding_pooled = None
         # Forward pass + UMAP (Evaluate), or UMAP alone (Re-plot) -- one at
         # a time, off the GUI thread.
         self._embedding_task = BackgroundTask(self)
@@ -95,11 +105,11 @@ class ClassifyTilesPage(QWidget):
         left_scroll.setMaximumWidth(460)
         splitter.addWidget(left_scroll)
 
-        self.embedding_scatter = EmbeddingScatterWidget()
+        self.embedding_explorer = EmbeddingExplorerWidget()
         self.annotation_analytics = AnnotationAnalyticsPanel(self.pool)
 
         self.right_tabs = QTabWidget()
-        self.right_tabs.addTab(self.embedding_scatter, "Embeddings")
+        self.right_tabs.addTab(self.embedding_explorer, "Embeddings")
         self._analytics_tab_index = self.right_tabs.addTab(
             self.annotation_analytics, "Annotation Analytics"
         )
@@ -155,22 +165,25 @@ class ClassifyTilesPage(QWidget):
         v.addWidget(self.embed_picker)
 
         sample_row = QHBoxLayout()
-        self.include_unlabeled_cb = QCheckBox("Include random sample of unlabeled tiles:")
-        self.include_unlabeled_cb.setToolTip(
-            "Also plot a random sample of currently-unlabeled tiles from the "
-            "checked pool, in gray, so you can see where unlabeled data "
-            "falls relative to labeled clusters -- without embedding the "
-            "entire (possibly huge) pool."
+        sample_row.addWidget(QLabel("Unlabeled tiles:"))
+        self.unlabeled_mode = QComboBox()
+        for text, mode in _UNLABELED_MODES:
+            self.unlabeled_mode.addItem(text, mode)
+        self.unlabeled_mode.setToolTip(
+            "Which not-yet-annotated tiles from the checked pool to plot, "
+            "in gray beneath the annotated ones (colored by category). A "
+            "few thousand covers the range of phenotypes for annotating; "
+            "labeling the whole pool is Run Inference's job."
         )
-        sample_row.addWidget(self.include_unlabeled_cb)
+        sample_row.addWidget(self.unlabeled_mode)
         self.unlabeled_sample_size = QSpinBox()
-        self.unlabeled_sample_size.setRange(1, 5000)
-        self.unlabeled_sample_size.setValue(200)
-        self.unlabeled_sample_size.setEnabled(False)
+        self.unlabeled_sample_size.setRange(1, 1_000_000)
+        self.unlabeled_sample_size.setValue(3000)
         sample_row.addWidget(self.unlabeled_sample_size)
         sample_row.addStretch(1)
         v.addLayout(sample_row)
-        self.include_unlabeled_cb.toggled.connect(self.unlabeled_sample_size.setEnabled)
+        self.unlabeled_mode.currentIndexChanged.connect(self._sync_unlabeled_controls)
+        self._sync_unlabeled_controls()
 
         v.addLayout(self._build_umap_form())
 
@@ -178,9 +191,10 @@ class ClassifyTilesPage(QWidget):
         self.evaluate_btn = QPushButton("Evaluate Embeddings")
         self.evaluate_btn.setToolTip(
             "Plot a UMAP projection of the checkpoint above's embeddings "
-            "over every currently pooled confirmed tile (and, if checked, a "
-            "random sample of unlabeled ones). Lasso-select points on the "
-            "plot to open them in a tile viewer."
+            "over the pooled tiles -- annotated ones colored by category, "
+            "unlabeled ones (per the setting above) in gray. Needs no "
+            "annotations. Lasso points on the plot to see and tag their "
+            "tiles beside it."
         )
         self.evaluate_btn.clicked.connect(self._evaluate_embeddings)
         buttons.addWidget(self.evaluate_btn)
@@ -251,7 +265,7 @@ class ClassifyTilesPage(QWidget):
     # ------------------------------------------------------------------
 
     def _wire_up(self):
-        self.embedding_scatter.pointsSelected.connect(self._open_viewer_for_selection)
+        self.embedding_explorer.openInViewerRequested.connect(self._open_viewer_for_selection)
         self._embedding_task.succeeded.connect(self._on_embeddings_ready)
         self._embedding_task.failed.connect(self._on_embeddings_failed)
         self.pool.changed.connect(self.annotation_analytics.refresh_from_pool)
@@ -377,9 +391,12 @@ class ClassifyTilesPage(QWidget):
 
     # ------------------------------------------------------------------
     # Explore Embeddings -- UMAP projection of a backbone's embeddings
-    # over the pool's confirmed tiles, optionally plus a random sample of
-    # unlabeled ones (see `core.classify.sample_unlabeled`). The forward
+    # over the pool's confirmed tiles plus all, a random sample, or none of
+    # its unlabeled ones (`core.classify.unlabeled_paths`). The forward
     # pass and UMAP run on a background thread; the pool is read up front.
+
+    def _sync_unlabeled_controls(self, *_args):
+        self.unlabeled_sample_size.setVisible(self.unlabeled_mode.currentData() == "sample")
 
     def _evaluate_embeddings(self):
         if self._embedding_task.is_running():
@@ -392,26 +409,32 @@ class ClassifyTilesPage(QWidget):
             return
 
         records = self.pool.gather_confirmed_records()
-        if len(records) < 2:
-            QMessageBox.warning(
-                self,
-                "yeastprep",
-                "Need at least 2 confirmed annotated tiles in the pool to "
-                "evaluate embeddings.",
-            )
-            return
-
         paths = [p for p, _ in records]
         labels = [label for _, label in records]
         confirmed_labels = list(labels)
 
-        if self.include_unlabeled_cb.isChecked():
-            pooled = self.pool.pooled_annotations()
-            n = self.unlabeled_sample_size.value()
-            unlabeled_paths = sample_unlabeled(pooled, n) if pooled is not None else []
-            paths = paths + unlabeled_paths
-            labels = labels + [UNLABELED_LABEL] * len(unlabeled_paths)
+        pooled = self.pool.pooled_annotations()
+        mode = self.unlabeled_mode.currentData()
+        if pooled is None or mode == "none":
+            unlabeled = []
+        elif mode == "sample":
+            unlabeled = sample_unlabeled(pooled, self.unlabeled_sample_size.value())
+        else:
+            unlabeled = unlabeled_paths(pooled)
+        paths = paths + unlabeled
+        labels = labels + [UNLABELED_LABEL] * len(unlabeled)
 
+        if len(paths) < 2:
+            QMessageBox.warning(
+                self,
+                "yeastprep",
+                "Need at least 2 tiles to evaluate embeddings -- check some "
+                "FOVs with exported tiles in the pool"
+                + (", or include unlabeled tiles." if mode == "none" else "."),
+            )
+            return
+
+        self._embedding_pooled = pooled
         umap_kwargs = self._umap_kwargs()
 
         def compute():
@@ -423,22 +446,28 @@ class ClassifyTilesPage(QWidget):
             with torch.no_grad():
                 embeddings = extract_embeddings(paths, backbone, device)
             n_confirmed = len(confirmed_labels)
-            acc = (
-                knn_accuracy(embeddings[:n_confirmed], confirmed_labels)
-                if len(set(confirmed_labels)) > 1
-                else None
-            )
+            acc = None
+            if len(set(confirmed_labels)) > 1:
+                try:
+                    acc = knn_accuracy(embeddings[:n_confirmed], confirmed_labels)
+                except ValueError:
+                    pass  # too few annotations yet for a train/val split
             return embeddings, labels, paths, acc, umap_2d(embeddings, **umap_kwargs)
 
         self._embedding_done_text = "Embeddings evaluated."
-        self.status_label.setText(f"Evaluating embeddings for {len(paths)} tile(s)...")
+        self.status_label.setText(
+            f"Evaluating embeddings for {len(paths)} tile(s) "
+            f"({len(confirmed_labels)} annotated)..."
+        )
         self._set_embedding_running(True)
         self._embedding_task.start(compute)
 
     def _replot_embeddings(self):
         if self._last_embeddings is None or self._embedding_task.is_running():
             return
-        embeddings, labels, paths, acc = self._last_embeddings
+        embeddings, _labels, paths, acc = self._last_embeddings
+        # Keep tags set in the explorer since Evaluate.
+        labels = self.embedding_explorer.labels_for(paths)
         umap_kwargs = self._umap_kwargs()
         self._embedding_done_text = "Re-plotted embeddings."
         self.status_label.setText("Re-running UMAP...")
@@ -454,7 +483,9 @@ class ClassifyTilesPage(QWidget):
     def _on_embeddings_ready(self, result):
         embeddings, labels, paths, acc, xy = result
         self._last_embeddings = (embeddings, labels, paths, acc)
-        self.embedding_scatter.show_embedding_scatter(xy, labels, paths=paths, knn_acc=acc)
+        self.embedding_explorer.show_embedding(
+            xy, labels, paths, self._embedding_pooled, knn_acc=acc
+        )
         self._set_embedding_running(False)
         self.status_label.setText(self._embedding_done_text)
 
@@ -464,16 +495,20 @@ class ClassifyTilesPage(QWidget):
         QMessageBox.critical(self, "yeastprep", f"Embedding evaluation failed:\n\n{message}")
 
     def _open_viewer_for_selection(self, paths: list[str]) -> None:
-        """Opens tiles lasso-selected on the embedding scatter in a tile
-        viewer window of their own, to check a suspicious cluster or outlier
-        against the actual images (and annotate them there). In-process,
+        """Opens the embedding explorer's current tiles in a tile viewer
+        window of their own, for what the explorer doesn't do (AI
+        predictions, the colors panel, sorting). In-process,
         unlike the other ways of opening the viewer, since it shows an
         arbitrary set of cells rather than whole FOVs. Kept referenced here
         so the parentless window isn't garbage-collected."""
         if not paths:
             return
         folders = sorted({str(Path(p).parent) for p in paths})
-        window = MainWindow(folders, paths, tiles_per_page=len(paths))
+        # One page for a small selection; a lasso over a big cluster of a
+        # whole-pool plot pages like any other viewer.
+        window = MainWindow(
+            folders, paths, tiles_per_page=min(len(paths), TILES_PER_PAGE_MAX)
+        )
         window.show()
         self._embedding_viewer_windows.append(window)
         window.destroyed.connect(
@@ -492,6 +527,7 @@ class ClassifyTilesPage(QWidget):
 
     def shutdown(self):
         self._embedding_task.shutdown()
+        self.embedding_explorer.shutdown()
         if self._inference_thread is not None:
             self._inference_thread.quit()
             self._inference_thread.wait()
