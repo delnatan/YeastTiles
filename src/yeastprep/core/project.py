@@ -216,17 +216,18 @@ def stage_file_status(
 
 def segmentation_file_status(mask_dir: Path) -> dict[str, FileStatus]:
     """FOV-stem -> FileStatus for every `<stem>_seg.npy` sidecar in
-    `mask_dir`, comparing mtime against its sibling `<stem>.tiff` in the
-    same folder -- segmentation masks live next to whichever 2D stage
-    produced them (see segmentation_mask_dir), not in a folder of their
-    own, so this mirrors stage_file_status's up-to-date check but against
-    a sidecar instead of a same-named file in a separate upstream folder."""
+    `mask_dir` (a stage folder's `.cellpose_bf/`), up to date when newer
+    than the stage's own `<stem>.tiff` one folder up -- the image the masks
+    were computed from. Not the brightfield copy sitting next to the mask:
+    segmentation rewrites that copy right before writing the mask, and
+    opening the folder in Cellpose's GUI refreshes it, so its mtime says
+    nothing about whether the stage image changed since segmenting."""
     statuses: dict[str, FileStatus] = {}
     if not mask_dir.is_dir():
         return statuses
     for seg_path in list_visible(mask_dir, "*_seg.npy"):
         stem = seg_path.name[: -len("_seg.npy")]
-        source_path = mask_dir / f"{stem}.tiff"
+        source_path = mask_dir.parent / f"{stem}.tiff"
         up_to_date = (
             source_path.exists() and seg_path.stat().st_mtime >= source_path.stat().st_mtime
         )

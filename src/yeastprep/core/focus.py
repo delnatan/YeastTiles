@@ -111,6 +111,16 @@ def find_focus_index_map(
     return focal_plane_indices, stack.tile_info
 
 
+def _tile_centers(n_pixels: int, n_tiles: int, tile_size: int) -> np.ndarray:
+    """Pixel coordinate of each tile's center, measured over the part of the
+    tile inside the image (edge tiles are partly reflect-padding). NaN for a
+    tile lying entirely in the padding."""
+    start = np.arange(n_tiles) * tile_size
+    end = np.minimum(start + tile_size, n_pixels)
+    centers = (start + end - 1) / 2.0
+    return np.where(start < n_pixels, centers, np.nan)
+
+
 def fit_focal_indices_to_poly2d(
     focal_indices: np.ndarray[tuple[int, int]],
     Nx: int,
@@ -118,22 +128,44 @@ def fit_focal_indices_to_poly2d(
     tile_info: TileInfo,
     poly_degree: tuple[int, int] = (2, 2),
 ) -> np.ndarray[tuple[int, int]]:
-    coarse_x_vec = np.arange(0, Nx, tile_info.tile_width)
-    coarse_y_vec = np.arange(0, Ny, tile_info.tile_height)
-    XC, YC = np.meshgrid(coarse_x_vec, coarse_y_vec)
-    valid_mask = focal_indices != 0
-    coarse_x_valid = XC[valid_mask]
-    coarse_y_valid = YC[valid_mask]
-    valid_z = focal_indices[valid_mask]
-    A_valid = polyvander2d(coarse_x_valid, coarse_y_valid, deg=list(poly_degree))
-    coefs, *_ = np.linalg.lstsq(A_valid, valid_z, rcond=None)
+    """Fit a 2D polynomial surface z(x, y) through the per-tile focal
+    indices (each placed at its tile's center) and evaluate it at every
+    pixel. Tiles with no focus peak (index 0) are left out of the fit.
 
-    fine_x = np.arange(0, Nx)
-    fine_y = np.arange(0, Ny)
-    XF, YF = np.meshgrid(fine_x, fine_y)
+    Raises ValueError when too few tiles have a peak to determine the
+    surface.
+    """
+    num_tiles_y, num_tiles_x = focal_indices.shape
+    XC, YC = np.meshgrid(
+        _tile_centers(Nx, num_tiles_x, tile_info.tile_width),
+        _tile_centers(Ny, num_tiles_y, tile_info.tile_height),
+    )
+    valid_mask = (focal_indices != 0) & np.isfinite(XC) & np.isfinite(YC)
+    n_coefs = (poly_degree[0] + 1) * (poly_degree[1] + 1)
+    n_valid = int(valid_mask.sum())
+    if n_valid < n_coefs:
+        raise ValueError(
+            f"Found a focus peak in only {n_valid} of {focal_indices.size} tiles; "
+            f"a degree {tuple(poly_degree)} surface needs at least {n_coefs}. "
+            "Lower the prominence threshold, or lower the polynomial degree."
+        )
+
+    # Fit in coordinates scaled to [-1, 1]: raw pixel coordinates raised to
+    # the 4th power (x^2 y^2) make the least-squares problem ill-conditioned.
+    def scale_x(x):
+        return 2.0 * x / max(Nx - 1, 1) - 1.0
+
+    def scale_y(y):
+        return 2.0 * y / max(Ny - 1, 1) - 1.0
+
+    A_valid = polyvander2d(
+        scale_x(XC[valid_mask]), scale_y(YC[valid_mask]), deg=list(poly_degree)
+    )
+    coefs, *_ = np.linalg.lstsq(A_valid, focal_indices[valid_mask].astype(float), rcond=None)
+
+    XF, YF = np.meshgrid(scale_x(np.arange(Nx)), scale_y(np.arange(Ny)))
     A_fine = polyvander2d(XF, YF, deg=list(poly_degree))
-    focus_indices = np.dot(A_fine, coefs).reshape((Ny, Nx))
-    return focus_indices
+    return np.dot(A_fine, coefs).reshape((Ny, Nx))
 
 
 def resample_focal_slice(

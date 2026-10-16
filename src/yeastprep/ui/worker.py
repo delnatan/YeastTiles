@@ -488,8 +488,19 @@ class DeconvolvePipelineResult:
     target_after: object
 
 
+@dataclass(frozen=True)
+class DeconvolvePreviewInput:
+    target: object
+    pixel_size_um: float | None  # the source file's, to check the PSF against
+
+
 def _new_deconvolve_worker() -> SimplePipelineWorker:
-    return SimplePipelineWorker(run_deconvolve, DeconvolvePipelineResult)
+    return SimplePipelineWorker(
+        lambda payload, params: run_deconvolve(payload.target, params, payload.pixel_size_um),
+        lambda request_id, source_id, payload, after: DeconvolvePipelineResult(
+            request_id, source_id, payload.target, after
+        ),
+    )
 
 
 class DeconvolveController(DebouncedController):
@@ -503,13 +514,15 @@ class DeconvolveController(DebouncedController):
             parent=parent,
         )
 
-    def schedule(self, target, source_id: int, params: DeconvolveParams):
-        super().schedule(target, source_id, params)
+    def schedule(self, source: DeconvolvePreviewInput, source_id: int, params: DeconvolveParams):
+        super().schedule(source, source_id, params)
 
-    def recompute_now(self, target, source_id: int, params: DeconvolveParams):
+    def recompute_now(
+        self, source: DeconvolvePreviewInput, source_id: int, params: DeconvolveParams
+    ):
         """Immediate request, bypassing both the debounce timer and the
         unchanged-input check."""
-        super().recompute_now(target, source_id, params)
+        super().recompute_now(source, source_id, params)
 
 
 class DeconvolveBatchWorker(BatchWorker):

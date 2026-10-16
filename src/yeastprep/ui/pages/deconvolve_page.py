@@ -25,7 +25,11 @@ from qtpy.QtWidgets import (
 
 from yeastprep.core import project as project_core
 from yeastprep.core.combined_tiff import load_combined_channels
-from yeastprep.core.deconvolve import DeconvolveParams
+from yeastprep.core.deconvolve import (
+    DeconvolveParams,
+    psf_spacing_problem,
+    read_pixel_size_um,
+)
 
 from .. import settings
 from ..common.batch_runner import BatchRunner
@@ -34,7 +38,7 @@ from ..deconvolve_params_panel import DeconvolveParamsPanel
 from ..diagnostics.deconvolve_preview_panel import DeconvolvePreviewPanel
 from ..project_tree_panel import ProjectTreePanel
 from ..psf_calculator_panel import PSFCalculatorPanel
-from ..worker import DeconvolveBatchWorker, DeconvolveController
+from ..worker import DeconvolveBatchWorker, DeconvolveController, DeconvolvePreviewInput
 from .page_progress import PageProgress
 
 # Deconvolution only ever applies to the target/fluorescence channel --
@@ -67,6 +71,7 @@ class DeconvolvePage(QWidget):
         self._mode = "live"
         self._last_target = None
         self._output_target = None
+        self._pixel_size_um = None  # the shown file's, for the PSF spacing check
         self._source_stage = None
         self._source_generation = 0
         self._batch_root = None
@@ -182,6 +187,7 @@ class DeconvolvePage(QWidget):
         self.batch_runner.finished.connect(self._on_batch_finished)
 
         self.psf_calculator_panel.psf_saved.connect(self.params_panel.set_psf_path)
+        self.params_panel.params_changed.connect(self._update_psf_target_spacing)
 
     # ------------------------------------------------------------------
     # Input stage: `source_combo`'s override (REDUCED/DENOISED) if one is
@@ -266,13 +272,14 @@ class DeconvolvePage(QWidget):
             return
         self._mode = "live"
         self._last_target = target
+        self._set_pixel_size(path)
         self._source_generation += 1
 
         self.preview_panel.set_data(target, None, _CHANNEL_LABEL)
 
         if self.params_panel.is_auto_recompute():
             self.controller.schedule(
-                target, self._source_generation, self.params_panel.params()
+                self._preview_input(), self._source_generation, self.params_panel.params()
             )
 
     def _load_saved_output(self, path: str):
@@ -301,11 +308,30 @@ class DeconvolvePage(QWidget):
         self._mode = "saved"
         self._last_target = src_target
         self._output_target = out_target
+        self._set_pixel_size(path)
         self._source_generation += 1
         self._render_saved_preview()
         self.status_label.setText(
             f"{Path(path).name}: showing saved output. Click 'Do it' to tune live."
         )
+
+    def _set_pixel_size(self, path):
+        try:
+            self._pixel_size_um = read_pixel_size_um(path)
+        except Exception:
+            self._pixel_size_um = None
+        self._update_psf_target_spacing()
+
+    def _update_psf_target_spacing(self, *_args):
+        """Tell the PSF Calculator what lateral spacing a PSF for the shown
+        image needs: its pixel size divided by the current zoom."""
+        zoom = self.params_panel.params().zoom
+        self.psf_calculator_panel.set_target_spacing(
+            self._pixel_size_um / zoom if self._pixel_size_um else None
+        )
+
+    def _preview_input(self) -> DeconvolvePreviewInput:
+        return DeconvolvePreviewInput(self._last_target, self._pixel_size_um)
 
     def _render_saved_preview(self):
         self.preview_panel.set_data(self._last_target, self._output_target, _CHANNEL_LABEL)
@@ -318,14 +344,14 @@ class DeconvolvePage(QWidget):
             return
         if not self.params_panel.is_auto_recompute():
             return
-        self.controller.schedule(self._last_target, self._source_generation, params)
+        self.controller.schedule(self._preview_input(), self._source_generation, params)
 
     def _recompute_now(self):
         if self._last_target is None:
             return
         self._mode = "live"
         self.controller.recompute_now(
-            self._last_target, self._source_generation, self.params_panel.params()
+            self._preview_input(), self._source_generation, self.params_panel.params()
         )
 
     def _on_result_ready(self, result):
@@ -390,13 +416,37 @@ class DeconvolvePage(QWidget):
         if paths_root is None or not paths:
             return
 
+        params = self.params_panel.params()
+        problem = self._psf_spacing_problem_for(paths, params)
+        if problem:
+            QMessageBox.warning(self, "yeastprep", problem)
+            return
+
         self._source_stage = input_stage
         self._batch_root = str(paths_root.root)
         self._batch_succeeded_stems = []
-        self.batch_runner.start(
-            DeconvolveBatchWorker(paths, paths_root.deconvolved, self.params_panel.params())
-        )
+        self.batch_runner.start(DeconvolveBatchWorker(paths, paths_root.deconvolved, params))
         self._update_batch_button_state()
+
+    @staticmethod
+    def _psf_spacing_problem_for(paths, params: DeconvolveParams) -> str | None:
+        """Check the PSF against every checked file's pixel size up front
+        (tags only, cheap), rather than letting each file fail in turn."""
+        if not (params.enabled and params.psf_path):
+            return None
+        try:
+            psf_pixel = read_pixel_size_um(params.psf_path)
+        except Exception as exc:
+            return f"Can't read the PSF file: {exc}"
+        for path in paths:
+            try:
+                image_pixel = read_pixel_size_um(path)
+            except Exception:
+                continue  # unreadable files fail on their own in the batch
+            problem = psf_spacing_problem(psf_pixel, image_pixel, params.zoom)
+            if problem:
+                return f"{path.name}: {problem}"
+        return None
 
     def _on_batch_progress(self, progress: PageProgress):
         if progress.active and progress.message:

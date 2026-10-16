@@ -153,3 +153,29 @@ def test_input_stage_for_segmentation_and_tiles_match_resolve_2d_source(tmp_path
         stages.input_stage_for(stages.STAGE_SEGMENTATION, paths, config)
         == project_core.STAGE_REDUCED
     )
+
+
+def test_segmentation_status_compares_masks_against_the_stage_image(tmp_path):
+    """Masks are stale once their stage image is rewritten (e.g. deconvolution
+    re-run), regardless of the brightfield copy next to the mask, which
+    segmentation and the Cellpose-GUI button rewrite on their own schedule."""
+    from yeastprep.core.combined_tiff import write_brightfield_tiff
+
+    paths = project_core.ProjectPaths(tmp_path)
+    paths.reduced.mkdir()
+    image = paths.reduced / "sample.tiff"
+    _write_combined_tiff(image)
+    bf_copy = write_brightfield_tiff(image)
+    _write_fake_seg_npy(image)
+    mask_dir = bf_copy.parent
+    seg = seg_npy_path(image)
+    now = time.time()
+
+    os.utime(image, (now - 300, now - 300))
+    os.utime(seg, (now - 200, now - 200))
+    os.utime(bf_copy, (now - 100, now - 100))  # copy refreshed after segmenting
+    assert project_core.segmentation_file_status(mask_dir)["sample"].up_to_date
+
+    os.utime(image, (now, now))  # stage image rewritten after segmenting
+    os.utime(bf_copy, (now - 250, now - 250))
+    assert not project_core.segmentation_file_status(mask_dir)["sample"].up_to_date

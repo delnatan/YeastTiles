@@ -79,25 +79,51 @@ def test_find_focus_index_map_matches_split_functions():
 
 
 def test_fit_focal_indices_to_poly2d_recovers_noiseless_quadratic():
-    """A degree-2 fit to noiseless degree-2 data should have ~zero residual."""
+    """A degree-2 fit to noiseless degree-2 data, sampled at each tile's
+    center (where its focus measurement applies), has ~zero residual."""
     Ny, Nx = 64, 64
     tile = 16
 
-    y, x = np.mgrid[0:Ny, 0:Nx]
-    true_surface = 0.001 * (x - 32) ** 2 + 0.002 * (y - 32) ** 2 + 5
+    def surface(x, y):
+        return 0.004 * (x - 20) ** 2 + 0.003 * (y - 40) ** 2 + 5
 
-    coarse_y = np.arange(0, Ny, tile)
-    coarse_x = np.arange(0, Nx, tile)
-    XC, YC = np.meshgrid(coarse_x, coarse_y)
-    coarse_focus = (0.001 * (XC - 32) ** 2 + 0.002 * (YC - 32) ** 2 + 5).round().astype(np.uint8)
+    y, x = np.mgrid[0:Ny, 0:Nx]
+    centers = np.arange(0, Nx, tile) + (tile - 1) / 2
+    XC, YC = np.meshgrid(centers, centers)
 
     from yeastprep.core.focus import TileInfo
 
     fitted = fit_focal_indices_to_poly2d(
-        coarse_focus, Nx, Ny, TileInfo(tile, tile), poly_degree=(2, 2)
+        surface(XC, YC), Nx, Ny, TileInfo(tile, tile), poly_degree=(2, 2)
     )
-    # Coarse focus values were rounded to uint8, so allow a small tolerance.
-    assert np.allclose(fitted, true_surface, atol=1.0)
+    # Placing samples at tile corners instead shifts the surface by half a
+    # tile, which is off by several z-slices at these slopes.
+    assert np.allclose(fitted, surface(x, y), atol=1e-6)
+
+
+def test_fit_focal_indices_to_poly2d_edge_tile_center_skips_padding():
+    """A tile that's partly reflect-padding is centered on its real pixels,
+    and a tile that's entirely padding is left out."""
+    from yeastprep.core.focus import TileInfo
+
+    # 10 px in 6 tiles -> 2 px tiles; tile 5 (pixels 10-11) is all padding.
+    Nx = Ny = 10
+    slope = 0.5
+    centers = np.array([0.5, 2.5, 4.5, 6.5, 8.5, 99.0])
+    focal = np.tile(slope * centers + 3, (6, 1))
+    fitted = fit_focal_indices_to_poly2d(focal, Nx, Ny, TileInfo(2, 2), poly_degree=(1, 1))
+    assert np.allclose(fitted, slope * np.arange(Nx) + 3)
+
+
+def test_fit_focal_indices_to_poly2d_too_few_peaks_is_a_clear_error():
+    import pytest
+
+    from yeastprep.core.focus import TileInfo
+
+    focal = np.zeros((4, 4), dtype=np.uint8)
+    focal[0, :3] = 7  # 3 usable tiles, a (2, 2) surface has 9 coefficients
+    with pytest.raises(ValueError, match="only 3 of 16 tiles"):
+        fit_focal_indices_to_poly2d(focal, 64, 64, TileInfo(16, 16), poly_degree=(2, 2))
 
 
 def test_resample_focal_slice_constant_focus_equals_fixed_z():

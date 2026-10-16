@@ -38,6 +38,7 @@ class PSFCalculatorPanel(QWidget):
         super().__init__(parent)
         self._psf = None
         self._spacing = None
+        self._target_spacing = None  # image pixel / zoom, from the Deconvolve tab
 
         outer = QHBoxLayout(self)
 
@@ -118,17 +119,25 @@ class PSFCalculatorPanel(QWidget):
         form = QFormLayout(group)
         defaults = PSFCalcParams()
 
-        self.dxy_auto = QCheckBox("Nyquist-limited")
-        self.dxy_auto.setChecked(True)
-        self.dxy_auto.stateChanged.connect(lambda _: self.dxy.setEnabled(not self.dxy_auto.isChecked()))
-        form.addRow(self.dxy_auto)
+        # Deconvolution needs the PSF sampled exactly like the reconstruction
+        # grid (image pixel / zoom), so that's the default rather than a
+        # Nyquist spacing that merely looks reasonable.
+        self.dxy_match = QCheckBox()
+        self.dxy_match.setChecked(True)
+        self.dxy_match.setToolTip(
+            "Use the pixel size of the image open on the Deconvolve tab, divided "
+            "by its zoom -- the spacing deconvolution needs. Uncheck to enter one."
+        )
+        self.dxy_match.stateChanged.connect(self._sync_dxy)
+        form.addRow(self.dxy_match)
 
         self.dxy = QDoubleSpinBox()
         self.dxy.setRange(0.01, 1.0)
         self.dxy.setDecimals(4)
         self.dxy.setSingleStep(0.005)
-        self.dxy.setEnabled(False)
+        self.dxy.setValue(0.065)
         form.addRow("Lateral spacing (um)", self.dxy)
+        self._sync_dxy()
 
         self.nxy = QSpinBox()
         self.nxy.setRange(16, 1024)
@@ -175,13 +184,30 @@ class PSFCalculatorPanel(QWidget):
 
     # ------------------------------------------------------------------
 
+    def set_target_spacing(self, dxy_um: float | None):
+        """The lateral spacing a PSF for the image shown on the Deconvolve
+        tab needs (pixel size / zoom), or None when no calibrated image is
+        open."""
+        self._target_spacing = dxy_um
+        self._sync_dxy()
+
+    def _sync_dxy(self, *_args):
+        if self._target_spacing is None:
+            self.dxy_match.setText("Match the shown image (none open)")
+        else:
+            self.dxy_match.setText(f"Match the shown image ({self._target_spacing:.4f} um)")
+        matching = self.dxy_match.isChecked()
+        self.dxy.setEnabled(not matching)
+        if matching and self._target_spacing is not None:
+            self.dxy.setValue(self._target_spacing)
+
     def _params(self) -> PSFCalcParams:
         return PSFCalcParams(
             wavelength_um=self.wavelength.value(),
             na=self.na.value(),
             ni=self.ni.value(),
             ns=None if self.ns_auto.isChecked() else self.ns.value(),
-            dxy_um=None if self.dxy_auto.isChecked() else self.dxy.value(),
+            dxy_um=self.dxy.value(),
             nxy=self.nxy.value(),
             dz_um=self.dz.value(),
             axial_range_um=self.axial_range.value(),
@@ -190,6 +216,12 @@ class PSFCalculatorPanel(QWidget):
         )
 
     def _compute(self):
+        if self.dxy_match.isChecked() and self._target_spacing is None:
+            self.status_label.setText(
+                "Open an image on the Deconvolve tab to match its pixel size, "
+                "or uncheck 'Match the shown image' and enter a lateral spacing."
+            )
+            return
         self.status_label.setText("Computing...")
         self.compute_btn.setEnabled(False)
         self.repaint()
