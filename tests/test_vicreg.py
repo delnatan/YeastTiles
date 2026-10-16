@@ -1,4 +1,4 @@
-"""Tests for the class-conditioned VICReg pretraining
+"""Tests for the self-supervised VICReg pretraining
 (tileclass.training.vicreg) and its embedding-separability diagnostics
 (tileclass.training.embeddings) -- same "real training loop, tiny
 synthetic data" convention as test_training.py.
@@ -17,7 +17,9 @@ from tileclass.training.embeddings import extract_embeddings, knn_accuracy, umap
 from tileclass.training.model import build_yeast_efficientnet
 from tileclass.training.supervised import TrainingCancelled
 from tileclass.training.vicreg import (
-    ClassPairDataset,
+    RandomChannelIntensity,
+    RandomRot90,
+    TileViewPairDataset,
     VICRegAugmentation,
     VICRegParams,
     pretrain_vicreg,
@@ -58,65 +60,60 @@ def _make_records(tmp_path, n_per_class=6, classes=("single", "junk")):
     return records
 
 
-# --- ClassPairDataset ---------------------------------------------------
+# --- TileViewPairDataset / augmentation -----------------------------------
 
 
-def test_class_pair_dataset_draws_two_different_crops_of_same_class(tmp_path):
-    records = _make_records(tmp_path, n_per_class=6)
-    paths = [p for p, _ in records]
-    labels = [label for _, label in records]
-
-    dataset = ClassPairDataset(
-        paths, labels, transform=lambda x: x, epoch_length=200, seed=0
-    )
-    assert dataset.singleton_classes == []
-
-    for _ in range(len(dataset)):
-        i, j = dataset._sample_pair_indices()
-        assert labels[i] == labels[j]
-        assert i != j  # every class here has >=2 members
+def _make_paths(tmp_path, n=12):
+    return [p for p, _ in _make_records(tmp_path, n_per_class=n, classes=("unlabeled",))]
 
 
-def test_class_pair_dataset_falls_back_for_singleton_class(tmp_path):
-    records = _make_records(tmp_path, n_per_class=6, classes=("single",))
-    records.append((str(tmp_path / "rare.tif"), "rare"))
-    _write_synthetic_crop(tmp_path / "rare.tif", seed=999)
+def test_tile_view_pair_dataset_returns_two_views_of_the_same_tile(tmp_path):
+    paths = _make_paths(tmp_path, n=4)
+    calls = []
 
-    paths = [p for p, _ in records]
-    labels = [label for _, label in records]
-    dataset = ClassPairDataset(paths, labels, transform=lambda x: x, seed=0)
-    assert dataset.singleton_classes == ["rare"]
+    def recording_transform(x):
+        calls.append(x)
+        return x
 
-    rare_idx = labels.index("rare")
-    seen_rare_pair = False
-    for _ in range(50):
-        i, j = dataset._sample_pair_indices()
-        if labels[i] == "rare":
-            assert i == j == rare_idx
-            seen_rare_pair = True
-    assert seen_rare_pair
-
-
-def test_class_pair_dataset_getitem_returns_augmented_pair(tmp_path):
-    records = _make_records(tmp_path, n_per_class=4)
-    paths = [p for p, _ in records]
-    labels = [label for _, label in records]
-
-    dataset = ClassPairDataset(paths, labels, transform=VICRegAugmentation())
-    x1, x2 = dataset[0]
+    dataset = TileViewPairDataset(paths, transform=recording_transform)
+    assert len(dataset) == 4
+    x1, x2 = dataset[2]
+    # Both views come from tile 2's own pixels, each through its own
+    # transform call.
+    assert len(calls) == 2 and calls[0] is calls[1]
     assert x1.shape == (2, 64, 64)
-    assert x2.shape == (2, 64, 64)
+    assert x1.equal(x2)
+
+
+def test_tile_view_pair_dataset_with_augmentation(tmp_path):
+    dataset = TileViewPairDataset(_make_paths(tmp_path, n=2), transform=VICRegAugmentation())
+    x1, x2 = dataset[0]
+    assert x1.shape == x2.shape == (2, 64, 64)
     assert x1.min() >= 0.0 and x1.max() <= 1.0
+    assert not x1.equal(x2)  # independent draws
 
 
-def test_class_pair_dataset_rejects_mismatched_lengths():
+def test_tile_view_pair_dataset_rejects_empty_input():
     with pytest.raises(ValueError):
-        ClassPairDataset(["a.tif", "b.tif"], ["single"], transform=lambda x: x)
+        TileViewPairDataset([], transform=lambda x: x)
 
 
-def test_class_pair_dataset_rejects_empty_input():
-    with pytest.raises(ValueError):
-        ClassPairDataset([], [], transform=lambda x: x)
+def test_random_rot90_is_an_exact_rotation():
+    import torch
+
+    x = torch.arange(2 * 4 * 4, dtype=torch.float32).reshape(2, 4, 4)
+    y = RandomRot90()(x)
+    assert any(y.equal(torch.rot90(x, k, dims=(-2, -1))) for k in range(4))
+
+
+def test_random_channel_intensity_keeps_masked_out_pixels_at_zero():
+    import torch
+
+    x = torch.rand(2, 8, 8)
+    x[:, :4] = 0.0  # outside the cell mask
+    y = RandomChannelIntensity(p=1.0)(x)
+    assert torch.all(y[:, :4] == 0)
+    assert y.shape == x.shape
 
 
 # --- pretrain_vicreg ------------------------------------------------------
@@ -134,19 +131,23 @@ def test_pretrain_vicreg_runs_and_saves_backbone(tmp_path, monkeypatch):
     monkeypatch.setattr("tileclass.training.vicreg.VICREG_WEIGHTS_PATH", weights_path)
     monkeypatch.setattr("tileclass.training.vicreg.VICREG_META_PATH", meta_path)
 
-    records = _make_records(tmp_path, n_per_class=8)
+    paths = _make_paths(tmp_path, n=16)
     progress_events = []
 
     result = pretrain_vicreg(
-        records,
+        paths,
         params=_tiny_vicreg_params(),
         progress_callback=progress_events.append,
     )
 
     assert weights_path.exists()
     assert meta_path.exists()
-    assert set(result.categories) == {"single", "junk"}
+    assert result.tile_count == len(paths)
     assert len(progress_events) == 1
+    meta = json.loads(meta_path.read_text())
+    assert "categories" not in meta
+    assert meta["tile_count"] == len(paths)
+    assert "pairing" in meta  # what marks it as a backbone checkpoint
 
     # The saved state dict should load straight into a headless backbone.
     import torch
@@ -163,15 +164,15 @@ def test_pretrain_vicreg_records_trained_on_paths(tmp_path, monkeypatch):
     monkeypatch.setattr("tileclass.training.vicreg.VICREG_WEIGHTS_PATH", weights_path)
     monkeypatch.setattr("tileclass.training.vicreg.VICREG_META_PATH", meta_path)
 
-    records = _make_records(tmp_path, n_per_class=8)
-    pretrain_vicreg(records, params=_tiny_vicreg_params())
+    paths = _make_paths(tmp_path, n=16)
+    pretrain_vicreg(paths, params=_tiny_vicreg_params())
 
     meta = json.loads(meta_path.read_text())
     # Grouped by container path -> sorted cell labels -- see
     # tile_container.group_training_provenance.
     trained_on = meta["trained_on"]
     assert set(trained_on) == {str(tmp_path / "fov.tiles")}
-    assert len(trained_on[str(tmp_path / "fov.tiles")]) == len(records)
+    assert len(trained_on[str(tmp_path / "fov.tiles")]) == len(paths)
     assert meta["started_from"] == "imagenet"
 
 
@@ -190,9 +191,8 @@ def test_pretrain_vicreg_continues_from_given_backbone(tmp_path, monkeypatch):
     seed_backbone = build_yeast_efficientnet(num_classes=None, pretrained=False)
     torch.save(seed_backbone.state_dict(), seed_path)
 
-    records = _make_records(tmp_path, n_per_class=8)
     pretrain_vicreg(
-        records,
+        _make_paths(tmp_path, n=16),
         params=VICRegParams(epochs=0, batch_size=4, num_workers=0),
         backbone_weights_path=seed_path,
     )
@@ -217,8 +217,9 @@ def test_pretrain_vicreg_without_backbone_ignores_live_slot(tmp_path, monkeypatc
     seed_backbone = build_yeast_efficientnet(num_classes=None, pretrained=False)
     torch.save(seed_backbone.state_dict(), weights_path)
 
-    records = _make_records(tmp_path, n_per_class=8)
-    pretrain_vicreg(records, params=VICRegParams(epochs=0, batch_size=4, num_workers=0))
+    pretrain_vicreg(
+        _make_paths(tmp_path, n=16), params=VICRegParams(epochs=0, batch_size=4, num_workers=0)
+    )
 
     saved = torch.load(weights_path, map_location="cpu")
     assert any(
@@ -235,8 +236,8 @@ def test_warm_start_overlap(tmp_path, monkeypatch):
     monkeypatch.setattr("tileclass.training.vicreg.VICREG_WEIGHTS_PATH", weights_path)
     monkeypatch.setattr("tileclass.training.vicreg.VICREG_META_PATH", meta_path)
 
-    records = _make_records(tmp_path, n_per_class=8)
-    pretrain_vicreg(records, params=_tiny_vicreg_params())
+    trained_paths = _make_paths(tmp_path, n=16)
+    pretrain_vicreg(trained_paths, params=_tiny_vicreg_params())
 
     # A second, never-trained-on container stands in for "newly pooled
     # crops this backbone hasn't seen" -- a real probe is always some
@@ -248,7 +249,6 @@ def test_warm_start_overlap(tmp_path, monkeypatch):
     )
     unseen_paths = [f"{unseen_container}/unseen_cell{i:05d}" for i in range(3)]
 
-    trained_paths = [p for p, _ in records]
     probe_paths = trained_paths[:5] + unseen_paths
     already_seen, total = warm_start_overlap(probe_paths, meta_path=meta_path)
     assert already_seen == 5
@@ -271,9 +271,9 @@ def test_pretrain_vicreg_output_dir_does_not_touch_live_slot(tmp_path, monkeypat
     monkeypatch.setattr("tileclass.training.vicreg.VICREG_META_PATH", live_dir / "meta.json")
 
     session_dir = tmp_path / "session_output"
-    records = _make_records(tmp_path, n_per_class=8)
+    paths = _make_paths(tmp_path, n=16)
 
-    result = pretrain_vicreg(records, params=_tiny_vicreg_params(), output_dir=session_dir)
+    result = pretrain_vicreg(paths, params=_tiny_vicreg_params(), output_dir=session_dir)
 
     assert (session_dir / "backbone.pth").exists()
     assert (session_dir / "meta.json").exists()
@@ -286,7 +286,7 @@ def test_pretrain_vicreg_rejects_too_little_data(tmp_path):
     _write_synthetic_crop(path, seed=0)
 
     with pytest.raises(ValueError):
-        pretrain_vicreg([(str(path), "single")], params=_tiny_vicreg_params())
+        pretrain_vicreg([str(path)], params=_tiny_vicreg_params())
 
 
 def test_pretrain_vicreg_honors_cancel_check(tmp_path, monkeypatch):
@@ -299,10 +299,9 @@ def test_pretrain_vicreg_honors_cancel_check(tmp_path, monkeypatch):
         "tileclass.training.vicreg.VICREG_META_PATH", weights_dir / "meta.json"
     )
 
-    records = _make_records(tmp_path, n_per_class=8)
     with pytest.raises(TrainingCancelled):
         pretrain_vicreg(
-            records,
+            _make_paths(tmp_path, n=16),
             params=_tiny_vicreg_params(),
             cancel_check=lambda: True,
         )
@@ -322,7 +321,7 @@ def test_pretrain_vicreg_cancel_after_progress_saves_best_weights(tmp_path, monk
         "tileclass.training.vicreg.VICREG_META_PATH", weights_dir / "meta.json"
     )
 
-    records = _make_records(tmp_path, n_per_class=8)
+    paths = _make_paths(tmp_path, n=16)
 
     calls = {"n": 0}
 
@@ -331,7 +330,7 @@ def test_pretrain_vicreg_cancel_after_progress_saves_best_weights(tmp_path, monk
         return calls["n"] > 2
 
     result = pretrain_vicreg(
-        records,
+        paths,
         params=VICRegParams(epochs=5, batch_size=4, num_workers=0),
         cancel_check=cancel_after_a_few,
     )

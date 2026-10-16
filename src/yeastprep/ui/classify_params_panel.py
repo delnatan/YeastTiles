@@ -5,7 +5,6 @@ as `train_params_panel.TrainParamsPanel` (denoise's equivalent)."""
 
 from qtpy.QtCore import Signal
 from qtpy.QtWidgets import (
-    QCheckBox,
     QDoubleSpinBox,
     QFormLayout,
     QGroupBox,
@@ -187,8 +186,9 @@ class VicregTrainParamsPanel(QWidget):
 
         description = QLabel(
             "Self-supervised backbone pretraining: learns an embedding space "
-            "from tile crops, pairing different crops of the same annotated "
-            "category. 'Starting point' below continues from an existing "
+            "from every tile in the pool, annotated or not, by pairing two "
+            "augmented views of the same tile -- no labels are used. "
+            "'Starting point' below continues from an existing "
             "backbone or starts from ImageNet weights. A deployed backbone "
             "is the default starting point for both this tab and "
             "Supervised Training."
@@ -196,7 +196,7 @@ class VicregTrainParamsPanel(QWidget):
         description.setWordWrap(True)
         outer.addWidget(description)
 
-        # Basic: run length + sampling.
+        # Basic: run length.
         # The VICReg loss coefficients, learning rate, and other tuning
         # knobs below have well-tested defaults -- tucked behind "Advanced"
         # so they don't crowd out the handful of settings worth changing
@@ -208,12 +208,9 @@ class VicregTrainParamsPanel(QWidget):
 
         self.epochs_spin = _ispin(defaults.epochs, 1, 2000)
         self.batch_size_spin = _ispin(defaults.batch_size, 1, 1024)
-        self.balanced_sampling_cb = QCheckBox("Balanced sampling")
-        self.balanced_sampling_cb.setChecked(defaults.balanced_sampling)
 
         basic_form.addRow("Epochs:", self.epochs_spin)
         basic_form.addRow("Batch size:", self.batch_size_spin)
-        basic_form.addRow(self.balanced_sampling_cb)
         outer.addWidget(basic_widget)
 
         advanced_widget = QWidget()
@@ -253,7 +250,6 @@ class VicregTrainParamsPanel(QWidget):
             self.seed_spin,
         ):
             box.valueChanged.connect(self._emit_params)
-        self.balanced_sampling_cb.stateChanged.connect(self._emit_params)
 
         return group
 
@@ -261,7 +257,6 @@ class VicregTrainParamsPanel(QWidget):
         return VICRegParams(
             epochs=self.epochs_spin.value(),
             batch_size=self.batch_size_spin.value(),
-            balanced_sampling=self.balanced_sampling_cb.isChecked(),
             lr=self.lr_spin.value(),
             weight_decay=self.weight_decay_spin.value(),
             proj_dim=self.proj_dim_spin.value(),

@@ -68,7 +68,7 @@ def load_masked_crop(path):
     """Read a (brightfield, fluorescence, mask) crop into a (2, H, W)
     float32 array in [0, 1], zeroing pixels outside the mask (255 =
     valid). Shared by `MaskedMicroscopyDataset`,
-    `classifiers.yeast_efficientnet`, and `vicreg.ClassPairDataset` so
+    `classifiers.yeast_efficientnet`, and `vicreg.TileViewPairDataset` so
     the three can't silently diverge on how a crop is decoded.
 
     `path` is a virtual `<fov_id>.tiles/<cell_id>` container

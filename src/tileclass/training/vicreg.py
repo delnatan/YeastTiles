@@ -2,24 +2,17 @@
 half; see `training/supervised.py` for the supervised classifier head
 that gets built on top of this backbone afterwards).
 
-Departs from vanilla VICReg -- which forms each positive pair from two
-augmented views of the *same* image -- by drawing the pair from two
-*different* crops sharing the same annotated category instead
-(`ClassPairDataset` below). Both views are still independently
-augmented, but the network is pushed to pull together the true
-within-class variation actually present in this dataset (different
-cells, same morphology) rather than just different crops/noise of one
-photograph. This needs the annotations supervised training would
-otherwise consume, so it's a weakly-supervised, category-conditioned
-VICReg, not a fully unlabeled pretraining step -- appropriate here since
-every crop that ever enters training already gets hand-annotated by
-design.md's workflow.
+Standard VICReg: each positive pair is two independently augmented views
+of the *same* tile (`TileViewPairDataset`), so no labels are involved and
+every tile in the pool can be used, annotated or not. That keeps the
+backbone honest to build on: it has never seen a label, so the supervised
+stage's held-out validation split, and the Explore Embeddings kNN score,
+aren't inflated by it.
 
-A category with only one annotated example can't produce two distinct
-crops, so it falls back to the classic same-image pair for that one
-category (see `ClassPairDataset`) -- expected early in an
-annotate-and-train loop, same situation `dataset.stratified_split`
-already handles for the supervised side.
+The augmentations (`VICRegAugmentation`) define what the embedding learns
+to ignore: orientation, a little framing, per-channel intensity scaling,
+blur and sensor noise. Anything they don't touch -- shape, texture, where
+the fluorescence sits in the cell -- is what it keeps.
 """
 
 import random
@@ -42,24 +35,61 @@ VICREG_WEIGHTS_PATH = VICREG_WEIGHTS_DIR / "backbone.pth"
 VICREG_META_PATH = VICREG_WEIGHTS_DIR / "meta.json"
 
 
-class VICRegAugmentation:
-    """One augmented view: spatial jitter (crop/flip/rotation) plus light
-    sensor-noise simulation. Unlike the classic VICReg transform (called
-    once per image to produce a *pair*), this is called independently on
-    each of the two class-mates `ClassPairDataset` already drew, so it
-    returns a single tensor, not a tuple."""
+class RandomRot90:
+    """Rotate by a random multiple of 90 degrees -- exact, no
+    interpolation, so it costs nothing in sharpness the way an arbitrary
+    angle does."""
 
-    def __init__(self, crop_size=64, crop_scale=(0.6, 1.0)):
+    def __call__(self, x):
+        return torch.rot90(x, k=random.randint(0, 3), dims=(-2, -1))
+
+
+class RandomChannelIntensity:
+    """Independently rescale each channel by a random gain and gamma.
+    Tiles are already percentile-stretched per crop at export
+    (core/tiles.py), so absolute brightness carries little meaning; this
+    makes the embedding robust to what's left of it. Pixels outside the
+    cell mask are zero and stay zero (0 * gain, 0 ** gamma). Ranges kept
+    mild in case relative fluorescence level matters to a category."""
+
+    def __init__(self, gain=(0.8, 1.2), gamma=(0.8, 1.25), p=0.8):
+        self.gain = gain
+        self.gamma = gamma
+        self.p = p
+
+    def __call__(self, x):
+        if random.random() >= self.p:
+            return x
+        n = x.shape[0]
+        gain = torch.empty(n, 1, 1).uniform_(*self.gain)
+        gamma = torch.empty(n, 1, 1).uniform_(*self.gamma)
+        return gain * x.clamp(min=0.0) ** gamma
+
+
+class VICRegAugmentation:
+    """One augmented view; `TileViewPairDataset` calls it twice per tile.
+    Spatial: a mild random-resized crop (cells are centered, so a deep
+    crop would cut them off), flips plus exact 90-degree turns, and a
+    further small rotation -- together any orientation. Then per-channel
+    intensity jitter, occasional blur, sensor noise."""
+
+    def __init__(self, crop_size=64, crop_scale=(0.7, 1.0)):
         import torchvision.transforms.v2 as T
 
         self._transform = T.Compose(
             [
                 T.RandomResizedCrop(
-                    size=(crop_size, crop_size), scale=crop_scale, antialias=True
+                    size=(crop_size, crop_size),
+                    scale=crop_scale,
+                    ratio=(0.9, 1.1),
+                    antialias=True,
                 ),
                 T.RandomHorizontalFlip(p=0.5),
                 T.RandomVerticalFlip(p=0.5),
+                RandomRot90(),
                 T.RandomRotation(degrees=45),
+                RandomChannelIntensity(),
+                T.RandomApply([T.GaussianBlur(kernel_size=5, sigma=(0.1, 1.0))], p=0.3),
                 RandomGaussianNoise(std=0.02, p=0.5),
                 ClampTensor(min_val=0.0, max_val=1.0),
             ]
@@ -70,86 +100,30 @@ class VICRegAugmentation:
 
 
 def worker_init_fn(_worker_id):
-    """DataLoader workers fork with Python's global `random`/`numpy.random`
-    state already seeded from the parent process, so left alone every
-    worker draws the identical sequence of class-pair choices (a fork
-    copies, it doesn't reseed). Reseed both from the per-worker seed
-    torch already assigned via its own generator, so workers diverge."""
-    import numpy as np
-
-    seed = torch.utils.data.get_worker_info().seed % (2**32)
-    random.seed(seed)
-    np.random.seed(seed)
+    """DataLoader workers fork with Python's global `random` state already
+    seeded from the parent process, so left alone every worker draws the
+    identical sequence from it (a fork copies, it doesn't reseed) -- and
+    `RandomRot90`/`RandomChannelIntensity` use it. Reseed from the
+    per-worker seed torch already assigned via its own generator."""
+    random.seed(torch.utils.data.get_worker_info().seed % (2**32))
 
 
-class ClassPairDataset(Dataset):
-    """VICReg positive pairs drawn from two different annotated crops in
-    the same category, each independently augmented by `transform`
-    (falls back to one crop paired with itself for a singleton category
-    -- see module docstring).
+class TileViewPairDataset(Dataset):
+    """VICReg positive pairs: two independent `transform` draws of the
+    same tile. Unlabeled -- just tile paths."""
 
-    `__getitem__` ignores `idx` and re-samples a category and two of its
-    members fresh on every call -- standard practice for contrastive
-    datasets, since there's no fixed notion of "the i-th pair". This
-    decouples epoch length from raw tile count: `epoch_length` defaults
-    to `len(paths)` so an epoch still looks like "one pass through the
-    data" by default, but can be set independently.
-
-    `balanced=True` (default) samples the category uniformly rather than
-    by frequency, so a rare category gets exercised in as many pairs as
-    the majority one over an epoch. The annotation counts here are
-    unavoidably skewed, and unlike supervised fine-tuning's
-    inverse-frequency loss weighting, VICReg's loss has no per-sample
-    label to reweight -- uniform category sampling is the only lever
-    available to keep minority categories from being drowned out during
-    pretraining.
-    """
-
-    def __init__(
-        self, paths, labels, transform, epoch_length=None, balanced=True, seed=0
-    ):
-        if len(paths) != len(labels):
-            raise ValueError("paths and labels must be the same length")
+    def __init__(self, paths, transform):
         if not paths:
-            raise ValueError("no labeled paths given")
-
+            raise ValueError("no tile paths given")
         self.paths = list(paths)
         self.transform = transform
-        self.balanced = balanced
-
-        self.by_class = {}
-        for idx, label in enumerate(labels):
-            self.by_class.setdefault(label, []).append(idx)
-        self.classes = sorted(self.by_class)
-        self.singleton_classes = sorted(
-            c for c, idxs in self.by_class.items() if len(idxs) < 2
-        )
-
-        self._rng = random.Random(seed)
-        self.epoch_length = (
-            epoch_length if epoch_length is not None else len(self.paths)
-        )
 
     def __len__(self):
-        return self.epoch_length
+        return len(self.paths)
 
-    def _sample_pair_indices(self):
-        if self.balanced:
-            cls = self._rng.choice(self.classes)
-        else:
-            weights = [len(self.by_class[c]) for c in self.classes]
-            cls = self._rng.choices(self.classes, weights=weights, k=1)[0]
-
-        members = self.by_class[cls]
-        if len(members) >= 2:
-            return tuple(self._rng.sample(members, 2))
-        return members[0], members[0]
-
-    def __getitem__(self, _idx):
-        i, j = self._sample_pair_indices()
-        img1 = torch.from_numpy(load_masked_crop(self.paths[i]))
-        img2 = torch.from_numpy(load_masked_crop(self.paths[j]))
-        return self.transform(img1), self.transform(img2)
+    def __getitem__(self, idx):
+        img = torch.from_numpy(load_masked_crop(self.paths[idx]))
+        return self.transform(img), self.transform(img)
 
 
 class VICRegLoss(nn.Module):
@@ -223,10 +197,11 @@ class VICRegModel(nn.Module):
 
 @dataclass
 class VICRegParams:
-    epochs: int = 1000
+    # An epoch is one pass over every pooled tile, annotated or not -- far
+    # more than the annotated subset this used to train on, so fewer
+    # epochs than before.
+    epochs: int = 100
     batch_size: int = 128
-    epoch_length: int | None = None  # None -> one pair per tile per epoch
-    balanced_sampling: bool = True
     lr: float = 1e-4
     weight_decay: float = 5e-5
     proj_dim: int = 1024
@@ -247,9 +222,7 @@ class VICRegProgress:
 
 @dataclass
 class VICRegResult:
-    categories: list = field(default_factory=list)
-    singleton_categories: list = field(default_factory=list)
-    pair_count: int = 0
+    tile_count: int = 0
     final_loss: float = 0.0
     weights_path: Path = VICREG_WEIGHTS_PATH
     # True when this result came from a cancelled run that still had at
@@ -271,11 +244,8 @@ def load_backbone(weights_path=VICREG_WEIGHTS_PATH, device=None):
 
 def _save_backbone(
     model,
-    categories,
-    singleton_categories,
     params: VICRegParams,
     trained_on_paths,
-    category_counts: dict[str, int] | None = None,
     output_dir: Path | None = None,
     started_from: Path | None = None,
 ) -> Path:
@@ -286,18 +256,18 @@ def _save_backbone(
     `training/supervised.py`'s `_save_weights`). Returns the directory
     written to.
 
-    `trained_on_paths`: every crop path this run pretrained on -- recorded
+    `trained_on_paths`: every tile path this run pretrained on -- recorded
     in meta.json as `trained_on` (see `tile_container.group_training_provenance`)
     so a later run can tell (via `warm_start_overlap`) how much of a newly
     pooled dataset this backbone has already been exposed to before
     deciding whether/how hard to warm-start from it again.
 
-    `category_counts`: number of annotated crops per category that fed
-    this run's pairing -- see `training/supervised.py`'s `_save_weights`
-    for the matching field on the classifier side.
-
     `started_from`: the backbone this run was initialized from, or `None`
-    for the ImageNet-pretrained stem -- recorded as `started_from`."""
+    for the ImageNet-pretrained stem -- recorded as `started_from`.
+
+    meta.json's `pairing` key is also what marks a checkpoint as a
+    backbone rather than a classifier (yeastprep's
+    `checkpoint_choice.checkpoint_kind`)."""
     import json
     import shutil
 
@@ -313,20 +283,14 @@ def _save_backbone(
 
     torch.save(model.backbone.state_dict(), weights_path)
 
+    trained_on_paths = list(trained_on_paths)
     meta = {
-        "categories": categories,
-        "category_counts": (
-            {c: category_counts.get(c, 0) for c in categories}
-            if category_counts is not None
-            else {}
-        ),
-        "singleton_categories": singleton_categories,
-        "pairing": "class-conditioned (different crops, same category)",
+        "pairing": "self-supervised (two augmented views of the same tile)",
+        "tile_count": len(trained_on_paths),
         "trained_on": group_training_provenance(trained_on_paths),
         "params": {
             "epochs": params.epochs,
             "batch_size": params.batch_size,
-            "balanced_sampling": params.balanced_sampling,
             "lr": params.lr,
             "weight_decay": params.weight_decay,
             "proj_dim": params.proj_dim,
@@ -338,9 +302,9 @@ def _save_backbone(
         "last_trained": datetime.now(timezone.utc).isoformat(),
         "description": (
             "VICReg-pretrained EfficientNet-B0 backbone (brightfield + "
-            "fluorescence + mask, stem modified for 2 input channels), "
-            "positive pairs drawn from distinct crops sharing an "
-            "annotated category."
+            "fluorescence, mask applied, stem modified for 2 input "
+            "channels), positive pairs from two augmented views of the "
+            "same tile; no labels."
         ),
     }
     meta_path.write_text(json.dumps(meta, indent=2))
@@ -355,8 +319,9 @@ def warm_start_overlap(paths, meta_path=VICREG_META_PATH) -> tuple[int, int] | N
     `trained_on` was added). Used by the training UI to warn before a warm-started run: repeatedly
     exposing the backbone to the same crops across rounds isn't the
     validation-leakage bug that motivated always training the supervised
-    classifier from scratch (VICReg has no held-out split to corrupt --
-    see `training/supervised.py`'s module docstring), but a user
+    classifier from scratch (VICReg never sees labels, so there's no
+    held-out split to corrupt -- see `training/supervised.py`'s module
+    docstring), but a user
     deliberately trying to broaden a backbone's exposure still wants to
     know how much of a newly pooled dataset is actually new to it."""
     import json
@@ -379,29 +344,26 @@ def warm_start_overlap(paths, meta_path=VICREG_META_PATH) -> tuple[int, int] | N
 
 
 def pretrain_vicreg(
-    records,
+    paths,
     params: VICRegParams = VICRegParams(),
     progress_callback=None,
     cancel_check=None,
     output_dir: Path | None = None,
     backbone_weights_path: Path | None = None,
 ) -> VICRegResult:
-    """`records`: list of (crop_path, category) pairs, e.g. from
-    `PooledAnnotations.tagged_items()` filtered to human-confirmed tags.
-    Categories are only used to group crops into pairs -- the resulting
-    backbone has no classification head and doesn't need a fixed
-    category vocabulary the way `supervised.train_classifier` does, so a
-    later run with a different (or larger) set of categories can freely
-    warm-start from whatever backbone is currently saved.
+    """`paths`: tile paths to pretrain on -- e.g. every tile in the pool
+    (yeastprep's `ClassifierPool.tile_paths()`), annotated or not; labels
+    are never used. The resulting backbone has no classification head, so
+    any later supervised run, with any set of categories, can start from
+    it.
 
     `backbone_weights_path`: a backbone to continue from (e.g. the deployed
     one), or `None` to start from an ImageNet-pretrained stem -- the same
     choice `supervised.train_classifier` takes. Continuing from a backbone
     is safe here in a way warm-starting the classifier head isn't: VICReg
-    has no held-out validation split to leak into, so repeat exposure to
-    the same crops is just more self-supervised training. Use
-    `warm_start_overlap` to check how much of `records` a backbone has
-    already seen.
+    never sees labels, so repeat exposure to the same tiles is just more
+    self-supervised training. Use `warm_start_overlap` to check how much
+    of `paths` a backbone has already seen.
 
     Raises `ValueError` for too little data. If `cancel_check()` goes true
     between epochs: raises `TrainingCancelled` if no epoch has finished yet
@@ -409,36 +371,30 @@ def pretrain_vicreg(
     `cancelled=True`) built from whichever epoch had the lowest total VICReg
     loss so far, saved the same way a completed run's result would be.
     """
-    if len(records) < 2:
+    paths = list(paths)
+    if len(paths) < 2:
         raise ValueError(
-            "Not enough annotated tiles to pretrain VICReg -- need at least "
-            "2 annotated crops."
+            "Not enough tiles to pretrain VICReg -- need at least 2 (its "
+            "variance and covariance terms are batch statistics)."
         )
 
-    paths = [p for p, _ in records]
-    labels = [label for _, label in records]
-
-    dataset = ClassPairDataset(
-        paths,
-        labels,
-        transform=VICRegAugmentation(),
-        epoch_length=params.epoch_length,
-        balanced=params.balanced_sampling,
-        seed=params.seed,
-    )
+    dataset = TileViewPairDataset(paths, transform=VICRegAugmentation())
+    random.seed(params.seed)
+    torch.manual_seed(params.seed)
 
     device = select_device()
     if device.type == "cuda":
         torch.backends.cudnn.benchmark = True
 
     # Mirror supervised.train_classifier's guard against an empty loader
-    # when the annotated set is smaller than one batch.
+    # when there are fewer tiles than one batch.
     batch_size = min(params.batch_size, len(dataset))
     drop_last = len(dataset) > batch_size
 
     loader = DataLoader(
         dataset,
         batch_size=batch_size,
+        shuffle=True,
         num_workers=params.num_workers,
         worker_init_fn=worker_init_fn if params.num_workers > 0 else None,
         persistent_workers=params.num_workers > 0,
@@ -473,7 +429,6 @@ def pretrain_vicreg(
     # `supervised.train_classifier`'s val_accuracy-based tracking; VICReg
     # has no held-out split, so total loss is the closest analog here).
     best = {"loss": float("inf"), "state": None}
-    completed_epochs = 0
 
     try:
         for epoch in range(params.epochs):
@@ -500,7 +455,6 @@ def pretrain_vicreg(
             num_batches = max(num_batches, 1)
             avg_metrics = {k: v / num_batches for k, v in epoch_totals.items()}
             final_avg_loss = avg_metrics["total"]
-            completed_epochs += 1
             if final_avg_loss < best["loss"]:
                 best["loss"] = final_avg_loss
                 best["state"] = _clone_state_dict(vicreg)
@@ -520,44 +474,30 @@ def pretrain_vicreg(
         if best["state"] is None:
             raise
         vicreg.load_state_dict(best["state"])
-        categories = dataset.classes
-        category_counts = {c: len(idxs) for c, idxs in dataset.by_class.items()}
         weights_dir = _save_backbone(
             vicreg,
-            categories,
-            dataset.singleton_classes,
             params,
             paths,
-            category_counts=category_counts,
             output_dir=output_dir,
             started_from=backbone_weights_path,
         )
         return VICRegResult(
-            categories=categories,
-            singleton_categories=dataset.singleton_classes,
-            pair_count=len(dataset) * completed_epochs,
+            tile_count=len(paths),
             final_loss=best["loss"],
             weights_path=weights_dir / "backbone.pth",
             cancelled=True,
         )
 
-    categories = dataset.classes
-    category_counts = {c: len(idxs) for c, idxs in dataset.by_class.items()}
     weights_dir = _save_backbone(
         vicreg,
-        categories,
-        dataset.singleton_classes,
         params,
         paths,
-        category_counts=category_counts,
         output_dir=output_dir,
         started_from=backbone_weights_path,
     )
 
     return VICRegResult(
-        categories=categories,
-        singleton_categories=dataset.singleton_classes,
-        pair_count=len(dataset) * params.epochs,
+        tile_count=len(paths),
         final_loss=final_avg_loss,
         weights_path=weights_dir / "backbone.pth",
     )

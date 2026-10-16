@@ -1,10 +1,12 @@
-"""Classifier Training page: trains the yeast-tile classifier on the
-human-annotated tiles of the shared classification pool
-(`ui/classifier_pool.py`). Two tabs, each with the same shape:
+"""Classifier Training page: trains on the tiles of the shared
+classification pool (`ui/classifier_pool.py`). Two tabs, each with the
+same shape:
 
-- Supervised Training fits the classifier (`tileclass.training.supervised`);
+- Supervised Training fits the classifier (`tileclass.training.supervised`)
+  on the human-annotated tiles;
 - VICReg Pretraining fits a headless backbone (`tileclass.training.vicreg`)
-  that supervised runs (and later VICReg runs) can start from.
+  on every pooled tile, labels unused, that supervised runs (and later
+  VICReg runs) can start from.
 
 Settings (pool, parameters, starting point) sit in the left column; the
 right side shows progress and the Deploy group. A run always saves to the
@@ -89,7 +91,12 @@ class _TrainingTab(QWidget):
     def _output_dir(self, project_root) -> Path:
         raise NotImplementedError
 
-    def _build_worker(self, records, output_dir, backbone_path):
+    def _gather_training_data(self) -> tuple[list, list[str]]:
+        """(what `_build_worker` trains on, the tile paths in it); an empty
+        pair means there's nothing to train on (`empty_message`)."""
+        raise NotImplementedError
+
+    def _build_worker(self, data, output_dir, backbone_path):
         raise NotImplementedError
 
     def _on_epoch_progress(self, progress):
@@ -196,25 +203,20 @@ class _TrainingTab(QWidget):
     def _start_training(self):
         if self._thread is not None:
             return
-        records = self.pool.gather_confirmed_records()
-        if not records:
-            QMessageBox.warning(
-                self,
-                "yeastprep",
-                "No human-annotated tiles to train on -- add a project with "
-                "annotated FOVs to the classification pool.",
-            )
+        data, paths = self._gather_training_data()
+        if not data:
+            QMessageBox.warning(self, "yeastprep", self.empty_message)
             return
 
         output_dir = self._output_dir(self.pool.roots()[0])
         backbone_path = self.starting_point.weights_path()
 
         self.monitor_panel.clear(self.secondary_label)
-        self.monitor_panel.log(f"records={len(records)}  saving to {output_dir}")
+        self.monitor_panel.log(f"tiles={len(paths)}  saving to {output_dir}")
         start_line = f"starting point: {self.starting_point.describe()}"
         if backbone_path is not None:
             overlap = warm_start_overlap(
-                [p for p, _ in records], meta_path=backbone_path.with_name("meta.json")
+                paths, meta_path=backbone_path.with_name("meta.json")
             )
             if overlap is not None:
                 start_line += f"; {overlap[0]}/{overlap[1]} pooled crops already seen by it"
@@ -226,7 +228,7 @@ class _TrainingTab(QWidget):
         self.cancel_btn.setEnabled(True)
         self.progress_changed.emit(PageProgress(active=True))
 
-        self._worker = self._build_worker(records, output_dir, backbone_path)
+        self._worker = self._build_worker(data, output_dir, backbone_path)
         self._thread = QThread()
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
@@ -329,12 +331,20 @@ class _SupervisedTrainingTab(_TrainingTab):
     title = "Supervised training"
     session_kind = "supervised"
     secondary_label = "val accuracy"
+    empty_message = (
+        "No human-annotated tiles to train on -- add a project with "
+        "annotated FOVs to the classification pool."
+    )
 
     def _make_params_panel(self):
         return SupervisedTrainParamsPanel()
 
     def _output_dir(self, project_root):
         return supervised_output_dir(project_root)
+
+    def _gather_training_data(self):
+        records = self.pool.gather_confirmed_records()
+        return records, [p for p, _ in records]
 
     def _build_worker(self, records, output_dir, backbone_path):
         return ClassifierTrainingWorker(
@@ -363,6 +373,10 @@ class _VicregTrainingTab(_TrainingTab):
     title = "VICReg pretraining"
     session_kind = "vicreg"
     secondary_label = "std"
+    empty_message = (
+        "No tiles to pretrain on -- add a project with exported tiles to "
+        "the classification pool."
+    )
 
     def _make_params_panel(self):
         return VicregTrainParamsPanel()
@@ -370,9 +384,14 @@ class _VicregTrainingTab(_TrainingTab):
     def _output_dir(self, project_root):
         return vicreg_output_dir(project_root)
 
-    def _build_worker(self, records, output_dir, backbone_path):
+    def _gather_training_data(self):
+        # Every pooled tile, annotated or not -- VICReg never uses labels.
+        paths = self.pool.tile_paths()
+        return paths, paths
+
+    def _build_worker(self, paths, output_dir, backbone_path):
         return ClassifierVicregWorker(
-            records,
+            paths,
             params=self.params_panel.params(),
             output_dir=output_dir,
             backbone_weights_path=backbone_path,
@@ -386,8 +405,7 @@ class _VicregTrainingTab(_TrainingTab):
 
     def _result_summary(self, result):
         return (
-            f"final_loss={result.final_loss:.4f}  categories={result.categories}  "
-            f"singleton_categories={result.singleton_categories}"
+            f"final_loss={result.final_loss:.4f}  tiles={result.tile_count}"
         )
 
 

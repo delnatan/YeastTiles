@@ -36,8 +36,7 @@ def read_meta(weights_path) -> dict | None:
 
 def checkpoint_kind(weights_path) -> str | None:
     """"backbone", "classifier", or None if there's no readable sibling
-    meta.json. Both kinds save `categories`; only VICReg's
-    `_save_backbone` writes `pairing`."""
+    meta.json. Only VICReg's `_save_backbone` writes `pairing`."""
     meta = read_meta(weights_path)
     if meta is None:
         return None
@@ -50,6 +49,8 @@ def describe_checkpoint(weights_path) -> str:
     if meta is None:
         return str(weights_path)
     trained = (meta.get("last_trained") or "unknown date")[:10]
+    if "tile_count" in meta:  # a self-supervised backbone: no categories
+        return f"trained {trained}; self-supervised on {meta['tile_count']} tiles"
     counts = meta.get("category_counts") or {}
     categories = ", ".join(
         f"{c} ({counts[c]})" if c in counts else c for c in meta.get("categories") or []
