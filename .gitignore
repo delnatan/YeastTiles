@@ -38,3 +38,6 @@ models/
 src/tileclass/training/weights/
 *.pth.bak-*
 *.json.bak-*
+
+# Manuscript figures (kept local)
+vicreg-figures/
