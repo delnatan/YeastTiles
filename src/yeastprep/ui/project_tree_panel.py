@@ -41,7 +41,7 @@ a small mask badge for files that already have one.
 
 from pathlib import Path
 
-from qtpy.QtCore import Qt, Signal
+from qtpy.QtCore import QPoint, QRect, Qt, Signal
 from qtpy.QtWidgets import (
     QComboBox,
     QFileDialog,
@@ -96,6 +96,29 @@ _2D_STAGES = (
 _STATE_ROLE = Qt.UserRole + 1
 
 
+class _ProjectTree(QTreeWidget):
+    """QTreeWidget that keeps the current item in view when its viewport
+    shrinks. Selecting a leaf fills `SelectionActionsPanel` (docked below
+    this tree) with action buttons, which takes height away from the tree;
+    Qt keeps the scroll value where it was, so with the list scrolled to
+    the bottom the scrollbar jumps up and the item just clicked slides out
+    of view under the new buttons."""
+
+    def resizeEvent(self, event):
+        # Also called for the frame's own resize -- only the viewport's
+        # resize changes what rows are visible.
+        current = self.currentIndex()
+        was_visible = (
+            event.size() == self.viewport().size()
+            and event.oldSize().isValid()
+            and current.isValid()
+            and QRect(QPoint(0, 0), event.oldSize()).contains(self.visualRect(current))
+        )
+        super().resizeEvent(event)
+        if was_visible:
+            self.scrollTo(current)
+
+
 class ProjectTreePanel(QWidget):
     project_root_changed = Signal(str)
     # stage, path -- fires on click (or arrow-key nav); cheap, just updates
@@ -123,7 +146,7 @@ class ProjectTreePanel(QWidget):
         layout.addWidget(self._build_project_group())
         layout.addWidget(self._build_source_group())
 
-        self.tree = QTreeWidget()
+        self.tree = _ProjectTree()
         self.tree.setHeaderHidden(True)
         self.tree.setColumnCount(2)
         # Every row is a single line of text plus a small fixed-size icon --
