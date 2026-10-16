@@ -307,3 +307,22 @@ def test_denoise_training_worker_reads_frames_itself(qapp, tmp_path):
     broken.error.connect(errors.append)
     broken.run()
     assert errors and errors[0].startswith("Couldn't read training frames")
+
+
+def test_errors_from_superseded_preview_requests_are_dropped(qapp):
+    def compute(payload, params):
+        raise ValueError(f"bad {payload}")
+
+    controller = DebouncedController(SimplePipelineWorker(compute, _Result), debounce_ms=10)
+    errors = []
+    controller.error.connect(errors.append)
+    try:
+        controller.recompute_now("old file", 1, None)
+        controller.invalidate()  # e.g. another file was opened meanwhile
+        controller.recompute_now("new file", 2, None)
+        _wait_until(lambda: errors)
+        time.sleep(0.05)
+        QCoreApplication.processEvents()
+        assert errors == ["bad new file"]
+    finally:
+        controller.shutdown()

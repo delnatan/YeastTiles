@@ -111,6 +111,7 @@ class TileContainer:
     def __init__(self, path):
         self.path = Path(path)
         with open(self.path, "rb") as f:
+            self.stamp = _file_stamp(os.fstat(f.fileno()))
             magic = f.read(len(MAGIC))
             if magic != MAGIC:
                 raise ValueError(f"{self.path}: not a tile container (bad magic)")
@@ -143,7 +144,9 @@ class TileContainer:
 # viewer session) so the JSON index is parsed once per container, not once
 # per cell. Unbounded: a project has at most a few hundred FOVs, each
 # index is tiny (cell_id/offset/shape per cell, no pixel data), nowhere
-# near enough to matter memory-wise.
+# near enough to matter memory-wise. Each lookup also checks the file's
+# mtime/size, since another process (a tile viewer, or yeastprep
+# re-exporting while a viewer is open) may have rewritten it.
 _container_cache: dict[str, TileContainer] = {}
 _container_cache_lock = Lock()
 
@@ -152,10 +155,20 @@ def _cache_key(path) -> str:
     return os.path.normpath(os.path.abspath(path))
 
 
+def _file_stamp(stat_result) -> tuple[int, int]:
+    return (stat_result.st_mtime_ns, stat_result.st_size)
+
+
 def get_container(path) -> TileContainer:
     key = _cache_key(path)
     with _container_cache_lock:
         container = _container_cache.get(key)
+        if container is not None:
+            try:
+                if _file_stamp(os.stat(key)) != container.stamp:
+                    container = None
+            except OSError:
+                container = None  # gone or unreadable: let TileContainer() say so
         if container is None:
             container = TileContainer(path)
             _container_cache[key] = container

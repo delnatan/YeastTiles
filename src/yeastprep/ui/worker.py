@@ -92,7 +92,7 @@ class DebouncedController(QObject):
         self._worker = worker
         self._worker.moveToThread(self._thread)
         self._worker.result_ready.connect(self.result_ready)
-        self._worker.error.connect(self.error)
+        self._worker.error.connect(self._on_worker_error)
         self._request_signal.connect(self._worker.request)
         self._thread.start()
 
@@ -131,6 +131,12 @@ class DebouncedController(QObject):
         self._request_id += 1
         self._request_signal.emit(payload, source_id, params, self._request_id)
 
+    def _on_worker_error(self, message: str, request_id: int):
+        # Same rule pages apply to results: a request that's since been
+        # superseded (or invalidated) mustn't report over the current one.
+        if request_id == self._request_id:
+            self.error.emit(message)
+
     def latest_request_id(self) -> int:
         return self._request_id
 
@@ -162,7 +168,7 @@ class SimplePipelineWorker(QObject):
     dataclass, unchanged."""
 
     result_ready = Signal(object)
-    error = Signal(str)
+    error = Signal(str, int)  # message, request_id
 
     def __init__(self, compute_fn, result_cls):
         super().__init__()
@@ -174,7 +180,7 @@ class SimplePipelineWorker(QObject):
             computed = self._compute_fn(payload, params)
             self.result_ready.emit(self._result_cls(request_id, source_id, payload, computed))
         except Exception as exc:
-            self.error.emit(str(exc))
+            self.error.emit(str(exc), request_id)
 
 
 @dataclass
@@ -223,7 +229,7 @@ class FocusPipelineWorker(QObject):
 
     stage_a_done = Signal(object)  # LoadedVolume
     result_ready = Signal(object)  # PipelineResult
-    error = Signal(str)
+    error = Signal(str, int)  # message, request_id
 
     def __init__(self):
         super().__init__()
@@ -276,7 +282,7 @@ class FocusPipelineWorker(QObject):
                 )
             )
         except Exception as exc:
-            self.error.emit(str(exc))
+            self.error.emit(str(exc), request_id)
 
 
 class PipelineController(DebouncedController):

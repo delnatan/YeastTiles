@@ -36,6 +36,7 @@ import numpy as np
 from tileclass.classifiers.device import select_device
 
 from .combined_tiff import brightfield_tiff_path, load_brightfield_channel, write_brightfield_tiff
+from .model_cache import ModelCache
 
 if TYPE_CHECKING:
     import torch
@@ -57,23 +58,21 @@ def _default_device() -> torch.device:
     return select_device()
 
 
-_model_cache: dict[tuple[str | None, str], CellposeModel] = {}
+_model_cache = ModelCache(max_entries=2)
 
 
 def get_model(model_path: str | None, device: torch.device | None = None) -> CellposeModel:
-    """Load (or reuse a cached) CellposeModel. Loading pulls weights onto
-    the GPU, so callers that recompute repeatedly (live preview) should
-    keep reusing the same model_path rather than reloading per call."""
+    """Load (or reuse a cached) CellposeModel. Reloads when a custom model
+    file has been rewritten (e.g. retrained in Cellpose's GUI)."""
     device = device or _default_device()
-    key = (model_path, str(device))
-    model = _model_cache.get(key)
-    if model is None:
+
+    def load():
         from yeastprep.optional_deps import require
 
         CellposeModel = require("cellpose.models", extra="prep").CellposeModel
-        model = CellposeModel(pretrained_model=model_path or "cpsam", device=device)
-        _model_cache[key] = model
-    return model
+        return CellposeModel(pretrained_model=model_path or "cpsam", device=device)
+
+    return _model_cache.get(model_path, device, load)
 
 
 @dataclass

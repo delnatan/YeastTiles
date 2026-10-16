@@ -25,6 +25,7 @@ from pyvistra.io import save_tiff
 from tileclass.classifiers.device import select_device
 
 from .combined_tiff import BRIGHTFIELD_CHANNEL, TARGET_CHANNEL, combine_channels, read_combined_tiff
+from .model_cache import ModelCache
 
 
 @dataclass
@@ -67,23 +68,22 @@ def _default_device() -> torch.device:
     return select_device()
 
 
-_denoiser_cache: dict[tuple[str, str], Denoiser] = {}
+# One per channel (brightfield, target) is the common working set.
+_denoiser_cache = ModelCache(max_entries=2)
 
 
 def get_denoiser(checkpoint_path: str, device: torch.device | None = None) -> Denoiser:
-    """Load (or reuse a cached) Denoiser. Loading pulls weights onto the
-    device, so callers that recompute repeatedly (live preview) should
-    keep reusing the same checkpoint_path rather than reloading per call."""
+    """Load (or reuse a cached) Denoiser. Reloads when the checkpoint file
+    has been rewritten, e.g. by retraining to the same path."""
     device = device or _default_device()
-    key = (str(checkpoint_path), str(device))
-    denoiser = _denoiser_cache.get(key)
-    if denoiser is None:
+
+    def load():
         from yeastprep.optional_deps import require
 
         Denoiser = require("jssl_denoise", extra="prep").Denoiser
-        denoiser = Denoiser.load(checkpoint_path, device=str(device))
-        _denoiser_cache[key] = denoiser
-    return denoiser
+        return Denoiser.load(checkpoint_path, device=str(device))
+
+    return _denoiser_cache.get(checkpoint_path, device, load)
 
 
 def run_denoise(image: np.ndarray, params: DenoiseParams) -> np.ndarray:

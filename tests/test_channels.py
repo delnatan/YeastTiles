@@ -31,3 +31,16 @@ def test_infer_returns_none_when_ambiguous():
 
 def test_infer_returns_none_for_single_channel():
     assert infer_channel_selection([{"name": "Brightfield"}]) is None
+
+
+def test_short_name_hints_match_whole_words_only():
+    """"bf" must not pick a BFP fluorescence channel as brightfield."""
+    from yeastprep.core.channels import is_brightfield_name
+
+    for name in ("BF", "bf_100ms", "TL BF", "DIC2", "Trans", "Brightfield100", "White Light"):
+        assert is_brightfield_name(name), name
+    for name in ("BFP", "mTagBFP2", "EGFP", "Transfected-GFP"):
+        assert not is_brightfield_name(name), name
+
+    channels = [{"name": "mTagBFP2"}, {"name": "BF"}, {"name": "DAPI-405"}]
+    assert infer_channel_selection(channels) == ChannelSelection(brightfield=1, projection=2)

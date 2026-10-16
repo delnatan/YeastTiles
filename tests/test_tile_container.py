@@ -98,3 +98,23 @@ def test_rewriting_a_container_invalidates_its_cached_index(tmp_path):
 
     write_container(container_path, [("fov_cell00002", 2, np.ones((3, 4, 4), np.uint8))])
     assert get_container(container_path).cell_ids() == ["fov_cell00002"]
+
+
+def test_a_container_rewritten_by_another_process_is_reparsed(tmp_path):
+    """`write_container` drops this process's cached index, but a viewer
+    in another process only sees the file change on disk."""
+    import os
+
+    from tileclass import tile_container
+
+    container_path = tmp_path / "fov.tiles"
+    write_container(container_path, [("fov_cell00001", 1, np.zeros((3, 4, 4), np.uint8))])
+    assert get_container(container_path).cell_ids() == ["fov_cell00001"]
+
+    cached = dict(tile_container._container_cache)
+    write_container(container_path, [("fov_cell00002", 2, np.ones((3, 4, 4), np.uint8))])
+    tile_container._container_cache.update(cached)  # as if written elsewhere
+    st = container_path.stat()
+    os.utime(container_path, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000))
+
+    assert get_container(container_path).cell_ids() == ["fov_cell00002"]

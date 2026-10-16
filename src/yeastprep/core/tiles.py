@@ -116,6 +116,18 @@ def apply_crop(
     return tile
 
 
+def crop_to_uint8(
+    image: np.ndarray, geom: CellGeometry, size: int, lo_pct: float, hi_pct: float
+) -> np.ndarray:
+    """Crop one channel and contrast-stretch it to 8 bits, taking the
+    percentiles over the image pixels only. For a cell near the FOV edge,
+    part of the tile is padding, and counting that as zeros would drag the
+    low percentile to 0 and wash the cell out."""
+    tile = np.zeros((size, size), dtype=np.uint8)
+    tile[geom.dst] = to_uint8(image[geom.src], lo_pct, hi_pct)
+    return tile
+
+
 def crop_cell(
     mask: np.ndarray,
     brightfield: np.ndarray,
@@ -130,14 +142,11 @@ def crop_cell(
     background there, matching design.md's "images are not masked, but the
     per-cell binary mask is a separate channel" spec."""
     size = params.size
-    cell_mask = (mask == geom.label).astype(np.uint8) * 255
-    ch_bf = to_uint8(
-        apply_crop(brightfield, geom, size), params.contrast_lo_pct, params.contrast_hi_pct
-    )
-    ch_target = to_uint8(
-        apply_crop(target, geom, size), params.contrast_lo_pct, params.contrast_hi_pct
-    )
-    ch_mask = apply_crop(cell_mask, geom, size)
+    lo, hi = params.contrast_lo_pct, params.contrast_hi_pct
+    ch_bf = crop_to_uint8(brightfield, geom, size, lo, hi)
+    ch_target = crop_to_uint8(target, geom, size, lo, hi)
+    # Compared after cropping: padding is 0, never a cell label.
+    ch_mask = (apply_crop(mask, geom, size) == geom.label).astype(np.uint8) * 255
     return np.stack([ch_bf, ch_target, ch_mask], axis=0)
 
 

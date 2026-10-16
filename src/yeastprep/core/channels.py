@@ -5,6 +5,7 @@ notebooks/01_flatten_field.ipynb with an explicit, best-effort-inferred,
 user-overridable selection.
 """
 
+import re
 from dataclasses import dataclass
 
 _BRIGHTFIELD_NAME_HINTS = (
@@ -30,6 +31,15 @@ def _channel_name(meta: dict) -> str:
     return str(meta.get("name") or "").strip().lower()
 
 
+def _name_matches(name: str, hints: tuple[str, ...]) -> bool:
+    """Whether a lowercased channel name contains one of `hints`. Short
+    hints ("bf", "dic", "trans") must be a whole word -- letters only, so
+    "BF_100ms" and "DIC2" count -- or "bf" would match "BFP"/"mTagBFP2", a
+    fluorescence channel. Longer ones match anywhere ("brightfield100")."""
+    words = set(re.findall(r"[a-z]+", name))
+    return any(hint in words if len(hint) <= 5 else hint in name for hint in hints)
+
+
 def _channel_emission_nm(meta: dict):
     value = meta.get("emission_wavelength")
     if value is None:
@@ -46,13 +56,12 @@ def is_brightfield_name(name: str) -> bool:
     default-colormap-per-channel assignment, which needs the same
     brightfield/fluorescence distinction this module already makes for
     picking `ChannelSelection.brightfield`."""
-    return any(hint in name.strip().lower() for hint in _BRIGHTFIELD_NAME_HINTS)
+    return _name_matches(name.strip().lower(), _BRIGHTFIELD_NAME_HINTS)
 
 
 def _find_by_name(channels_meta: list[dict], hints: tuple[str, ...]):
     for idx, meta in enumerate(channels_meta):
-        name = _channel_name(meta)
-        if any(hint in name for hint in hints):
+        if _name_matches(_channel_name(meta), hints):
             return idx
     return None
 

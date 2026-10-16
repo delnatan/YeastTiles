@@ -360,3 +360,27 @@ def test_reexport_without_centroids_handles_a_changed_tile_size(tmp_path):
 
     assert (result.tags_moved, result.tags_dropped) == (0, 0)
     assert dict(_annotations_for(out_dir, "fov1").items()) == {"fov1_cell00001": "dead"}
+
+
+def test_edge_tile_contrast_ignores_padding_and_mask_keeps_only_its_cell():
+    """A cell at the FOV corner: half its tile is padding. The contrast
+    stretch must come from the image pixels alone (the padding isn't a
+    dark part of the image), and the mask channel holds only this cell."""
+    from yeastprep.core.tiles import crop_cell
+
+    image = np.full((40, 40), 1000, np.uint16)
+    image[:8, :8] = 1200  # the cell, brighter than its surroundings
+    mask = np.zeros((40, 40), np.int32)
+    mask[:8, :8] = 1
+    mask[8:12, 8:12] = 2  # a neighbor inside the same crop window
+
+    geom = next(g for g in cell_geometry(mask, 16) if g.label == 1)
+    tile = crop_cell(mask, image, image, geom, TileParams(size=16, contrast_lo_pct=0, contrast_hi_pct=100))
+
+    bf, _target, cell_mask = tile
+    inside = bf[geom.dst]
+    # Background maps to 0 and the cell to 255; counting the padding's
+    # zeros as image would have put the 1000-valued background near 212.
+    assert inside.min() == 0 and inside.max() == 255
+    assert set(np.unique(cell_mask)) == {0, 255}
+    assert (cell_mask[geom.dst] == 255).sum() == 64  # cell 1 only, not cell 2
