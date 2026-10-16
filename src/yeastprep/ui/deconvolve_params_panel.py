@@ -11,6 +11,7 @@ from qtpy.QtWidgets import (
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
+    QLabel,
     QLineEdit,
     QPushButton,
     QSpinBox,
@@ -18,7 +19,7 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
-from yeastprep.core.deconvolve import DeconvolveParams
+from yeastprep.core.deconvolve import DeconvolveParams, effective_background
 
 
 class DeconvolveParamsPanel(QWidget):
@@ -65,12 +66,29 @@ class DeconvolveParamsPanel(QWidget):
         self.zoom.valueChanged.connect(self._emit_params)
         form.addRow("Zoom", self.zoom)
 
+        self.camera_offset = QDoubleSpinBox()
+        self.camera_offset.setRange(0.0, 65535.0)
+        self.camera_offset.setDecimals(1)
+        self.camera_offset.setValue(defaults.camera_offset)
+        self.camera_offset.setToolTip(
+            "The camera's dark offset in raw counts per z-slice. The target "
+            "channel is a raw z-sum, so the solver's background is this "
+            "times each file's z-slice count, plus the extra background."
+        )
+        self.camera_offset.valueChanged.connect(self._emit_params)
+        form.addRow("Camera offset / slice", self.camera_offset)
+
         self.background = QDoubleSpinBox()
-        self.background.setRange(0.0, 1e6)
+        self.background.setRange(0.0, 1e9)
         self.background.setDecimals(2)
         self.background.setValue(defaults.background)
+        self.background.setToolTip("Any further flat background, in summed counts.")
         self.background.valueChanged.connect(self._emit_params)
-        form.addRow("Background", self.background)
+        form.addRow("Extra background", self.background)
+
+        # Filled in by the page for the selected file (`show_background`).
+        self.total_background_label = QLabel("--")
+        form.addRow("Total background", self.total_background_label)
 
         self.num_iter = QSpinBox()
         self.num_iter.setRange(1, 1000)
@@ -112,6 +130,7 @@ class DeconvolveParamsPanel(QWidget):
             enabled=self.enabled.isChecked(),
             psf_path=self.psf_path_edit.text().strip() or None,
             zoom=self.zoom.value(),
+            camera_offset=self.camera_offset.value(),
             background=self.background.value(),
             num_iter=self.num_iter.value(),
         )
@@ -121,9 +140,26 @@ class DeconvolveParamsPanel(QWidget):
         self.enabled.setChecked(params.enabled)
         self.psf_path_edit.setText(params.psf_path or "")
         self.zoom.setValue(params.zoom)
+        self.camera_offset.setValue(params.camera_offset)
         self.background.setValue(params.background)
         self.num_iter.setValue(params.num_iter)
         self._emitting = False
+
+    def show_background(self, n_z: int | None):
+        """Show the solver background the current settings give a file
+        whose target channel sums `n_z` raw z-slices."""
+        params = self.params()
+        try:
+            total = effective_background(params, n_z)
+        except ValueError:
+            self.total_background_label.setText("unknown -- file has no z-slice count")
+            return
+        if params.camera_offset and n_z is not None:
+            text = f"{total:g}  ({params.camera_offset:g} x {n_z} slices"
+            text += f" + {params.background:g})" if params.background else ")"
+        else:
+            text = f"{total:g}"
+        self.total_background_label.setText(text)
 
     def is_auto_recompute(self) -> bool:
         return self.auto_recompute.isChecked()

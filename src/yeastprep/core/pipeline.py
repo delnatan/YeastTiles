@@ -10,10 +10,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
-from pyvistra.io import load_image, save_tiff
+from pyvistra.io import load_image
 
 from .channels import ChannelSelection
-from .combined_tiff import combine_channels
+from .combined_tiff import write_combined_tiff
 from .focus import (
     TileVarianceStack,
     compute_tile_variance_stack,
@@ -31,10 +31,7 @@ class FlattenFieldParams:
     num_tiles_x: int = 8
     inverted_variance_prominence: float = 100
     poly_degree: tuple[int, int] = (2, 2)
-    offset_um: float = 0.7
-    # Subtracted from every z-slice of the target channel before summing,
-    # each slice clipped at zero -- see `sum_project`.
-    projection_baseline: float = 0.0
+    offset_um: float = 1.0
 
 
 @dataclass
@@ -108,31 +105,23 @@ def compute_focal_slice(
     )
 
 
-def sum_project(volume: LoadedVolume, baseline: float = 0.0) -> np.ndarray:
-    """Sum the target channel over z, then min-max rescale it onto the full
-    uint16 range. A full-stack sum easily exceeds 65535 (a plain `astype`
-    wrapped bright nuclei around to dim ones), and absolute intensity isn't
-    meaningful downstream anyway -- the rescale just keeps the sum's
-    relative intensities, at full 16-bit precision, so deconvolution
-    output looks natural. Per FOV, so intensities aren't comparable across
-    FOVs.
-
-    `baseline` (e.g. the camera's dark offset, in raw counts) is
-    subtracted from each z-slice with the result clipped at zero, so
-    out-of-focus slices that sit at the offset add nothing to the sum
-    instead of a pedestal under the signal. The clip is what makes it do
-    anything: an unclipped constant would come straight back out in the
-    min-max rescale. It also discards the below-baseline half of the noise
-    wherever a slice sits right at the baseline, so set it at (or a little
-    below) the offset, not up into real background."""
+def sum_project(volume: LoadedVolume) -> np.ndarray:
+    """Sum the target channel over z, kept as float32 raw summed counts --
+    no offset subtraction, no rescale. A full-stack sum easily exceeds
+    65535 (a plain uint16 `astype` wrapped bright nuclei around to dim
+    ones), and squeezing it into uint16 here would cost deconvolution
+    twice: its Poisson model wants counts, not an arbitrary per-FOV
+    stretch, and sharpened peaks above an input already pinned at 65535
+    had nowhere to go but the clip. The camera offset is left in too: it's
+    a flat camera_offset x Nz pedestal, which deconvolution models as its
+    background (core/deconvolve.py's `effective_background`) rather than
+    having it clipped away slice by slice, which biased the noise. The
+    min-max rescale onto uint16 happens after deconvolution instead. A 2D
+    float32 plane is still a fraction of the raw stack's size."""
     summed = np.zeros(volume.projection3d.shape[1:], dtype=np.float64)
     for plane in volume.projection3d:  # one slice at a time: no float copy of the stack
-        summed += np.maximum(plane.astype(np.float64) - baseline, 0.0)
-    lo, hi = summed.min(), summed.max()
-    if hi <= lo:
-        return np.zeros(summed.shape, dtype=np.uint16)
-    scaled = (summed - lo) * (np.iinfo(np.uint16).max / (hi - lo))
-    return np.round(scaled).astype(np.uint16)
+        summed += plane
+    return summed.astype(np.float32)
 
 
 @dataclass
@@ -161,11 +150,16 @@ def process_and_save(
         volume = load_volume(path, channels)
         diagnostics = compute_focus_diagnostics(volume, params)
         focal_slice = compute_focal_slice(volume, diagnostics, params)
-        projected = sum_project(volume, params.projection_baseline)
-        combined = combine_channels(focal_slice, projected)
+        projected = sum_project(volume)
 
         output_path = outdir / f"{path.stem}.tiff"
-        save_tiff(output_path, combined, scale=volume.scale, input_axes="CYX")
+        write_combined_tiff(
+            output_path,
+            focal_slice,
+            projected,
+            volume.scale,
+            n_z=volume.projection3d.shape[0],
+        )
 
         return ProcessResult(path=path, success=True, output_path=output_path)
     except Exception as exc:

@@ -498,11 +498,14 @@ class DeconvolvePipelineResult:
 class DeconvolvePreviewInput:
     target: object
     pixel_size_um: float | None  # the source file's, to check the PSF against
+    n_z: int | None = None  # raw z-slices summed into target, for the background
 
 
 def _new_deconvolve_worker() -> SimplePipelineWorker:
     return SimplePipelineWorker(
-        lambda payload, params: run_deconvolve(payload.target, params, payload.pixel_size_um),
+        lambda payload, params: run_deconvolve(
+            payload.target, params, payload.pixel_size_um, payload.n_z
+        ),
         lambda request_id, source_id, payload, after: DeconvolvePipelineResult(
             request_id, source_id, payload.target, after
         ),
@@ -790,13 +793,13 @@ class ClassifierVicregWorker(QObject):
 
     def __init__(
         self,
-        records,
+        paths,
         params: VICRegParams = VICRegParams(),
         output_dir: Path | None = None,
         backbone_weights_path=None,
     ):
         super().__init__()
-        self._records = list(records)
+        self._paths = list(paths)
         self._params = params
         self._output_dir = output_dir
         self._backbone_weights_path = backbone_weights_path
@@ -808,7 +811,7 @@ class ClassifierVicregWorker(QObject):
     def run(self):
         try:
             result = pretrain_vicreg(
-                self._records,
+                self._paths,
                 params=self._params,
                 progress_callback=self.progress.emit,
                 cancel_check=lambda: self._cancel_requested,

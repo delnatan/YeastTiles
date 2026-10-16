@@ -24,7 +24,7 @@ from qtpy.QtWidgets import (
 )
 
 from yeastprep.core import project as project_core
-from yeastprep.core.combined_tiff import load_combined_channels
+from yeastprep.core.combined_tiff import load_combined_channels, read_z_count
 from yeastprep.core.deconvolve import (
     DeconvolveParams,
     psf_spacing_problem,
@@ -72,6 +72,7 @@ class DeconvolvePage(QWidget):
         self._last_target = None
         self._output_target = None
         self._pixel_size_um = None  # the shown file's, for the PSF spacing check
+        self._n_z = None  # the shown file's summed z-slice count, for the background
         self._source_stage = None
         self._source_generation = 0
         self._batch_root = None
@@ -188,6 +189,7 @@ class DeconvolvePage(QWidget):
 
         self.psf_calculator_panel.psf_saved.connect(self.params_panel.set_psf_path)
         self.params_panel.params_changed.connect(self._update_psf_target_spacing)
+        self.params_panel.params_changed.connect(self._update_background_display)
 
     # ------------------------------------------------------------------
     # Input stage: `source_combo`'s override (REDUCED/DENOISED) if one is
@@ -320,7 +322,15 @@ class DeconvolvePage(QWidget):
             self._pixel_size_um = read_pixel_size_um(path)
         except Exception:
             self._pixel_size_um = None
+        try:
+            self._n_z = read_z_count(path)
+        except Exception:
+            self._n_z = None
         self._update_psf_target_spacing()
+        self._update_background_display()
+
+    def _update_background_display(self, *_args):
+        self.params_panel.show_background(self._n_z)
 
     def _update_psf_target_spacing(self, *_args):
         """Tell the PSF Calculator what lateral spacing a PSF for the shown
@@ -331,7 +341,7 @@ class DeconvolvePage(QWidget):
         )
 
     def _preview_input(self) -> DeconvolvePreviewInput:
-        return DeconvolvePreviewInput(self._last_target, self._pixel_size_um)
+        return DeconvolvePreviewInput(self._last_target, self._pixel_size_um, self._n_z)
 
     def _render_saved_preview(self):
         self.preview_panel.set_data(self._last_target, self._output_target, _CHANNEL_LABEL)

@@ -21,10 +21,15 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
-from pyvistra.io import save_tiff
 from tileclass.classifiers.device import select_device
 
-from .combined_tiff import BRIGHTFIELD_CHANNEL, TARGET_CHANNEL, combine_channels, read_combined_tiff
+from .combined_tiff import (
+    BRIGHTFIELD_CHANNEL,
+    TARGET_CHANNEL,
+    read_combined_tiff,
+    read_z_count,
+    write_combined_tiff,
+)
 from .model_cache import ModelCache
 
 
@@ -87,14 +92,18 @@ def get_denoiser(checkpoint_path: str, device: torch.device | None = None) -> De
 
 
 def run_denoise(image: np.ndarray, params: DenoiseParams) -> np.ndarray:
-    """Denoise one channel's image with `params.checkpoint_path`. Casts back
-    to uint16 so 02_denoised/ stays a consistent 16-bit drop-in replacement
-    for 01_reduced/, matching the project's "16-bit for 2D intermediates"
-    convention (jssl-denoise returns float)."""
+    """Denoise one channel's image with `params.checkpoint_path`, returning
+    it in the input's dtype so 02_denoised/ stays a drop-in replacement
+    for 01_reduced/: uint16 brightfield is cast back to uint16, the float32
+    target (raw summed counts, see core/pipeline.py's `sum_project`) stays
+    float32 -- clipped at zero, not 65535, so deconvolution still gets the
+    full range (jssl-denoise returns float either way)."""
     if not params.checkpoint_path:
         raise ValueError("checkpoint_path is required to denoise")
     denoiser = get_denoiser(params.checkpoint_path)
     denoised, _ = denoiser.denoise(image, tta=params.tta)
+    if image.dtype.kind == "f":
+        return np.maximum(denoised, 0).astype(np.float32)
     return np.clip(denoised, 0, 65535).astype(np.uint16)
 
 
@@ -137,8 +146,7 @@ def denoise_and_save(
             target = run_denoise(target, params)
             brightfield = existing_brightfield
 
-        combined = combine_channels(brightfield, target)
-        save_tiff(output_path, combined, scale=scale, input_axes="CYX")
+        write_combined_tiff(output_path, brightfield, target, scale, n_z=read_z_count(path))
 
         return DenoiseProcessResult(path=path, success=True, output_path=output_path)
     except Exception as exc:

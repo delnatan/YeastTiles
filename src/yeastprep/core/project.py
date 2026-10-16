@@ -5,9 +5,11 @@ those raw files in the same root.
 
     <project_root>/
       <stem>.ims / .czi / .nd2   raw multi-channel Z-stacks (untouched)
-      01_reduced/        <stem>.tiff   16-bit, 2ch (CYX): [brightfield, target]
-      02_denoised/       <stem>.tiff   16-bit, 2ch          -- optional stage
+      01_reduced/        <stem>.tiff   float32, 2ch (CYX): [brightfield, target]
+      02_denoised/       <stem>.tiff   float32, 2ch         -- optional stage
       03_deconvolved/    <stem>.tiff   16-bit, 2ch          -- optional stage
+      (float32 holds the target's raw summed counts until deconvolution
+      min-max rescales it to 16-bit; brightfield is uint16 values throughout)
       05_tiles/          <fov>.tiles  packed 8-bit 3ch cell crops (see
                          tileclass/tile_container.py) + tile_index.csv
 
@@ -289,9 +291,6 @@ def _flatten_params_from_dict(data: dict, defaults: FlattenFieldParams) -> Flatt
         ),
         poly_degree=tuple(data.get("poly_degree", list(defaults.poly_degree))),
         offset_um=float(data.get("offset_um", defaults.offset_um)),
-        projection_baseline=float(
-            data.get("projection_baseline", defaults.projection_baseline)
-        ),
     )
 
 
@@ -308,6 +307,7 @@ def _deconvolve_params_from_dict(data: dict, defaults: DeconvolveParams) -> Deco
         enabled=bool(data.get("enabled", defaults.enabled)),
         psf_path=data.get("psf_path", defaults.psf_path) or None,
         zoom=float(data.get("zoom", defaults.zoom)),
+        camera_offset=float(data.get("camera_offset", defaults.camera_offset)),
         background=float(data.get("background", defaults.background)),
         num_iter=int(data.get("num_iter", defaults.num_iter)),
     )
@@ -427,7 +427,6 @@ def save_project_config(root, config: ProjectConfig):
             "inverted_variance_prominence": config.flatten_params.inverted_variance_prominence,
             "poly_degree": list(config.flatten_params.poly_degree),
             "offset_um": config.flatten_params.offset_um,
-            "projection_baseline": config.flatten_params.projection_baseline,
         },
         "denoise_params": {
             "channel": config.denoise_params.channel,
@@ -441,6 +440,7 @@ def save_project_config(root, config: ProjectConfig):
             "enabled": config.deconvolve_params.enabled,
             "psf_path": config.deconvolve_params.psf_path or "",
             "zoom": config.deconvolve_params.zoom,
+            "camera_offset": config.deconvolve_params.camera_offset,
             "background": config.deconvolve_params.background,
             "num_iter": config.deconvolve_params.num_iter,
         },

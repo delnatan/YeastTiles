@@ -10,8 +10,10 @@ from yeastprep.core.combined_tiff import combine_channels, read_combined_tiff
 from yeastprep.core.deconvolve import (
     DeconvolveParams,
     deconvolve_and_save,
+    effective_background,
     psf_spacing_problem,
     read_pixel_size_um,
+    rescale_to_uint16,
     run_deconvolve,
 )
 
@@ -119,9 +121,74 @@ def test_deconvolve_and_save_runs_with_a_matching_psf(tmp_path):
     result = deconvolve_and_save(
         sample,
         tmp_path / "out",
-        DeconvolveParams(enabled=True, psf_path=str(psf), num_iter=2),
+        # The fixture records no z-slice count, so no offset to scale.
+        DeconvolveParams(enabled=True, psf_path=str(psf), camera_offset=0.0, num_iter=2),
     )
     assert result.success, result.error
-    _bf, out_target, scale = read_combined_tiff(result.output_path)
+    out_bf, out_target, scale = read_combined_tiff(result.output_path)
     assert out_target.shape == (16, 16)
     assert scale[2] == pytest.approx(0.065, rel=1e-4)
+    assert out_bf.dtype == out_target.dtype == np.uint16
+    assert out_target.min() == 0 and out_target.max() == 65535
+
+
+def test_deconvolve_float_counts_past_uint16_are_rescaled_not_clipped(tmp_path):
+    from yeastprep.core.psf_calc import save_psf
+
+    psf = tmp_path / "psf.tif"
+    save_psf(psf, _gaussian_psf(), (0.1, 0.065, 0.065))
+    # Summed counts well past 65535, as 01_reduced/ now stores them.
+    target = (_synthetic_image(seed=1).astype(np.float32) + 100) * 1000
+
+    out = run_deconvolve(
+        target, DeconvolveParams(enabled=True, psf_path=str(psf), num_iter=2), 0.065, n_z=40
+    )
+    assert out.dtype == np.uint16
+    assert out.min() == 0 and out.max() == 65535
+    # Clipping would pile the bright half of the image up at 65535.
+    assert np.count_nonzero(out == 65535) == 1
+
+
+def test_rescale_to_uint16_of_a_flat_image_is_all_zero():
+    assert np.all(rescale_to_uint16(np.full((3, 3), 7.0)) == 0)
+
+
+def test_float_target_file_round_trips_uint16_brightfield(tmp_path):
+    path = tmp_path / "sample.tiff"
+    brightfield = _synthetic_image(seed=0)
+    target = _synthetic_image(seed=1).astype(np.float32) * 1000.5
+    save_tiff(path, combine_channels(brightfield, target), input_axes="CYX")
+
+    out_bf, out_target, _ = read_combined_tiff(path)
+    assert out_bf.dtype == np.uint16
+    assert np.array_equal(out_bf, brightfield)
+    assert out_target.dtype == np.float32
+    assert np.array_equal(out_target, target)
+
+
+def test_effective_background_scales_camera_offset_by_z_count():
+    params = DeconvolveParams(camera_offset=100.0, background=5.0)
+    assert effective_background(params, 41) == 4105.0
+    with pytest.raises(ValueError, match="z-slices"):
+        effective_background(params, None)
+    # No offset to scale: a file without a count is fine.
+    assert effective_background(DeconvolveParams(camera_offset=0.0, background=5.0), None) == 5.0
+
+
+def test_deconvolve_and_save_carries_z_count_forward(tmp_path):
+    from yeastprep.core.combined_tiff import read_z_count, write_combined_tiff
+    from yeastprep.core.psf_calc import save_psf
+
+    sample = tmp_path / "sample.tiff"
+    target = _synthetic_image(seed=1).astype(np.float32) + 100 * 3
+    write_combined_tiff(sample, _synthetic_image(seed=0), target, (1.0, 0.065, 0.065), n_z=3)
+    psf = tmp_path / "psf.tif"
+    save_psf(psf, _gaussian_psf(), (0.1, 0.065, 0.065))
+
+    result = deconvolve_and_save(
+        sample,
+        tmp_path / "out",
+        DeconvolveParams(enabled=True, psf_path=str(psf), camera_offset=100.0, num_iter=2),
+    )
+    assert result.success, result.error
+    assert read_z_count(result.output_path) == 3

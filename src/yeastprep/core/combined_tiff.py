@@ -32,15 +32,30 @@ def combine_channels(brightfield: np.ndarray, target: np.ndarray) -> np.ndarray:
     brightfield-only companion file instead (`write_brightfield_tiff`) --
     cellpose 4's SAM model dropped channel selection, so nothing short of
     a real single-channel file keeps it from segmenting on the target
-    channel too."""
+    channel too.
+
+    A tiff holds one dtype, so a float32 target (01_reduced/'s raw summed
+    counts -- see core/pipeline.py's `sum_project`) makes the whole file
+    float32. Brightfield is always uint16 and survives that exactly; the
+    readers below hand it back as uint16 (`_brightfield_as_uint16`)."""
     return np.stack([brightfield, target], axis=0)
+
+
+def _brightfield_as_uint16(brightfield: np.ndarray) -> np.ndarray:
+    """Undo `combine_channels`' float32 upcast of the brightfield channel
+    in a file whose target channel is float -- brightfield is integer
+    counts at every stage, so this is lossless, and segmentation plus the
+    Cellpose-GUI companion tiff keep seeing the same 16-bit image."""
+    if brightfield.dtype.kind == "f":
+        return np.clip(np.round(brightfield), 0, 65535).astype(np.uint16)
+    return brightfield
 
 
 def load_brightfield_channel(path) -> np.ndarray:
     """Read just the brightfield channel back out of a combined-channel
     tiff -- the common case: segmentation and every current display panel
     only ever need this one channel, never the target/DAPI one."""
-    return tifffile.imread(path)[BRIGHTFIELD_CHANNEL]
+    return _brightfield_as_uint16(tifffile.imread(path)[BRIGHTFIELD_CHANNEL])
 
 
 # Brightfield-only companion tiffs (see `write_brightfield_tiff`) live in
@@ -93,7 +108,43 @@ def load_combined_channels(path) -> tuple[np.ndarray, np.ndarray]:
     tile export and the denoise/deconvolve stages, unlike
     `load_brightfield_channel`."""
     arr = tifffile.imread(path)
-    return arr[BRIGHTFIELD_CHANNEL], arr[TARGET_CHANNEL]
+    return _brightfield_as_uint16(arr[BRIGHTFIELD_CHANNEL]), arr[TARGET_CHANNEL]
+
+
+# ImageJ-metadata key for how many raw z-slices were summed into the target
+# channel. The target is a raw sum (core/pipeline.py's `sum_project`), so
+# its camera-offset pedestal is offset x this count -- what deconvolution
+# needs as its background (core/deconvolve.py's `effective_background`).
+Z_COUNT_KEY = "nz"
+
+
+def write_combined_tiff(
+    path, brightfield: np.ndarray, target: np.ndarray, scale, n_z: int | None = None
+) -> None:
+    """Write a combined-channel tiff -- the same ImageJ layout pyvistra's
+    `save_tiff` writes (which has no way to pass `n_z` along), plus
+    `Z_COUNT_KEY` when `n_z` is known. Every 2D stage writes through this
+    and carries the count forward from its source (`read_z_count`)."""
+    dz, dy, dx = scale
+    combined = combine_channels(brightfield, target)
+    metadata = {"axes": "TZCYX", "spacing": dz, "unit": "um"}
+    if n_z is not None:
+        metadata[Z_COUNT_KEY] = int(n_z)
+    tifffile.imwrite(
+        path,
+        combined[np.newaxis, np.newaxis],
+        imagej=True,
+        resolution=(1.0 / dx if dx > 0 else 1.0, 1.0 / dy if dy > 0 else 1.0),
+        metadata=metadata,
+    )
+
+
+def read_z_count(path) -> int | None:
+    """How many raw z-slices `path`'s target channel sums, or None for a
+    file written before that was recorded."""
+    with tifffile.TiffFile(path) as tf:
+        value = (tf.imagej_metadata or {}).get(Z_COUNT_KEY)
+    return int(value) if value is not None else None
 
 
 def read_combined_tiff(path) -> tuple[np.ndarray, np.ndarray, tuple[float, float, float]]:
@@ -109,4 +160,4 @@ def read_combined_tiff(path) -> tuple[np.ndarray, np.ndarray, tuple[float, float
         yres = page.tags["YResolution"].value
         dx = xres[1] / xres[0] if xres[0] else 1.0
         dy = yres[1] / yres[0] if yres[0] else 1.0
-    return arr[BRIGHTFIELD_CHANNEL], arr[TARGET_CHANNEL], (dz, dy, dx)
+    return _brightfield_as_uint16(arr[BRIGHTFIELD_CHANNEL]), arr[TARGET_CHANNEL], (dz, dy, dx)

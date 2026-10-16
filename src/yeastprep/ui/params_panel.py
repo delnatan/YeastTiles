@@ -105,19 +105,6 @@ class ParamsPanel(QWidget):
         self.offset_um.valueChanged.connect(self._emit_params)
         form.addRow("Defocus offset (um)", self.offset_um)
 
-        self.projection_baseline = QDoubleSpinBox()
-        self.projection_baseline.setRange(0.0, 65535.0)
-        self.projection_baseline.setDecimals(1)
-        self.projection_baseline.setValue(defaults.projection_baseline)
-        self.projection_baseline.setToolTip(
-            "Raw counts subtracted from every z-slice of the target channel "
-            "(clipped at zero) before sum-projecting -- typically the "
-            "camera's dark offset. Applied when processing files; the "
-            "brightfield preview above doesn't use it."
-        )
-        self.projection_baseline.valueChanged.connect(self._emit_params)
-        form.addRow("Projection baseline", self.projection_baseline)
-
         self.auto_recompute = QCheckBox("Auto-recompute on change")
         self.auto_recompute.setChecked(False)
         form.addRow(self.auto_recompute)
@@ -172,7 +159,6 @@ class ParamsPanel(QWidget):
             inverted_variance_prominence=self.prominence.value(),
             poly_degree=(self.poly_degree_x.value(), self.poly_degree_y.value()),
             offset_um=self.offset_um.value(),
-            projection_baseline=self.projection_baseline.value(),
         )
 
     def set_params(self, params: FlattenFieldParams):
@@ -183,7 +169,6 @@ class ParamsPanel(QWidget):
         self.poly_degree_x.setValue(params.poly_degree[0])
         self.poly_degree_y.setValue(params.poly_degree[1])
         self.offset_um.setValue(params.offset_um)
-        self.projection_baseline.setValue(params.projection_baseline)
         self._emitting = False
 
     def channels(self) -> ChannelSelection:

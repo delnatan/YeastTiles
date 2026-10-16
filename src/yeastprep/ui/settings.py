@@ -63,9 +63,6 @@ def get_default_params() -> FlattenFieldParams:
             int(s.value("poly_degree_y", 2)),
         ),
         offset_um=float(s.value("offset_um", FlattenFieldParams().offset_um)),
-        projection_baseline=float(
-            s.value("projection_baseline", FlattenFieldParams().projection_baseline)
-        ),
     )
     s.endGroup()
     return params
@@ -80,7 +77,6 @@ def set_default_params(params: FlattenFieldParams):
     s.setValue("poly_degree_x", params.poly_degree[0])
     s.setValue("poly_degree_y", params.poly_degree[1])
     s.setValue("offset_um", params.offset_um)
-    s.setValue("projection_baseline", params.projection_baseline)
     s.endGroup()
 
 
@@ -178,6 +174,7 @@ def get_default_deconvolve_params() -> DeconvolveParams:
         enabled=_as_bool(s.value("enabled", defaults.enabled)),
         psf_path=s.value("psf_path", defaults.psf_path) or None,
         zoom=float(s.value("zoom", defaults.zoom)),
+        camera_offset=float(s.value("camera_offset", defaults.camera_offset)),
         background=float(s.value("background", defaults.background)),
         num_iter=int(s.value("num_iter", defaults.num_iter)),
     )
@@ -191,6 +188,7 @@ def set_default_deconvolve_params(params: DeconvolveParams):
     s.setValue("enabled", params.enabled)
     s.setValue("psf_path", params.psf_path or "")
     s.setValue("zoom", params.zoom)
+    s.setValue("camera_offset", params.camera_offset)
     s.setValue("background", params.background)
     s.setValue("num_iter", params.num_iter)
     s.endGroup()

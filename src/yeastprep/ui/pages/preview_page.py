@@ -135,7 +135,9 @@ class PreviewPage(QWidget):
                 channel_idx,
                 _LABEL_BY_CHANNEL[channel_idx],
                 self.canvas.display,
-                clim_bounds=(0.0, 65535.0),
+                # Past uint16: 01_reduced/'s target channel is float32
+                # summed counts (core/pipeline.py's `sum_project`).
+                clim_bounds=(0.0, 1e9),
             )
             self._channel_rows.append(row)
             self.controls_layout.insertWidget(self.controls_layout.count() - 1, row)

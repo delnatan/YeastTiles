@@ -8,9 +8,8 @@ from pathlib import Path
 
 import numpy as np
 import tifffile
-from pyvistra.io import save_tiff
 
-from .combined_tiff import combine_channels, read_combined_tiff
+from .combined_tiff import read_combined_tiff, read_z_count, write_combined_tiff
 from .deconvolution import deconvolve
 
 
@@ -19,6 +18,11 @@ class DeconvolveParams:
     enabled: bool = False
     psf_path: str | None = None
     zoom: float = 1.0
+    # Raw counts per z-slice (the camera's dark offset). The target channel
+    # is a raw z-sum, so the solver's background is this x the file's
+    # slice count, plus `background` -- see `effective_background`.
+    camera_offset: float = 100.0
+    # Any further flat background, in summed counts.
     background: float = 0.0
     num_iter: int = 50
 
@@ -74,19 +78,42 @@ def psf_spacing_problem(
     )
 
 
+def effective_background(params: DeconvolveParams, n_z: int | None) -> float:
+    """The solver's background for a target channel summed over `n_z` raw
+    z-slices: the camera offset contributes once per slice. Raises when
+    there's an offset to account for but no slice count (a file reduced
+    before the count was recorded)."""
+    if not params.camera_offset:
+        return params.background
+    if n_z is None:
+        raise ValueError(
+            "This file doesn't record how many z-slices its target channel "
+            "sums, so the camera offset can't be scaled to it. Re-run Data "
+            "Reduction, or set the camera offset to 0."
+        )
+    return params.background + params.camera_offset * n_z
+
+
 def run_deconvolve(
-    target: np.ndarray, params: DeconvolveParams, pixel_size_um: float | None = None
+    target: np.ndarray,
+    params: DeconvolveParams,
+    pixel_size_um: float | None = None,
+    n_z: int | None = None,
 ) -> np.ndarray:
     """Deconvolve the target channel only -- brightfield has no PSF model
-    here (see design.md). Casts the result back to uint16 so
-    03_deconvolved/ stays a consistent 16-bit drop-in replacement for
-    upstream stages, matching the project's "16-bit for 2D intermediates"
-    convention (deconvolution runs internally in float32, per
-    core/deconvolution/model.py).
+    here (see design.md). The input is float32 summed counts (see
+    core/pipeline.py's `sum_project`), deconvolved in float32 (per
+    core/deconvolution/model.py), and only then min-max rescaled onto the
+    full uint16 range (`rescale_to_uint16`) -- so sharpened peaks brighter
+    than anything in the input aren't clipped, and dim structure isn't
+    rounded away before deconvolution has seen it. Per FOV, so
+    intensities aren't comparable across FOVs.
 
     `pixel_size_um` is the image's lateral pixel size; when both it and the
     PSF file's spacing are known, a mismatch raises ValueError rather than
-    deconvolving with a wrongly-sized PSF."""
+    deconvolving with a wrongly-sized PSF. `n_z` is the number of raw
+    z-slices summed into `target` (`read_z_count`), for
+    `effective_background`."""
     if not params.enabled:
         return target
     if not params.psf_path:
@@ -96,16 +123,27 @@ def run_deconvolve(
     )
     if problem:
         raise ValueError(problem)
+    background = effective_background(params, n_z)
     psf = load_psf(params.psf_path)
     result = deconvolve(
         target,
         psf,
         zoom=params.zoom,
-        background=params.background,
+        background=background,
         num_iter=params.num_iter,
     )
-    restored = result.restored.detach().cpu().numpy()
-    return np.clip(restored, 0, 65535).astype(np.uint16)
+    return rescale_to_uint16(result.restored.detach().cpu().numpy())
+
+
+def rescale_to_uint16(image: np.ndarray) -> np.ndarray:
+    """Min-max rescale onto the full uint16 range; all zeros for a flat
+    image."""
+    image = np.asarray(image, dtype=np.float64)
+    lo, hi = image.min(), image.max()
+    if hi <= lo:
+        return np.zeros(image.shape, dtype=np.uint16)
+    scaled = (image - lo) * (np.iinfo(np.uint16).max / (hi - lo))
+    return np.round(scaled).astype(np.uint16)
 
 
 @dataclass
@@ -131,11 +169,11 @@ def deconvolve_and_save(
         outdir.mkdir(parents=True, exist_ok=True)
 
         brightfield, target, scale = read_combined_tiff(path)
-        target = run_deconvolve(target, params, read_pixel_size_um(path))
-        combined = combine_channels(brightfield, target)
+        n_z = read_z_count(path)
+        target = run_deconvolve(target, params, read_pixel_size_um(path), n_z)
 
         output_path = outdir / f"{path.stem}.tiff"
-        save_tiff(output_path, combined, scale=scale, input_axes="CYX")
+        write_combined_tiff(output_path, brightfield, target, scale, n_z=n_z)
 
         return DeconvolveProcessResult(path=path, success=True, output_path=output_path)
     except Exception as exc:
