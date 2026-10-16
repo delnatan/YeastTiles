@@ -1,6 +1,6 @@
 """Diagnostics for a VICReg backbone's embeddings, used by the Classify
 Tiles page's "Explore Embeddings" group: `extract_embeddings` runs the
-frozen backbone, `tsne_2d` lays the result out for a scatter plot, and
+frozen backbone, `umap_2d` lays the result out for a scatter plot, and
 `knn_accuracy` scores how well the annotated categories separate --
 gradient-free, so it can't overfit a rare category with only a handful of
 examples. If they don't separate, no amount of classifier-head cleverness
@@ -30,35 +30,49 @@ def extract_embeddings(paths, backbone, device, batch_size=64):
     return torch.cat(embeddings, dim=0).numpy()
 
 
-def tsne_2d(embeddings, perplexity=30.0, seed=0):
-    """Nonlinear, neighborhood-preserving 2D projection of `embeddings`
-    (N, D) via scikit-learn's t-SNE -- unlike a linear projection like PCA,
-    a match for what `knn_accuracy` (also a local-neighborhood notion of
-    separability) is actually measuring: two well-separated clusters in
-    high-dim space can land on top of each other after a linear projection
-    if the separating direction isn't one of the top-2 highest-variance
-    ones, even though a nonlinear method would show them cleanly apart.
+UMAP_METRICS = ("euclidean", "cosine", "correlation", "manhattan")
 
-    `perplexity` is clamped below `len(embeddings)` (scikit-learn requires
-    it) and roughly to `len(embeddings) // 4`, so a small annotated pool
-    doesn't force an oversized perplexity relative to its own size --
-    t-SNE gets unreliable/collapses points together long before hitting
-    sklearn's hard error. `seed` fixes the (otherwise stochastic) layout
-    so repeated calls on the same embeddings are reproducible, though the
-    layout still isn't comparable run-to-run -- distances between clusters,
-    and cluster sizes, aren't meaningful in a t-SNE plot, only which points
-    cluster together."""
-    from sklearn.manifold import TSNE
+
+def umap_2d(embeddings, n_neighbors=15, min_dist=0.1, metric="euclidean", seed=0):
+    """Nonlinear, neighborhood-preserving 2D projection of `embeddings`
+    (N, D) via UMAP -- unlike a linear projection like PCA, a match for
+    what `knn_accuracy` (also a local-neighborhood notion of separability)
+    is actually measuring: two well-separated clusters in high-dim space
+    can land on top of each other after a linear projection if the
+    separating direction isn't one of the top-2 highest-variance ones.
+    Much faster than t-SNE on a large pool, and keeps more of the global
+    layout (which clusters sit near which).
+
+    `n_neighbors` trades local detail (small) for global structure
+    (large); `min_dist` is how tightly points may pack within a cluster.
+    `n_neighbors` is clamped below `len(embeddings)`, so a small annotated
+    pool doesn't need a hand-picked value to run at all. `seed` fixes the
+    (otherwise stochastic) layout so repeated calls on the same embeddings
+    are reproducible -- at the cost of UMAP running single-threaded --
+    or None for a faster, parallel, non-reproducible run. Cluster sizes
+    and gaps between far-apart clusters still aren't quantitatively
+    meaningful, only which points group together."""
+    import warnings
+
+    import umap
 
     n = len(embeddings)
-    effective_perplexity = max(1.0, min(perplexity, (n - 1) / 3, n // 4))
-    tsne = TSNE(
-        n_components=2,
-        perplexity=effective_perplexity,
-        random_state=seed,
-        init="pca",
-    )
-    return tsne.fit_transform(embeddings)
+    if n < 3:
+        raise ValueError("UMAP needs at least 3 points to lay out.")
+    with warnings.catch_warnings():
+        # "n_jobs value 1 overridden to 1 by setting random_state" -- the
+        # documented cost of a fixed seed, not something to act on.
+        warnings.filterwarnings("ignore", message=".*n_jobs.*", category=UserWarning)
+        reducer = umap.UMAP(
+            n_components=2,
+            n_neighbors=max(2, min(int(n_neighbors), n - 1)),
+            min_dist=min_dist,
+            metric=metric,
+            random_state=seed,
+            # Spectral init needs more points than a tiny pool has.
+            init="spectral" if n > 10 else "random",
+        )
+        return reducer.fit_transform(np.asarray(embeddings, dtype=np.float32))
 
 
 def knn_accuracy(embeddings, labels, k=5, val_frac=0.2, seed=0):

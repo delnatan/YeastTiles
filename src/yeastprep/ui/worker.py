@@ -7,8 +7,8 @@ recompute per tick). `FocusPipelineWorker` caches the expensive Stage A
 cheap Stages B-D (peak-finding, poly fit, resample), keyed on whichever
 inputs actually changed.
 
-`BatchProcessWorker` is unrelated and simpler: no caching needed, just
-iterate files and call `core.pipeline.process_and_save`.
+`BatchWorker` and its per-stage subclasses are unrelated and simpler: no
+caching needed, just iterate files and call that stage's `*_and_save`.
 
 Structural reference (not API-identical, since pyvistra's ZProjectionWorker
 is coupled to its own buffer/viewer types): pyvistra/widgets/z_projection_dialog.py's
@@ -133,6 +133,18 @@ class DebouncedController(QObject):
 
     def latest_request_id(self) -> int:
         return self._request_id
+
+    def invalidate(self):
+        """Drop any pending (debounced) request and mark every in-flight
+        one stale, so its result fails the page's `latest_request_id()`
+        check -- for when the page switches to showing something this
+        controller didn't produce (a different file, or a saved output).
+        Also forgets the dedupe key, so re-requesting the same input
+        afterwards isn't skipped as unchanged."""
+        self._debounce_timer.stop()
+        self._pending = None
+        self._last_submitted_key = None
+        self._request_id += 1
 
     def shutdown(self):
         self._thread.quit()
@@ -289,12 +301,60 @@ class PipelineController(DebouncedController):
         super().recompute_now(path, channels, params)
 
 
-class BatchProcessWorker(QObject):
+class BatchWorker(QObject):
+    """Shared shape of every stage's batch run: iterate `paths`, call
+    `_process(path)` (one stage's `*_and_save`, which already catches its
+    own per-file errors), and report each result. Lives on a QThread the
+    page owns, started via `thread.started -> run`.
+
+    `finished` always fires, even when the run dies on something no
+    per-file catch covers (a model that won't load, an index that can't be
+    written) -- the page's cleanup (re-enabling the button, stopping the
+    thread) hangs off it, so a run that skipped it would leave the page
+    stuck "running". Such failures are reported via `error` first."""
+
     progress = Signal(int, int, str)  # done, total, current_name
-    file_result = Signal(object)  # ProcessResult
+    file_result = Signal(object)  # the stage's per-file result dataclass
+    error = Signal(str)  # a failure that stopped the whole run
     finished = Signal()
     cancelled = Signal()
 
+    def __init__(self, paths: list[Path]):
+        super().__init__()
+        self._paths = list(paths)
+        self._cancel_requested = False
+
+    @property
+    def total(self) -> int:
+        return len(self._paths)
+
+    def cancel(self):
+        self._cancel_requested = True
+
+    def _setup(self):
+        """Once-per-run preparation (e.g. loading a model), before any file."""
+
+    def _process(self, path: Path):
+        raise NotImplementedError
+
+    def run(self):
+        try:
+            self._setup()
+            total = len(self._paths)
+            for done, path in enumerate(self._paths, start=1):
+                if self._cancel_requested:
+                    self.cancelled.emit()
+                    return
+                self.progress.emit(done - 1, total, Path(path).name)
+                self.file_result.emit(self._process(path))
+                self.progress.emit(done, total, Path(path).name)
+        except Exception as exc:
+            self.error.emit(f"{type(exc).__name__}: {exc}")
+        finally:
+            self.finished.emit()
+
+
+class BatchProcessWorker(BatchWorker):
     def __init__(
         self,
         paths: list[Path],
@@ -302,29 +362,13 @@ class BatchProcessWorker(QObject):
         params: FlattenFieldParams,
         channels: ChannelSelection,
     ):
-        super().__init__()
-        self._paths = list(paths)
+        super().__init__(paths)
         self._outdir = outdir
         self._params = params
         self._channels = channels
-        self._cancel_requested = False
 
-    def cancel(self):
-        self._cancel_requested = True
-
-    def run(self):
-        total = len(self._paths)
-        for done, path in enumerate(self._paths, start=1):
-            if self._cancel_requested:
-                self.cancelled.emit()
-                return
-            self.progress.emit(done - 1, total, Path(path).name)
-            result: ProcessResult = process_and_save(
-                path, self._outdir, self._params, self._channels
-            )
-            self.file_result.emit(result)
-            self.progress.emit(done, total, Path(path).name)
-        self.finished.emit()
+    def _process(self, path) -> ProcessResult:
+        return process_and_save(path, self._outdir, self._params, self._channels)
 
 
 @dataclass
@@ -375,37 +419,20 @@ class SegmentationController(DebouncedController):
         super().recompute_now(focal_slice, source_id, params)
 
 
-class SegmentationBatchWorker(QObject):
-    """Batch counterpart to BatchProcessWorker: segments every focal-slice
-    tiff already saved by stage 1, writing cellpose's native `_seg.npy`
-    next to each one."""
-
-    progress = Signal(int, int, str)  # done, total, current_name
-    file_result = Signal(object)  # SegmentProcessResult
-    finished = Signal()
-    cancelled = Signal()
+class SegmentationBatchWorker(BatchWorker):
+    """Segments every focal-slice tiff already saved by stage 1, writing
+    cellpose's native `_seg.npy` next to each one."""
 
     def __init__(self, paths: list[Path], params: SegmentationParams):
-        super().__init__()
-        self._paths = list(paths)
+        super().__init__(paths)
         self._params = params
-        self._cancel_requested = False
+        self._model = None
 
-    def cancel(self):
-        self._cancel_requested = True
+    def _setup(self):
+        self._model = get_model(self._params.model_path)
 
-    def run(self):
-        model = get_model(self._params.model_path)
-        total = len(self._paths)
-        for done, path in enumerate(self._paths, start=1):
-            if self._cancel_requested:
-                self.cancelled.emit()
-                return
-            self.progress.emit(done - 1, total, Path(path).name)
-            result: SegmentProcessResult = segment_and_save(path, model, self._params)
-            self.file_result.emit(result)
-            self.progress.emit(done, total, Path(path).name)
-        self.finished.emit()
+    def _process(self, path) -> SegmentProcessResult:
+        return segment_and_save(path, self._model, self._params)
 
 
 @dataclass
@@ -440,37 +467,17 @@ class DenoiseController(DebouncedController):
         super().recompute_now(image, source_id, params)
 
 
-class DenoiseBatchWorker(QObject):
-    """Batch counterpart to BatchProcessWorker: denoises every
-    combined-channel tiff already saved upstream, writing into `outdir`
-    (02_denoised/)."""
-
-    progress = Signal(int, int, str)  # done, total, current_name
-    file_result = Signal(object)  # DenoiseProcessResult
-    finished = Signal()
-    cancelled = Signal()
+class DenoiseBatchWorker(BatchWorker):
+    """Denoises every combined-channel tiff already saved upstream, writing
+    into `outdir` (02_denoised/)."""
 
     def __init__(self, paths: list[Path], outdir: Path, params: DenoiseParams):
-        super().__init__()
-        self._paths = list(paths)
+        super().__init__(paths)
         self._outdir = outdir
         self._params = params
-        self._cancel_requested = False
 
-    def cancel(self):
-        self._cancel_requested = True
-
-    def run(self):
-        total = len(self._paths)
-        for done, path in enumerate(self._paths, start=1):
-            if self._cancel_requested:
-                self.cancelled.emit()
-                return
-            self.progress.emit(done - 1, total, Path(path).name)
-            result: DenoiseProcessResult = denoise_and_save(path, self._outdir, self._params)
-            self.file_result.emit(result)
-            self.progress.emit(done, total, Path(path).name)
-        self.finished.emit()
+    def _process(self, path) -> DenoiseProcessResult:
+        return denoise_and_save(path, self._outdir, self._params)
 
 
 @dataclass
@@ -505,77 +512,37 @@ class DeconvolveController(DebouncedController):
         super().recompute_now(target, source_id, params)
 
 
-class DeconvolveBatchWorker(QObject):
-    """Batch counterpart to BatchProcessWorker: deconvolves every
-    combined-channel tiff already saved upstream (typically 02_denoised/ if
-    that stage ran, else 01_reduced/), writing into `outdir`
-    (03_deconvolved/)."""
-
-    progress = Signal(int, int, str)  # done, total, current_name
-    file_result = Signal(object)  # DeconvolveProcessResult
-    finished = Signal()
-    cancelled = Signal()
+class DeconvolveBatchWorker(BatchWorker):
+    """Deconvolves every combined-channel tiff already saved upstream
+    (typically 02_denoised/ if that stage ran, else 01_reduced/), writing
+    into `outdir` (03_deconvolved/)."""
 
     def __init__(self, paths: list[Path], outdir: Path, params: DeconvolveParams):
-        super().__init__()
-        self._paths = list(paths)
+        super().__init__(paths)
         self._outdir = outdir
         self._params = params
-        self._cancel_requested = False
 
-    def cancel(self):
-        self._cancel_requested = True
-
-    def run(self):
-        total = len(self._paths)
-        for done, path in enumerate(self._paths, start=1):
-            if self._cancel_requested:
-                self.cancelled.emit()
-                return
-            self.progress.emit(done - 1, total, Path(path).name)
-            result: DeconvolveProcessResult = deconvolve_and_save(
-                path, self._outdir, self._params
-            )
-            self.file_result.emit(result)
-            self.progress.emit(done, total, Path(path).name)
-        self.finished.emit()
+    def _process(self, path) -> DeconvolveProcessResult:
+        return deconvolve_and_save(path, self._outdir, self._params)
 
 
-class TileBatchWorker(QObject):
-    """Batch counterpart to SegmentationBatchWorker: crops every cell out
-    of each already-segmented tiff's saved masks, writing one `.tiles`
-    container per FOV under `out_dir` and appending each file's rows to that folder's running
-    tile index (core.tiles.append_tile_index) as it goes -- so a run that's
-    cancelled partway still leaves a usable, consistent index."""
-
-    progress = Signal(int, int, str)  # done, total, current_name
-    file_result = Signal(object)  # TileExportResult
-    finished = Signal()
-    cancelled = Signal()
+class TileBatchWorker(BatchWorker):
+    """Crops every cell out of each already-segmented tiff's saved masks,
+    writing one `.tiles` container per FOV under `out_dir` and appending
+    each file's rows to that folder's running tile index
+    (core.tiles.append_tile_index) as it goes -- so a run that's cancelled
+    partway still leaves a usable, consistent index."""
 
     def __init__(self, paths: list[Path], out_dir: Path, params: TileParams):
-        super().__init__()
-        self._paths = list(paths)
+        super().__init__(paths)
         self._out_dir = out_dir
         self._params = params
-        self._cancel_requested = False
 
-    def cancel(self):
-        self._cancel_requested = True
-
-    def run(self):
-        total = len(self._paths)
-        for done, path in enumerate(self._paths, start=1):
-            if self._cancel_requested:
-                self.cancelled.emit()
-                return
-            self.progress.emit(done - 1, total, Path(path).name)
-            result: TileExportResult = export_tiles(path, self._out_dir, self._params)
-            if result.success and result.records is not None:
-                append_tile_index(self._out_dir, result.records)
-            self.file_result.emit(result)
-            self.progress.emit(done, total, Path(path).name)
-        self.finished.emit()
+    def _process(self, path) -> TileExportResult:
+        result = export_tiles(path, self._out_dir, self._params)
+        if result.success and result.records is not None:
+            append_tile_index(self._out_dir, result.records, fov_ids=[Path(path).stem])
+        return result
 
 
 def _release_device_cache(device) -> None:

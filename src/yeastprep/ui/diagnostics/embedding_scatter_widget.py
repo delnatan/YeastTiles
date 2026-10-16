@@ -1,7 +1,7 @@
-"""t-SNE embedding scatter with lasso-select, for the Classify Tiles page's
+"""UMAP embedding scatter with lasso-select, for the Classify Tiles page's
 "Explore Embeddings" group.
 
-Populated on demand via `tileclass.training.embeddings.tsne_2d`/
+Populated on demand via `tileclass.training.embeddings.umap_2d`/
 `knn_accuracy`, with an optional pool of *unlabeled* points (see
 `core.classify.sample_unlabeled`) rendered in a fixed neutral color/marker
 outside the per-category color cycle -- still selectable via lasso, so an
@@ -55,7 +55,7 @@ class EmbeddingScatterWidget(QWidget):
     def show_embedding_scatter(
         self, xy, labels, paths: list[str] | None = None, knn_acc: float | None = None
     ) -> None:
-        """`xy`: (N, 2) array from `tileclass.training.embeddings.tsne_2d`.
+        """`xy`: (N, 2) array from `tileclass.training.embeddings.umap_2d`.
         `labels`: length-N category names, colored by matplotlib's default
         cycle -- except `UNLABELED_LABEL`, always drawn last in a fixed
         neutral gray outside that cycle, so an unlabeled sample never steals
@@ -66,11 +66,11 @@ class EmbeddingScatterWidget(QWidget):
         unlabeled point sitting inside a labeled cluster) can be checked
         against its actual image, not just its label. `knn_acc`: optional
         `knn_accuracy` result (computed over confirmed/labeled points only),
-        shown in the title as a quick separability readout -- t-SNE and kNN
+        shown in the title as a quick separability readout -- UMAP and kNN
         are both local-neighborhood notions of separability, so the plot and
-        the number tell a consistent story (see `tsne_2d`'s docstring for
+        the number tell a consistent story (see `umap_2d`'s docstring for
         why this replaced a PCA projection). Axes are unitless/unlabeled by
-        design: unlike PCA's PC1/PC2, t-SNE coordinates and inter-cluster
+        design: unlike PCA's PC1/PC2, UMAP coordinates and inter-cluster
         distances aren't meaningful on their own -- only which points
         cluster together is."""
         self.ax.clear()
@@ -93,7 +93,7 @@ class EmbeddingScatterWidget(QWidget):
             )
         self.ax.set_xticks([])
         self.ax.set_yticks([])
-        title = "Backbone embeddings (t-SNE)"
+        title = "Backbone embeddings (UMAP)"
         if knn_acc is not None:
             title += f"  --  kNN accuracy: {knn_acc:.2f}"
         self.ax.set_title(title)

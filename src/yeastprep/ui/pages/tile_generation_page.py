@@ -9,7 +9,7 @@ previous one) on the active source stage.
 
 from pathlib import Path
 
-from qtpy.QtCore import QThread, Signal
+from qtpy.QtCore import Signal
 from qtpy.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -21,11 +21,12 @@ from qtpy.QtWidgets import (
 
 from yeastprep.core import project as project_core
 from yeastprep.core.combined_tiff import load_brightfield_channel
+from yeastprep.core.fs_status import list_visible
 from yeastprep.core.segmentation import load_saved_masks, seg_npy_path
 from yeastprep.core.tiles import TileParams
 
 from .. import settings
-from ..batch_progress_bar import BatchProgressBar
+from ..common.batch_runner import BatchRunner
 from ..common.preview_source_label import PreviewSourceLabel
 from ..diagnostics.tile_generation_preview_panel import TileGenerationPreviewPanel
 from ..project_tree_panel import ProjectTreePanel
@@ -45,8 +46,7 @@ class TileGenerationPage(QWidget):
         self._last_focal_slice = None
         self._last_masks = None
         self._source_stage = None
-        self._batch_thread = None
-        self._batch_worker = None
+        self._batch_tags_dropped = 0
 
         self._build_ui()
         self._wire_up()
@@ -89,8 +89,8 @@ class TileGenerationPage(QWidget):
         batch_row.addWidget(self.export_btn)
         self.open_tile_viewer_btn = QPushButton("Open in Tile Viewer")
         batch_row.addWidget(self.open_tile_viewer_btn)
-        self.batch_progress = BatchProgressBar()
-        batch_row.addWidget(self.batch_progress, 1)
+        self.batch_runner = BatchRunner("Batch tile export")
+        batch_row.addWidget(self.batch_runner, 1)
         right_layout.addLayout(batch_row)
 
         row.addWidget(right, 1)
@@ -114,6 +114,10 @@ class TileGenerationPage(QWidget):
         self.tile_params_panel.reset_defaults_requested.connect(self._reset_project_defaults)
 
         self.export_btn.clicked.connect(self._start_batch)
+        self.batch_runner.progress_changed.connect(self.progress_changed)
+        self.batch_runner.progress_changed.connect(self._on_batch_progress)
+        self.batch_runner.file_result.connect(self._on_batch_file_result)
+        self.batch_runner.finished.connect(self._on_batch_finished)
         self.open_tile_viewer_btn.clicked.connect(self._open_tile_viewer)
 
     # ------------------------------------------------------------------
@@ -199,8 +203,11 @@ class TileGenerationPage(QWidget):
         checked = (
             self.tree_panel.checked_paths_for_stage(source_stage) if source_stage else []
         )
-        self.export_btn.setEnabled(bool(checked))
-        if not paths_root or not source_stage:
+        running = self.batch_runner.is_running()
+        self.export_btn.setEnabled(bool(checked) and not running)
+        if running:
+            self.export_btn.setToolTip("A batch is already running -- see the progress bar.")
+        elif not paths_root or not source_stage:
             self.export_btn.setToolTip(
                 "No 2D images available yet -- run Data Reduction (and Segmentation) first."
             )
@@ -220,53 +227,53 @@ class TileGenerationPage(QWidget):
         return "Open in Tile Viewer (all FOVs)"
 
     def _start_batch(self):
+        if self.batch_runner.is_running():
+            return
         paths_root = self.tree_panel.project_paths()
         source_stage = self.tree_panel.active_2d_stage()
         paths = [Path(p) for p in self.tree_panel.checked_paths_for_stage(source_stage)]
+        if paths_root is None or not paths:
+            return
         self._source_stage = source_stage
-        outdir = paths_root.tiles
+        self._batch_tags_dropped = 0
+        self.batch_runner.start(
+            TileBatchWorker(paths, paths_root.tiles, self.tile_params_panel.params())
+        )
+        self._update_batch_button_state()
 
-        self._batch_thread = QThread()
-        self._batch_worker = TileBatchWorker(paths, outdir, self.tile_params_panel.params())
-        self._batch_worker.moveToThread(self._batch_thread)
-        self._batch_thread.started.connect(self._batch_worker.run)
-        self._batch_worker.progress.connect(self._on_batch_progress)
-        self._batch_worker.file_result.connect(self._on_batch_file_result)
-        self._batch_worker.finished.connect(self._on_batch_finished)
-
-        self.export_btn.setEnabled(False)
-        self._emit_progress(PageProgress(active=True, done=0, total=len(paths)))
-
-        self._batch_thread.start()
-
-    def _emit_progress(self, progress: PageProgress):
-        self.progress_changed.emit(progress)
-        self.batch_progress.apply(progress)
-
-    def _on_batch_progress(self, done: int, total: int, name: str):
-        self._emit_progress(PageProgress(active=True, done=done, total=total, message=name))
-        self.status_label.setText(f"Exporting tiles from {name} ({done}/{total})")
+    def _on_batch_progress(self, progress: PageProgress):
+        if progress.active and progress.message:
+            self.status_label.setText(
+                f"Exporting tiles from {progress.message} ({progress.done}/{progress.total})"
+            )
 
     def _on_batch_file_result(self, result):
-        if self._source_stage:
-            self.tree_panel.mark_result(
-                self._source_stage, result.path, result.success, result.error
-            )
+        self.tree_panel.mark_result(self._source_stage, result.path, result.success, result.error)
         if result.success:
-            self.status_label.setText(f"{result.path.name}: {result.n_cells} tile(s) exported")
+            message = f"{result.path.name}: {result.n_cells} tile(s) exported"
+            if result.tags_moved or result.tags_dropped:
+                message += (
+                    f"; {result.tags_moved} tag(s) moved to renumbered cells, "
+                    f"{result.tags_dropped} dropped (cell no longer found)"
+                )
+            self._batch_tags_dropped += result.tags_dropped
+            self.status_label.setText(message)
         else:
             self.status_label.setText(f"{result.path.name}: {result.error}")
 
-    def _on_batch_finished(self):
-        self._emit_progress(PageProgress(active=False))
+    def _on_batch_finished(self, outcome):
         self._update_batch_button_state()
-        self.status_label.setText("Batch tile export complete.")
+        message = outcome.summary()
+        if self._batch_tags_dropped:
+            message += (
+                f" {self._batch_tags_dropped} existing tag(s) were dropped because "
+                "their cells are gone from the corrected masks."
+            )
+        self.status_label.setText(message)
         self.tree_panel.refresh()
 
-        self._batch_thread.quit()
-        self._batch_thread.wait()
-        self._batch_thread = None
-        self._batch_worker = None
+    def busy_description(self) -> str | None:
+        return self.batch_runner.describe_running()
 
     def _open_tile_viewer(self):
         """Open the tile viewer on whichever FOVs are checked under the
@@ -274,23 +281,29 @@ class TileGenerationPage(QWidget):
         scope `open_tile_viewer_btn`'s label advertises. Each FOV is its own
         `05_tiles/<fov_id>.tiles` container with its own annotation file."""
         paths_root = self.tree_panel.project_paths()
-        fov_files = sorted(paths_root.tiles.glob("*.tiles")) if paths_root else []
+        fov_files = sorted(list_visible(paths_root.tiles, "*.tiles")) if paths_root else []
+        if not fov_files:
+            QMessageBox.warning(self, "yeastprep", "No tiles exported yet.")
+            return
         source_stage = self.tree_panel.active_2d_stage()
-        if source_stage and fov_files:
+        if source_stage:
             all_paths = self.tree_panel.all_paths_for_stage(source_stage)
             checked = self.tree_panel.checked_paths_for_stage(source_stage)
             if checked and len(checked) < len(all_paths):
                 wanted = {Path(p).stem for p in checked}
                 fov_files = [f for f in fov_files if f.stem in wanted]
-        if not fov_files:
-            QMessageBox.warning(self, "yeastprep", "No tiles exported yet.")
-            return
+                if not fov_files:
+                    QMessageBox.warning(
+                        self,
+                        "yeastprep",
+                        "None of the checked files have exported tiles yet -- "
+                        "export them first, or check other files.",
+                    )
+                    return
         open_tile_viewer(fov_files)
 
     # ------------------------------------------------------------------
 
     def shutdown(self):
         settings.set_default_tile_params(self.tile_params_panel.params())
-        if self._batch_thread is not None:
-            self._batch_thread.quit()
-            self._batch_thread.wait()
+        self.batch_runner.shutdown()

@@ -18,9 +18,14 @@ _OUTLINE_RGBA = (1.0, 0.85, 0.0, 1.0)  # yellow, matches cellpose GUI's outline 
 
 
 class SegmentationPreviewPanel(SingleImagePreviewPanel):
-    def set_data(self, focal_slice: np.ndarray, masks: np.ndarray):
+    def set_data(self, focal_slice: np.ndarray, masks: np.ndarray | None):
+        """`masks=None`: just the image, for a file with no segmentation yet."""
         self.set_image(focal_slice)
 
+        if masks is None:
+            self.canvas.clear_overlay_mask()
+            self.status_label.setText("Not segmented yet")
+            return
         self.canvas.set_overlay_mask(outline_rgba(masks, _OUTLINE_RGBA))
 
         n_cells = int(masks.max())

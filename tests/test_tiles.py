@@ -226,3 +226,137 @@ def test_fov_tile_status_missing_mask_dir_marks_unavailable(tmp_path):
     statuses = fov_tile_status(out_dir, mask_dir=tmp_path / "does_not_exist")
     assert statuses["fov1"].mask_available is False
     assert statuses["fov1"].up_to_date  # can't verify freshness -> assume up to date
+
+
+def _three_cell_mask(Ny=128, Nx=128) -> np.ndarray:
+    mask = np.zeros((Ny, Nx), dtype=np.int32)
+    mask[20:40, 20:40] = 1
+    mask[20:40, 80:100] = 2
+    mask[80:100, 50:70] = 3
+    return mask
+
+
+def _annotations_for(out_dir, fov_id):
+    from tileclass.data.annotations import TileAnnotations
+
+    return TileAnnotations(str(out_dir / f"{fov_id}.tiles"))
+
+
+def test_reexport_after_mask_edit_moves_tags_to_renumbered_cells(tmp_path):
+    image_path = tmp_path / "fov1.tiff"
+    _write_synthetic_combined_tiff(image_path)
+    out_dir = tmp_path / "tiles"
+    mask = _three_cell_mask()
+    _write_synthetic_masks(image_path, mask)
+    assert export_tiles(image_path, out_dir, TileParams(size=32)).success
+
+    annotations = _annotations_for(out_dir, "fov1")
+    annotations.update({"fov1_cell00001": "dead", "fov1_cell00003": "budding"})
+    annotations.update_with_confidence([("fov1_cell00002", "single", 0.8)])
+
+    # Cell 1 deleted in the Cellpose GUI: the rest get renumbered 2->1, 3->2.
+    edited = mask.copy()
+    edited[edited == 1] = 0
+    edited[edited == 2] = 1
+    edited[edited == 3] = 2
+    _write_synthetic_masks(image_path, edited)
+    result = export_tiles(image_path, out_dir, TileParams(size=32))
+
+    assert result.success, result.error
+    assert (result.tags_moved, result.tags_dropped) == (2, 1)
+    annotations = _annotations_for(out_dir, "fov1")
+    assert dict(annotations.items()) == {"fov1_cell00001": "single", "fov1_cell00002": "budding"}
+    assert annotations.confidence("fov1_cell00001") == 0.8  # still unreviewed
+    assert annotations.confidence("fov1_cell00002") is None
+    assert "fov1_cell00003\tbudding" in (out_dir / "fov1.txt.bak").read_text()
+
+
+def test_reexport_with_unchanged_masks_leaves_tags_alone(tmp_path):
+    image_path = tmp_path / "fov1.tiff"
+    _write_synthetic_combined_tiff(image_path)
+    out_dir = tmp_path / "tiles"
+    _write_synthetic_masks(image_path, _three_cell_mask())
+    export_tiles(image_path, out_dir, TileParams(size=32))
+    _annotations_for(out_dir, "fov1").update({"fov1_cell00002": "dead"})
+
+    result = export_tiles(image_path, out_dir, TileParams(size=48))
+
+    assert (result.tags_moved, result.tags_dropped) == (0, 0)
+    assert dict(_annotations_for(out_dir, "fov1").items()) == {"fov1_cell00002": "dead"}
+
+
+def test_reexport_of_container_without_centroids_matches_by_content(tmp_path):
+    image_path = tmp_path / "fov1.tiff"
+    _write_synthetic_combined_tiff(image_path)
+    out_dir = tmp_path / "tiles"
+    mask = _three_cell_mask()
+    _write_synthetic_masks(image_path, mask)
+    export_tiles(image_path, out_dir, TileParams(size=32))
+
+    # Rewrite the container the way older exports did: no centroid field.
+    container_path = out_dir / "fov1.tiles"
+    old = TileContainer(container_path)
+    write_container(
+        container_path,
+        [(cell_id, entry["label"], old.read(cell_id)) for cell_id, entry in old.entries.items()],
+    )
+    _annotations_for(out_dir, "fov1").update({"fov1_cell00002": "dead", "fov1_cell00003": "budding"})
+
+    # Cell 2 deleted: label 3 becomes 2 -- a different cell under an old label.
+    edited = mask.copy()
+    edited[edited == 2] = 0
+    edited[edited == 3] = 2
+    _write_synthetic_masks(image_path, edited)
+    result = export_tiles(image_path, out_dir, TileParams(size=32))
+
+    # Same-shaped cell 3 now sits under label 2 -- matched by its pixels,
+    # not by the label or the (identical) mask shape.
+    assert (result.tags_moved, result.tags_dropped) == (1, 1)
+    assert dict(_annotations_for(out_dir, "fov1").items()) == {"fov1_cell00002": "budding"}
+
+
+def test_append_tile_index_replaces_all_rows_of_a_reexported_fov(tmp_path):
+    out_dir = tmp_path / "tiles"
+    out_dir.mkdir()
+
+    def rows(fov_id, labels):
+        return pl.DataFrame(
+            {
+                "cell_id": [f"{fov_id}_cell{label:05d}" for label in labels],
+                "fov_id": [fov_id] * len(labels),
+                "label": labels,
+                "crop_path": [f"{fov_id}.tiles/{fov_id}_cell{label:05d}" for label in labels],
+            }
+        )
+
+    append_tile_index(out_dir, rows("fov1", [1, 2, 3, 4]))
+    append_tile_index(out_dir, rows("fov2", [1]))
+    append_tile_index(out_dir, rows("fov1", [1, 2]))
+    index = pl.read_csv(tile_index_path(out_dir))
+    assert index.filter(pl.col("fov_id") == "fov1")["label"].to_list() == [1, 2]
+    assert index.filter(pl.col("fov_id") == "fov2")["label"].to_list() == [1]
+
+    # A FOV re-exported with no cells left at all.
+    append_tile_index(out_dir, rows("fov1", []).cast({"label": pl.Int64}), fov_ids=["fov1"])
+    index = pl.read_csv(tile_index_path(out_dir))
+    assert index["fov_id"].to_list() == ["fov2"]
+
+
+def test_reexport_without_centroids_handles_a_changed_tile_size(tmp_path):
+    image_path = tmp_path / "fov1.tiff"
+    _write_synthetic_combined_tiff(image_path)
+    out_dir = tmp_path / "tiles"
+    _write_synthetic_masks(image_path, _three_cell_mask())
+    export_tiles(image_path, out_dir, TileParams(size=32))
+    container_path = out_dir / "fov1.tiles"
+    old = TileContainer(container_path)
+    write_container(
+        container_path,
+        [(cell_id, entry["label"], old.read(cell_id)) for cell_id, entry in old.entries.items()],
+    )
+    _annotations_for(out_dir, "fov1").update({"fov1_cell00001": "dead"})
+
+    result = export_tiles(image_path, out_dir, TileParams(size=48))
+
+    assert (result.tags_moved, result.tags_dropped) == (0, 0)
+    assert dict(_annotations_for(out_dir, "fov1").items()) == {"fov1_cell00001": "dead"}

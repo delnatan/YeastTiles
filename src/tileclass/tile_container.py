@@ -20,6 +20,7 @@ except the two functions that actually decode pixels
 """
 
 import json
+import os
 import re
 import struct
 import zlib
@@ -54,7 +55,9 @@ def tile_display_name(path, with_fov=True) -> str:
 
 
 def write_container(path, cells, codec="zlib", level=6) -> None:
-    """Write `cells` (an iterable of `(cell_id, label, array)`) to `path`
+    """Write `cells` (an iterable of `(cell_id, label, array)`, or
+    `(cell_id, label, array, extra)` where `extra` is a dict of additional
+    JSON-able per-cell index fields, e.g. yeastprep's `centroid`) to `path`
     as one container file. Writes to a sibling `.tmp` file and
     `Path.replace()`s over `path` so a crash mid-write never leaves a
     truncated container where a good one used to be."""
@@ -62,7 +65,8 @@ def write_container(path, cells, codec="zlib", level=6) -> None:
     entries = []
     payloads = []
     offset = 0
-    for cell_id, label, array in cells:
+    for cell_id, label, array, *rest in cells:
+        extra = rest[0] if rest else {}
         array = np.ascontiguousarray(array)
         raw = array.tobytes()
         payload = zlib.compress(raw, level) if codec == "zlib" else raw
@@ -75,6 +79,7 @@ def write_container(path, cells, codec="zlib", level=6) -> None:
                 "shape": list(array.shape),
                 "dtype": str(array.dtype),
                 "codec": codec,
+                **extra,
             }
         )
         payloads.append(payload)
@@ -89,6 +94,10 @@ def write_container(path, cells, codec="zlib", level=6) -> None:
         for payload in payloads:
             f.write(payload)
     tmp_path.replace(path)
+    # A cached index for the old file would point at the old payload
+    # offsets -- drop it so the next `get_container` re-parses.
+    with _container_cache_lock:
+        _container_cache.pop(_cache_key(path), None)
 
 
 class TileContainer:
@@ -139,8 +148,12 @@ _container_cache: dict[str, TileContainer] = {}
 _container_cache_lock = Lock()
 
 
+def _cache_key(path) -> str:
+    return os.path.normpath(os.path.abspath(path))
+
+
 def get_container(path) -> TileContainer:
-    key = str(Path(path))
+    key = _cache_key(path)
     with _container_cache_lock:
         container = _container_cache.get(key)
         if container is None:

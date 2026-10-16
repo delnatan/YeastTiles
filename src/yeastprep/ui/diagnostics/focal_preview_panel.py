@@ -31,3 +31,9 @@ class FocalPreviewPanel(QWidget):
             self._im.set_data(focal_slice)
             self._im.set_clim(vmin, vmax)
         self.canvas.draw_idle()
+
+    def clear(self):
+        if self._im is not None:
+            self._im.remove()
+            self._im = None
+        self.canvas.draw_idle()

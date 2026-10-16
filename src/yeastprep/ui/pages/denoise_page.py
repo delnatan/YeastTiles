@@ -15,7 +15,7 @@ main_window.py) rather than owning its own folder panel.
 
 from pathlib import Path
 
-from qtpy.QtCore import QThread, Signal
+from qtpy.QtCore import Signal
 from qtpy.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
@@ -32,7 +32,7 @@ from yeastprep.core.combined_tiff import BRIGHTFIELD_CHANNEL, TARGET_CHANNEL, lo
 from yeastprep.core.denoise import DenoiseParams, find_project_checkpoint
 
 from .. import settings
-from ..batch_progress_bar import BatchProgressBar
+from ..common.batch_runner import BatchRunner
 from ..common.preview_source_label import PreviewSourceLabel
 from ..denoise_params_panel import DenoiseParamsPanel
 from ..diagnostics.denoise_preview_panel import DenoisePreviewPanel
@@ -68,8 +68,9 @@ class DenoisePage(QWidget):
         # tta/checkpoint, the old after-image is still fine to keep looking
         # at until 'Do it'".
         self._displayed_channel = None
-        self._batch_thread = None
-        self._batch_worker = None
+        self._batch_root = None
+        self._batch_channel = None
+        self._batch_succeeded_stems = []
 
         self._build_ui()
         self._wire_up()
@@ -121,8 +122,8 @@ class DenoisePage(QWidget):
         action_row = QHBoxLayout(batch_group)
         self.denoise_btn = QPushButton("Denoise && Save Selected")
         action_row.addWidget(self.denoise_btn)
-        self.batch_progress = BatchProgressBar()
-        action_row.addWidget(self.batch_progress, 1)
+        self.batch_runner = BatchRunner("Batch denoise")
+        action_row.addWidget(self.batch_runner, 1)
         right_layout.addWidget(batch_group)
 
         row.addWidget(right, 1)
@@ -150,8 +151,12 @@ class DenoisePage(QWidget):
         self.params_panel.save_defaults_requested.connect(self._save_project_defaults)
         self.params_panel.reset_defaults_requested.connect(self._reset_project_defaults)
         self.denoise_btn.clicked.connect(self._start_batch)
+        self.batch_runner.progress_changed.connect(self._on_batch_progress)
+        self.batch_runner.file_result.connect(self._on_batch_file_result)
+        self.batch_runner.finished.connect(self._on_batch_finished)
 
-        self.train_tab.progress_changed.connect(self.progress_changed)
+        self.batch_runner.progress_changed.connect(self._on_job_progress)
+        self.train_tab.progress_changed.connect(self._on_job_progress)
         self.train_tab.checkpoint_trained.connect(self.params_panel.set_checkpoint_for_channel)
         self.tree_panel.project_root_changed.connect(self.train_tab.set_project_root)
 
@@ -207,6 +212,7 @@ class DenoisePage(QWidget):
             self._load_saved_output(path)
 
     def _load_live_source(self, path: str):
+        self.controller.invalidate()  # drop any preview of the previous file
         try:
             brightfield, target = load_combined_channels(path)
         except Exception as exc:
@@ -232,6 +238,7 @@ class DenoisePage(QWidget):
         still there), after = the saved output channel -- without spending
         a live inference pass on it. Mirrors Data Reduction's
         `_try_load_saved_flatten_output`."""
+        self.controller.invalidate()  # a live preview finishing now would cover this
         paths_root = self.tree_panel.project_paths()
         source_path = paths_root.reduced / f"{Path(path).stem}.tiff" if paths_root else None
         try:
@@ -330,8 +337,11 @@ class DenoisePage(QWidget):
             if paths_root
             else []
         )
-        self.denoise_btn.setEnabled(bool(checked))
-        if paths_root is None:
+        running = self.batch_runner.is_running()
+        self.denoise_btn.setEnabled(bool(checked) and not running)
+        if running:
+            self.denoise_btn.setToolTip("A batch is already running -- see the progress bar.")
+        elif paths_root is None:
             self.denoise_btn.setToolTip("Open a project first.")
         elif not checked:
             self.denoise_btn.setToolTip(
@@ -342,36 +352,39 @@ class DenoisePage(QWidget):
             self.denoise_btn.setToolTip("")
 
     def _start_batch(self):
+        if self.batch_runner.is_running():
+            return
         paths_root = self.tree_panel.project_paths()
         paths = [
             Path(p)
             for p in self.tree_panel.checked_paths_for_stage(project_core.STAGE_REDUCED)
         ]
-        outdir = paths_root.denoised
+        if paths_root is None or not paths:
+            return
 
+        self._batch_root = str(paths_root.root)
         self._batch_channel = self.params_panel.channel()
+        self._batch_channel_label = self._channel_label()
         self._batch_succeeded_stems = []
+        self.batch_runner.start(
+            DenoiseBatchWorker(paths, paths_root.denoised, self.params_panel.params())
+        )
+        self._update_batch_button_state()
 
-        self._batch_thread = QThread()
-        self._batch_worker = DenoiseBatchWorker(paths, outdir, self.params_panel.params())
-        self._batch_worker.moveToThread(self._batch_thread)
-        self._batch_thread.started.connect(self._batch_worker.run)
-        self._batch_worker.progress.connect(self._on_batch_progress)
-        self._batch_worker.file_result.connect(self._on_batch_file_result)
-        self._batch_worker.finished.connect(self._on_batch_finished)
-
-        self.denoise_btn.setEnabled(False)
-        self._emit_progress(PageProgress(active=True, done=0, total=len(paths)))
-
-        self._batch_thread.start()
-
-    def _emit_progress(self, progress: PageProgress):
+    def _on_job_progress(self, progress: PageProgress):
+        """Forward to the nav chip whichever of the batch run and the
+        Training tab is active -- one finishing mustn't hide the other's
+        still-running progress."""
+        if not progress.active and self.busy_description() is not None:
+            return
         self.progress_changed.emit(progress)
-        self.batch_progress.apply(progress)
 
-    def _on_batch_progress(self, done: int, total: int, name: str):
-        self._emit_progress(PageProgress(active=True, done=done, total=total, message=name))
-        self.status_label.setText(f"Denoising {self._channel_label()}: {name} ({done}/{total})")
+    def _on_batch_progress(self, progress: PageProgress):
+        if progress.active and progress.message:
+            self.status_label.setText(
+                f"Denoising {self._batch_channel_label}: {progress.message} "
+                f"({progress.done}/{progress.total})"
+            )
 
     def _on_batch_file_result(self, result):
         self.tree_panel.mark_result(
@@ -383,35 +396,29 @@ class DenoisePage(QWidget):
         else:
             self.status_label.setText(f"{result.path.name}: {result.error}")
 
-    def _on_batch_finished(self):
-        self._emit_progress(PageProgress(active=False))
+    def _on_batch_finished(self, outcome):
         self._update_batch_button_state()
-        self.status_label.setText("Batch denoise complete.")
-
-        root = self.tree_panel.project_root()
-        if root:
-            # Only files that actually succeeded count as "this channel is
-            # now denoised" -- a failed file shouldn't get credited, or the
-            # tree's half/full-circle indicator would lie about it.
-            project_core.mark_stage_run(
-                root, project_core.STAGE_DENOISED, self._batch_succeeded_stems
-            )
-            project_core.mark_denoise_channels(
-                root, self._batch_channel, self._batch_succeeded_stems
-            )
+        self.status_label.setText(outcome.summary())
+        # Only files that actually succeeded count as "this channel is now
+        # denoised" -- a failed file shouldn't get credited, or the tree's
+        # half/full-circle indicator would lie about it.
+        project_core.mark_stage_run(
+            self._batch_root, project_core.STAGE_DENOISED, self._batch_succeeded_stems
+        )
+        project_core.mark_denoise_channels(
+            self._batch_root, self._batch_channel, self._batch_succeeded_stems
+        )
         self.tree_panel.refresh()
 
-        self._batch_thread.quit()
-        self._batch_thread.wait()
-        self._batch_thread = None
-        self._batch_worker = None
+    def busy_description(self) -> str | None:
+        running = [self.batch_runner.describe_running(), self.train_tab.busy_description()]
+        running = [r for r in running if r]
+        return "; ".join(running) or None
 
     # ------------------------------------------------------------------
 
     def shutdown(self):
         settings.set_default_denoise_params(self.params_panel.params())
         self.controller.shutdown()
-        if self._batch_thread is not None:
-            self._batch_thread.quit()
-            self._batch_thread.wait()
+        self.batch_runner.shutdown()
         self.train_tab.shutdown()

@@ -32,6 +32,9 @@ class FlattenFieldParams:
     inverted_variance_prominence: float = 100
     poly_degree: tuple[int, int] = (2, 2)
     offset_um: float = 0.7
+    # Subtracted from every z-slice of the target channel before summing,
+    # each slice clipped at zero -- see `sum_project`.
+    projection_baseline: float = 0.0
 
 
 @dataclass
@@ -105,8 +108,31 @@ def compute_focal_slice(
     )
 
 
-def sum_project(volume: LoadedVolume) -> np.ndarray:
-    return np.sum(volume.projection3d, axis=0).astype(np.uint16)
+def sum_project(volume: LoadedVolume, baseline: float = 0.0) -> np.ndarray:
+    """Sum the target channel over z, then min-max rescale it onto the full
+    uint16 range. A full-stack sum easily exceeds 65535 (a plain `astype`
+    wrapped bright nuclei around to dim ones), and absolute intensity isn't
+    meaningful downstream anyway -- the rescale just keeps the sum's
+    relative intensities, at full 16-bit precision, so deconvolution
+    output looks natural. Per FOV, so intensities aren't comparable across
+    FOVs.
+
+    `baseline` (e.g. the camera's dark offset, in raw counts) is
+    subtracted from each z-slice with the result clipped at zero, so
+    out-of-focus slices that sit at the offset add nothing to the sum
+    instead of a pedestal under the signal. The clip is what makes it do
+    anything: an unclipped constant would come straight back out in the
+    min-max rescale. It also discards the below-baseline half of the noise
+    wherever a slice sits right at the baseline, so set it at (or a little
+    below) the offset, not up into real background."""
+    summed = np.zeros(volume.projection3d.shape[1:], dtype=np.float64)
+    for plane in volume.projection3d:  # one slice at a time: no float copy of the stack
+        summed += np.maximum(plane.astype(np.float64) - baseline, 0.0)
+    lo, hi = summed.min(), summed.max()
+    if hi <= lo:
+        return np.zeros(summed.shape, dtype=np.uint16)
+    scaled = (summed - lo) * (np.iinfo(np.uint16).max / (hi - lo))
+    return np.round(scaled).astype(np.uint16)
 
 
 @dataclass
@@ -135,7 +161,7 @@ def process_and_save(
         volume = load_volume(path, channels)
         diagnostics = compute_focus_diagnostics(volume, params)
         focal_slice = compute_focal_slice(volume, diagnostics, params)
-        projected = sum_project(volume)
+        projected = sum_project(volume, params.projection_baseline)
         combined = combine_channels(focal_slice, projected)
 
         output_path = outdir / f"{path.stem}.tiff"

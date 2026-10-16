@@ -50,6 +50,8 @@ from qtpy.QtWidgets import (
     QHeaderView,
     QLabel,
     QLineEdit,
+    QMenu,
+    QMessageBox,
     QPushButton,
     QTreeWidget,
     QTreeWidgetItem,
@@ -88,6 +90,10 @@ _2D_STAGES = (
     project_core.STAGE_DENOISED,
     project_core.STAGE_DECONVOLVED,
 )
+
+# A leaf's (icon_state, seg_icon_state) from the scan, kept for the
+# right-click "check only ..." selections.
+_STATE_ROLE = Qt.UserRole + 1
 
 
 class ProjectTreePanel(QWidget):
@@ -137,7 +143,12 @@ class ProjectTreePanel(QWidget):
         self.tree.setColumnWidth(1, 20)
         self.tree.itemChanged.connect(self._on_item_changed)
         self.tree.currentItemChanged.connect(self._on_current_changed)
-        self.tree.setToolTip("Click a file to see available actions below.")
+        self.tree.setToolTip(
+            "Click a file to see available actions below. Right-click to check "
+            "or uncheck a stage's files all at once."
+        )
+        self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.tree.customContextMenuRequested.connect(self._show_context_menu)
         layout.addWidget(self.tree, 1)
 
         refresh_btn = QPushButton("Refresh")
@@ -192,16 +203,22 @@ class ProjectTreePanel(QWidget):
     def _on_project_recent_picked(self, index):
         if index <= 0:
             return
-        self.set_project_root(self.project_recent.itemText(index))
+        root = self.project_recent.itemText(index)
         self.project_recent.setCurrentIndex(0)
+        self.set_project_root(root)
 
     def _on_raw_pattern_changed(self, _pattern):
         self._persist_project_field(raw_pattern=self.raw_pattern())
         self.refresh()
 
-    def set_project_root(self, root: str):
+    def set_project_root(self, root: str) -> bool:
+        """Open `root` as the project. False (after telling the user) if
+        the folder isn't there -- typically a recent project on an
+        external drive that isn't plugged in."""
         root = str(root)
-        Path(root).mkdir(parents=True, exist_ok=True)
+        if not Path(root).is_dir():
+            self._report_missing_project(root)
+            return False
         self._root = root
         self.project_edit.setText(root)
         self.project_edit.setToolTip(root)
@@ -221,6 +238,28 @@ class ProjectTreePanel(QWidget):
 
         self.refresh()
         self.project_root_changed.emit(root)
+        return True
+
+    def _report_missing_project(self, root: str):
+        message = (
+            f"Project folder not found:\n{root}\n\n"
+            "If it's on an external or network drive, connect it and try again."
+        )
+        if root not in settings.get_recent_project_roots():
+            QMessageBox.warning(self, "yeastprep", message)
+            return
+        answer = QMessageBox.question(
+            self,
+            "yeastprep",
+            message + "\n\nRemove it from Recent projects?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer == QMessageBox.Yes:
+            settings.remove_recent_project_root(root)
+            self._refresh_recent(
+                self.project_recent, "Recent projects...", settings.get_recent_project_roots()
+            )
 
     def project_root(self) -> str:
         return self._root
@@ -417,6 +456,7 @@ class ProjectTreePanel(QWidget):
                 leaf = QTreeWidgetItem(top_item)
                 leaf.setText(0, leaf_info.display_name)
                 leaf.setData(0, Qt.UserRole, (leaf_info.kind, leaf_info.stage, leaf_info.path))
+                leaf.setData(0, _STATE_ROLE, (leaf_info.icon_state, leaf_info.seg_icon_state))
                 if leaf_info.kind == "file":
                     leaf.setFlags(leaf.flags() | Qt.ItemIsUserCheckable)
                     # Checked by default: batch actions only ever touch
@@ -498,9 +538,57 @@ class ProjectTreePanel(QWidget):
         for i in range(top_item.childCount()):
             leaf = top_item.child(i)
             if leaf.data(0, Qt.UserRole)[2] == path:
-                leaf.setIcon(0, status_icon("done" if success else "failed"))
-                leaf.setToolTip(0, error or ("Processed" if success else ""))
+                # Blocked: QTreeWidget reports an icon/tooltip change as
+                # itemChanged, which would otherwise read as a checkbox
+                # toggle (`checked_changed`) to every page.
+                self.tree.blockSignals(True)
+                try:
+                    leaf.setIcon(0, status_icon("done" if success else "failed"))
+                    leaf.setToolTip(0, error or ("Processed" if success else ""))
+                finally:
+                    self.tree.blockSignals(False)
                 return
+
+    # ------------------------------------------------------------------
+    # Bulk checking (right-click menu)
+
+    def _show_context_menu(self, pos):
+        item = self.tree.itemAt(pos)
+        if item is None:
+            return
+        top_item = item if item.parent() is None else item.parent()
+        _kind, stage, _path = top_item.data(0, Qt.UserRole)
+        leaves = [top_item.child(i) for i in range(top_item.childCount())]
+        leaves = [leaf for leaf in leaves if leaf.flags() & Qt.ItemIsUserCheckable]
+        if not leaves:
+            return
+
+        menu = QMenu(self)
+        menu.addAction("Check all", lambda: self._set_checked(stage, leaves, lambda _s: True))
+        menu.addAction("Uncheck all", lambda: self._set_checked(stage, leaves, lambda _s: False))
+        if stage == RAW_STAGE:
+            menu.addAction(
+                "Check only files not yet reduced",
+                lambda: self._set_checked(stage, leaves, lambda s: s[0] == "unprocessed"),
+            )
+        if stage == self.active_2d_stage():
+            menu.addAction(
+                "Check only files not yet segmented (or out of date)",
+                lambda: self._set_checked(stage, leaves, lambda s: s[1] != "done"),
+            )
+        menu.exec_(self.tree.viewport().mapToGlobal(pos))
+
+    def _set_checked(self, stage: str, leaves, wanted):
+        """Check each leaf for which `wanted((icon_state, seg_icon_state))`
+        is true, uncheck the rest, then announce one `checked_changed`."""
+        self.tree.blockSignals(True)
+        try:
+            for leaf in leaves:
+                state = leaf.data(0, _STATE_ROLE) or (None, None)
+                leaf.setCheckState(0, Qt.Checked if wanted(state) else Qt.Unchecked)
+        finally:
+            self.tree.blockSignals(False)
+        self.checked_changed.emit(stage)
 
     # ------------------------------------------------------------------
 

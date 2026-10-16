@@ -12,7 +12,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from qtpy.QtCore import QThread, Signal
+from qtpy.QtCore import Signal
 from qtpy.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -24,10 +24,11 @@ from qtpy.QtWidgets import (
 
 from yeastprep.core import project as project_core
 from yeastprep.core.combined_tiff import load_brightfield_channel, write_brightfield_tiff
+from yeastprep.core.fs_status import list_visible
 from yeastprep.core.segmentation import SegmentationParams, load_saved_masks, seg_npy_path
 
 from .. import settings
-from ..batch_progress_bar import BatchProgressBar
+from ..common.batch_runner import BatchRunner
 from ..common.preview_source_label import PreviewSourceLabel
 from ..diagnostics.segmentation_preview_panel import SegmentationPreviewPanel
 from ..project_tree_panel import ProjectTreePanel
@@ -46,8 +47,8 @@ class SegmentationPage(QWidget):
         self._last_focal_slice = None
         self._focal_slice_generation = 0
         self._source_stage = None
-        self._batch_thread = None
-        self._batch_worker = None
+        self._batch_root = None
+        self._batch_succeeded_stems = []
 
         self._build_ui()
         self._wire_up()
@@ -90,8 +91,8 @@ class SegmentationPage(QWidget):
         batch_row.addWidget(self.segment_btn)
         self.open_cellpose_gui_btn = QPushButton("Open Folder in Cellpose GUI")
         batch_row.addWidget(self.open_cellpose_gui_btn)
-        self.batch_progress = BatchProgressBar()
-        batch_row.addWidget(self.batch_progress, 1)
+        self.batch_runner = BatchRunner("Batch segmentation")
+        batch_row.addWidget(self.batch_runner, 1)
         right_layout.addLayout(batch_row)
 
         row.addWidget(right, 1)
@@ -123,6 +124,10 @@ class SegmentationPage(QWidget):
             self._reset_project_defaults
         )
         self.segment_btn.clicked.connect(self._start_batch)
+        self.batch_runner.progress_changed.connect(self.progress_changed)
+        self.batch_runner.progress_changed.connect(self._on_batch_progress)
+        self.batch_runner.file_result.connect(self._on_batch_file_result)
+        self.batch_runner.finished.connect(self._on_batch_finished)
         self.open_cellpose_gui_btn.clicked.connect(self._open_cellpose_gui)
 
     # ------------------------------------------------------------------
@@ -143,10 +148,15 @@ class SegmentationPage(QWidget):
     # already exists)
 
     def load_selection(self, stage: str, path: str, mode: str = "live"):
+        # A preview still running (or debounced) for the previous file
+        # would otherwise land on top of this one.
+        self.controller.invalidate()
         self.preview_source_label.set_path(path)
         try:
             image = load_brightfield_channel(path)
         except Exception as exc:
+            self._last_focal_slice = None
+            self.preview_panel.clear()
             self.status_label.setText(f"Failed to load {path}: {exc}")
             return
         self._set_current_focal_slice(image)
@@ -162,11 +172,19 @@ class SegmentationPage(QWidget):
             self.status_label.setText(f"Loaded saved segmentation ({n_cells} cells): {Path(path).name}")
             return
 
+        # Not segmented yet: show the image itself rather than leaving the
+        # previous file's image and outlines up.
+        self.preview_panel.set_data(image, None)
         if self.segmentation_params_panel.is_auto_recompute():
+            self.status_label.setText(f"Segmenting {Path(path).name}...")
             self.controller.schedule(
                 self._last_focal_slice,
                 self._focal_slice_generation,
                 self.segmentation_params_panel.params(),
+            )
+        else:
+            self.status_label.setText(
+                f"{Path(path).name}: not segmented yet. Click 'Do it' to preview."
             )
 
     def _set_current_focal_slice(self, focal_slice):
@@ -193,6 +211,7 @@ class SegmentationPage(QWidget):
         if result.request_id != self.controller.latest_request_id():
             return  # superseded by a newer request already queued
         self.preview_panel.set_data(result.focal_slice, result.result.masks)
+        self.status_label.setText("Live segmentation preview (not saved).")
 
     def _on_error(self, message: str):
         self.status_label.setText(f"Segmentation error: {message}")
@@ -225,8 +244,11 @@ class SegmentationPage(QWidget):
         checked = (
             self.tree_panel.checked_paths_for_stage(source_stage) if source_stage else []
         )
-        self.segment_btn.setEnabled(bool(checked))
-        if not source_stage:
+        running = self.batch_runner.is_running()
+        self.segment_btn.setEnabled(bool(checked) and not running)
+        if running:
+            self.segment_btn.setToolTip("A batch is already running -- see the progress bar.")
+        elif not source_stage:
             self.segment_btn.setToolTip(
                 "No 2D images available yet -- run Data Reduction (and optionally "
                 "Denoise/Deconvolve) first."
@@ -237,60 +259,42 @@ class SegmentationPage(QWidget):
             self.segment_btn.setToolTip("")
 
     def _start_batch(self):
+        if self.batch_runner.is_running():
+            return
         source_stage = self.tree_panel.active_2d_stage()
         paths = [Path(p) for p in self.tree_panel.checked_paths_for_stage(source_stage)]
+        if not source_stage or not paths:
+            return
         self._source_stage = source_stage
-        self._batch_thread = QThread()
-        self._batch_worker = SegmentationBatchWorker(
-            paths, self.segmentation_params_panel.params()
+        self._batch_root = self.tree_panel.project_root()
+        self._batch_succeeded_stems = []
+        self.batch_runner.start(
+            SegmentationBatchWorker(paths, self.segmentation_params_panel.params())
         )
-        self._batch_worker.moveToThread(self._batch_thread)
-        self._batch_thread.started.connect(self._batch_worker.run)
-        self._batch_worker.progress.connect(self._on_batch_progress)
-        self._batch_worker.file_result.connect(self._on_batch_file_result)
-        self._batch_worker.finished.connect(self._on_batch_finished)
+        self._update_batch_button_state()
 
-        self.segment_btn.setEnabled(False)
-        self._emit_progress(PageProgress(active=True, done=0, total=len(paths)))
-
-        self._batch_thread.start()
-
-    def _emit_progress(self, progress: PageProgress):
-        self.progress_changed.emit(progress)
-        self.batch_progress.apply(progress)
-
-    def _on_batch_progress(self, done: int, total: int, name: str):
-        self._emit_progress(PageProgress(active=True, done=done, total=total, message=name))
-        self.status_label.setText(f"Segmenting {name} ({done}/{total})")
+    def _on_batch_progress(self, progress: PageProgress):
+        if progress.active and progress.message:
+            self.status_label.setText(
+                f"Segmenting {progress.message} ({progress.done}/{progress.total})"
+            )
 
     def _on_batch_file_result(self, result):
-        if self._source_stage:
-            self.tree_panel.mark_result(
-                self._source_stage, result.path, result.success, result.error
-            )
+        self.tree_panel.mark_result(self._source_stage, result.path, result.success, result.error)
         if result.success:
+            self._batch_succeeded_stems.append(result.path.stem)
             self.status_label.setText(f"{result.path.name}: {result.n_cells} cells")
         else:
             self.status_label.setText(f"{result.path.name}: {result.error}")
 
-    def _on_batch_finished(self):
-        self._emit_progress(PageProgress(active=False))
+    def _on_batch_finished(self, outcome):
         self._update_batch_button_state()
-        self.status_label.setText("Batch segmentation complete.")
-
-        root = self.tree_panel.project_root()
-        if root and self._source_stage:
-            processed = [
-                Path(p).stem
-                for p in self.tree_panel.checked_paths_for_stage(self._source_stage)
-            ]
-            project_core.mark_stage_run(root, "segmentation", processed)
+        self.status_label.setText(outcome.summary())
+        project_core.mark_stage_run(self._batch_root, "segmentation", self._batch_succeeded_stems)
         self.tree_panel.refresh()
 
-        self._batch_thread.quit()
-        self._batch_thread.wait()
-        self._batch_thread = None
-        self._batch_worker = None
+    def busy_description(self) -> str | None:
+        return self.batch_runner.describe_running()
 
     def _open_cellpose_gui(self):
         source_stage = self.tree_panel.active_2d_stage()
@@ -311,7 +315,7 @@ class SegmentationPage(QWidget):
         # target channel too -- open the brightfield-only companion tiffs
         # instead (generated here if missing/stale; they live in
         # combined_tiff.CELLPOSE_GUI_SUBDIR, so this glob never sees them).
-        combined_images = sorted(folder.glob("*.tiff"))
+        combined_images = sorted(list_visible(folder, "*.tiff"))
         images = [write_brightfield_tiff(p) for p in combined_images]
         launcher = (
             "from cellpose.gui import gui\n"
@@ -328,6 +332,4 @@ class SegmentationPage(QWidget):
     def shutdown(self):
         settings.set_default_segmentation_params(self.segmentation_params_panel.params())
         self.controller.shutdown()
-        if self._batch_thread is not None:
-            self._batch_thread.quit()
-            self._batch_thread.wait()
+        self.batch_runner.shutdown()

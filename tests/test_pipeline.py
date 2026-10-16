@@ -6,6 +6,7 @@ will run against real data.
 
 import os
 import time
+from pathlib import Path
 
 import numpy as np
 import tifffile
@@ -19,6 +20,7 @@ from yeastprep.core.combined_tiff import (
 )
 from yeastprep.core.pipeline import (
     FlattenFieldParams,
+    LoadedVolume,
     compute_focal_slice,
     compute_focus_diagnostics,
     load_volume,
@@ -72,7 +74,41 @@ def test_sum_project(tmp_path):
 
     projected = sum_project(volume)
     assert projected.shape == data.shape[2:]
-    assert np.array_equal(projected, data[1].sum(axis=0).astype(np.uint16))
+    assert projected.dtype == np.uint16
+    assert projected.min() == 0
+    assert projected.max() == 65535
+    # Same ordering as the true sum: a rescale, not a reshuffle.
+    summed = data[1].sum(axis=0, dtype=np.int64).ravel()
+    assert np.all(np.diff(projected.ravel()[np.argsort(summed, kind="stable")].astype(int)) >= 0)
+
+
+def test_sum_project_rescales_sums_past_uint16_without_wrapping():
+    projection3d = np.zeros((40, 1, 3), dtype=np.uint16)
+    projection3d[:, 0, 1] = 1000  # sums to 40000
+    projection3d[:, 0, 2] = 3000  # sums to 120000 -- would wrap as uint16
+    volume = LoadedVolume(Path("x"), projection3d, projection3d, (1.0, 1.0, 1.0))
+    assert sum_project(volume).tolist() == [[0, 21845, 65535]]
+
+
+def test_sum_project_baseline_is_subtracted_per_slice_and_clipped():
+    # Two slices, camera offset 100. Pixel 0 is pure offset; pixel 1 has a
+    # below-offset noise dip in one slice and signal in the other.
+    projection3d = np.array(
+        [[[100, 50, 100]], [[100, 250, 400]]], dtype=np.uint16
+    )  # (Nz=2, Ny=1, Nx=3)
+    volume = LoadedVolume(Path("x"), projection3d, projection3d, (1.0, 1.0, 1.0))
+
+    # Raw sums 200 / 300 / 500 -> 0 / 1/3 / 1.
+    assert sum_project(volume).tolist() == [[0, 21845, 65535]]
+    # Per-slice clipped: 0 / (0 + 150) / (0 + 300) -> 0 / 1/2 / 1. Unclipped
+    # (-50 + 150) it would have been 0 / 1/3 / 1 again.
+    assert sum_project(volume, baseline=100).tolist() == [[0, 32768, 65535]]
+
+
+def test_sum_project_of_a_flat_stack_is_all_zero():
+    projection3d = np.full((5, 2, 2), 7, dtype=np.uint16)
+    volume = LoadedVolume(Path("x"), projection3d, projection3d, (1.0, 1.0, 1.0))
+    assert np.all(sum_project(volume) == 0)
 
 
 def test_process_and_save_round_trips(tmp_path):

@@ -29,8 +29,11 @@ what to install, and the rest of the window (Classifier Training, Classify
 Tiles, ...) still works -- see yeastprep/optional_deps.py.
 """
 
+from qtpy.QtCore import Qt
 from qtpy.QtWidgets import (
+    QApplication,
     QMainWindow,
+    QMessageBox,
     QSplitter,
     QStackedWidget,
     QVBoxLayout,
@@ -167,6 +170,10 @@ class YeastPrepWindow(QMainWindow):
     def _wire_up(self):
         self.breadcrumb.page_requested.connect(self._show_page)
         self.tree_panel.file_selected.connect(self._on_tree_selection)
+        # The old project's file and its actions mean nothing in the new one.
+        self.tree_panel.project_root_changed.connect(
+            lambda _root: self.selection_panel.clear_selection()
+        )
         self.selection_panel.action_triggered.connect(self._on_action_triggered)
 
         for key, page in self._pages.items():
@@ -199,10 +206,40 @@ class YeastPrepWindow(QMainWindow):
 
     # ------------------------------------------------------------------
 
+    def _running_jobs(self) -> list[str]:
+        jobs = []
+        for page in self._pages.values():
+            describe = getattr(page, "busy_description", None)
+            description = describe() if describe else None
+            if description:
+                jobs.append(description)
+        return jobs
+
     def closeEvent(self, event):
+        jobs = self._running_jobs()
+        if jobs:
+            answer = QMessageBox.question(
+                self,
+                "yeastprep",
+                "Still running:\n"
+                + "\n".join(f"  \u2022 {job}" for job in jobs)
+                + "\n\nCancel and quit? Batch runs stop after their current file and "
+                "keep what's done; training stops at its next step or epoch and "
+                "saves what it has.",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if answer != QMessageBox.Yes:
+                event.ignore()
+                return
+            # Shutting down below waits for each job to reach its stopping
+            # point, which can take a while.
+            QApplication.setOverrideCursor(Qt.WaitCursor)
         settings.save_window_geometry(self)
         settings.save_splitter_state("main_sidebar", self.main_splitter)
         for page in self._pages.values():
             page.shutdown()
         self.tree_panel.shutdown()
+        if jobs:
+            QApplication.restoreOverrideCursor()
         super().closeEvent(event)

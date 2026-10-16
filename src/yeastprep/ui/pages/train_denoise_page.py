@@ -7,8 +7,8 @@ field.
 
 Pooling legitimately spans multiple projects at once -- selection is still
 per-file though, the pool tree shows every pooled project's files (for
-whichever stage is selected) as checkable leaves, same "nothing checked
-means everything" convenience as `ProjectTreePanel.checked_paths_for_stage`,
+whichever stage is selected) as checkable leaves, checked by default and
+excluded when unchecked, like `ProjectTreePanel.checked_paths_for_stage`,
 just scoped per project instead of to one always-open project. The
 checkpoint *output* path, on the other hand, defaults into the single
 currently-open project's root (`set_project_root`, called by the embedding
@@ -22,7 +22,7 @@ from pathlib import Path
 
 import numpy as np
 import tifffile
-from qtpy.QtCore import Qt, QThread, Signal
+from qtpy.QtCore import QCoreApplication, Qt, QThread, Signal
 from qtpy.QtWidgets import (
     QComboBox,
     QFileDialog,
@@ -70,6 +70,12 @@ class TrainDenoisePage(QWidget):
         self._train_worker = None
         self._project_root: str | None = None
         self._checkpoint_path_is_default = True
+        # Channel and save path of the run in progress, fixed when it
+        # starts: the combo/field can change mid-run (changing the channel
+        # even rewrites the default path), and the checkpoint must still be
+        # saved and announced as the channel it was actually trained on.
+        self._run_channel = None
+        self._run_checkpoint_path = None
 
         self._build_ui()
         self._wire_up()
@@ -150,7 +156,7 @@ class TrainDenoisePage(QWidget):
         self.pool_tree.itemChanged.connect(self._on_pool_item_changed)
         v.addWidget(self.pool_tree)
 
-        hint = QLabel("Check individual frames to use a subset -- unchecked means use all.")
+        hint = QLabel("Every frame is used by default -- uncheck frames to leave them out.")
         hint.setWordWrap(True)
         v.addWidget(hint)
 
@@ -199,9 +205,9 @@ class TrainDenoisePage(QWidget):
             "root -- edit or Browse to save somewhere else."
         )
         row.addWidget(self.checkpoint_path_edit, 1)
-        browse_btn = QPushButton("Browse...")
-        browse_btn.clicked.connect(self._browse_checkpoint_save_path)
-        row.addWidget(browse_btn)
+        self.browse_checkpoint_btn = QPushButton("Browse...")
+        self.browse_checkpoint_btn.clicked.connect(self._browse_checkpoint_save_path)
+        row.addWidget(self.browse_checkpoint_btn)
         v.addLayout(row)
         return group
 
@@ -339,6 +345,18 @@ class TrainDenoisePage(QWidget):
         if self._train_thread is not None:
             return
 
+        checkpoint_path = self.checkpoint_path_edit.text().strip()
+        if not checkpoint_path or not Path(checkpoint_path).is_absolute():
+            # A bare filename would land in whatever directory the app was
+            # launched from -- and a blank one wasn't saved at all.
+            QMessageBox.warning(
+                self,
+                "yeastprep",
+                "Choose where to save the trained checkpoint first -- open a "
+                "project (it defaults into the project folder) or use Browse...",
+            )
+            return
+
         frames = self._gather_frames()
         if not frames:
             QMessageBox.warning(
@@ -351,6 +369,8 @@ class TrainDenoisePage(QWidget):
 
         config = self.params_panel.params()
         self._current_config = config
+        self._run_channel = self.channel_combo.currentData()
+        self._run_checkpoint_path = checkpoint_path
         self.monitor_panel.clear()
         self.monitor_panel.log(
             f"frames={len(frames)}  shape={frames[0].shape}  device={config.device or 'auto'}\n"
@@ -358,9 +378,8 @@ class TrainDenoisePage(QWidget):
             f"tile_size={config.tile_size}  tiles_per_batch={config.tiles_per_batch}  lr={config.lr}  "
             f"early_stop_patience={config.early_stop_patience or 'off'}"
         )
-        self.status_label.setText("Training...")
-        self.start_btn.setEnabled(False)
-        self.cancel_btn.setEnabled(True)
+        self.status_label.setText(f"Training... (saves to {checkpoint_path})")
+        self._set_running(True)
         total_steps = max(1, config.epochs * config.steps_per_epoch)
         self._emit_progress(PageProgress(active=True, done=0, total=total_steps))
 
@@ -403,20 +422,33 @@ class TrainDenoisePage(QWidget):
             f"{best_epoch} (best mu_mse={best_mu_mse:.4f}); using that epoch's weights"
         )
 
+    def _set_running(self, running: bool):
+        self.start_btn.setEnabled(not running)
+        self.cancel_btn.setEnabled(running)
+        for widget in (
+            self.stage_combo,
+            self.channel_combo,
+            self.checkpoint_path_edit,
+            self.browse_checkpoint_btn,
+        ):
+            widget.setEnabled(not running)
+
     def _finish(self, checkpoint, cancelled: bool):
-        path = self.checkpoint_path_edit.text().strip()
-        if path:
-            try:
-                save_checkpoint(path, checkpoint)
-                self.monitor_panel.log(f"saved checkpoint to {path}")
-                self.checkpoint_trained.emit(self.channel_combo.currentData(), path)
-            except Exception as exc:
-                self.monitor_panel.log(f"ERROR saving checkpoint: {exc}")
-        self.status_label.setText(
-            "Training stopped early -- checkpoint saved." if cancelled else "Training completed."
-        )
-        self.start_btn.setEnabled(True)
-        self.cancel_btn.setEnabled(False)
+        path = self._run_checkpoint_path
+        try:
+            save_checkpoint(path, checkpoint)
+        except Exception as exc:
+            self.monitor_panel.log(f"ERROR saving checkpoint: {exc}")
+            self.status_label.setText(f"Training finished, but saving the checkpoint failed: {exc}")
+        else:
+            self.monitor_panel.log(f"saved checkpoint to {path}")
+            self.checkpoint_trained.emit(self._run_channel, path)
+            self.status_label.setText(
+                f"Training stopped early -- checkpoint saved to {path}."
+                if cancelled
+                else f"Training completed -- checkpoint saved to {path}."
+            )
+        self._set_running(False)
         self._emit_progress(PageProgress(active=False))
         self._train_thread.quit()
         self._train_thread.wait()
@@ -432,8 +464,7 @@ class TrainDenoisePage(QWidget):
     def _on_error(self, message: str):
         self.monitor_panel.log(f"ERROR: {message}")
         self.status_label.setText(f"Training error: {message.splitlines()[0] if message else ''}")
-        self.start_btn.setEnabled(True)
-        self.cancel_btn.setEnabled(False)
+        self._set_running(False)
         self._emit_progress(PageProgress(active=False))
         self._train_thread.quit()
         self._train_thread.wait()
@@ -448,8 +479,16 @@ class TrainDenoisePage(QWidget):
 
     # ------------------------------------------------------------------
 
+    def busy_description(self) -> str | None:
+        return "Denoiser training" if self._train_thread is not None else None
+
     def shutdown(self):
-        if self._train_thread is not None:
-            self._cancel_training()
-            self._train_thread.quit()
-            self._train_thread.wait()
+        if self._train_thread is None:
+            return
+        self._cancel_training()
+        self._train_thread.quit()
+        self._train_thread.wait()
+        # The worker's cancelled/finished signal -- carrying the checkpoint
+        # -- is queued for this thread's event loop, which is about to stop;
+        # deliver it now so the checkpoint still gets saved on the way out.
+        QCoreApplication.sendPostedEvents()

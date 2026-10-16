@@ -288,6 +288,9 @@ def _flatten_params_from_dict(data: dict, defaults: FlattenFieldParams) -> Flatt
         ),
         poly_degree=tuple(data.get("poly_degree", list(defaults.poly_degree))),
         offset_um=float(data.get("offset_um", defaults.offset_um)),
+        projection_baseline=float(
+            data.get("projection_baseline", defaults.projection_baseline)
+        ),
     )
 
 
@@ -330,14 +333,21 @@ def _tile_params_from_dict(data: dict, defaults: TileParams) -> TileParams:
 
 
 def load_project_config(root) -> ProjectConfig | None:
+    """The project's saved config, or None if there isn't one -- or if the
+    file exists but can't be parsed. In that second case the next
+    `save_project_config` backs the unreadable file up before writing (see
+    there), so a caller's usual `load_project_config(root) or
+    ProjectConfig()` fallback can't silently erase it."""
     path = ProjectPaths(root).config_path
     if not path.exists():
         return None
     try:
-        data = json.loads(path.read_text())
-    except (OSError, json.JSONDecodeError):
+        return _config_from_dict(json.loads(path.read_text()))
+    except (OSError, ValueError, TypeError, KeyError, AttributeError):
         return None
 
+
+def _config_from_dict(data: dict) -> ProjectConfig:
     defaults = ProjectConfig()
 
     channels_raw = data.get("channels")
@@ -379,9 +389,31 @@ def load_project_config(root) -> ProjectConfig | None:
     )
 
 
+def _back_up_unreadable_config(path: Path):
+    """Move an existing-but-unparseable config aside (to
+    `.yeastprep_project.json.unreadable-<timestamp>`) instead of letting a
+    save overwrite it with whatever defaults the caller fell back to --
+    it's most likely a hand edit gone wrong or a half-written file, and
+    still holds every saved param and run record worth recovering."""
+    if not path.exists():
+        return
+    try:
+        _config_from_dict(json.loads(path.read_text()))
+        return
+    except (OSError, ValueError, TypeError, KeyError, AttributeError):
+        pass
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    path.replace(path.with_name(f"{path.name}.unreadable-{stamp}"))
+
+
 def save_project_config(root, config: ProjectConfig):
+    """Write `config` to the project's sidecar. Atomic (temp file +
+    rename), so a crash mid-write can't leave a truncated file behind; an
+    existing file that can't be parsed is backed up first rather than
+    overwritten (see `_back_up_unreadable_config`)."""
     path = ProjectPaths(root).config_path
     path.parent.mkdir(parents=True, exist_ok=True)
+    _back_up_unreadable_config(path)
     data = {
         "raw_pattern": config.raw_pattern,
         "channels": {
@@ -394,6 +426,7 @@ def save_project_config(root, config: ProjectConfig):
             "inverted_variance_prominence": config.flatten_params.inverted_variance_prominence,
             "poly_degree": list(config.flatten_params.poly_degree),
             "offset_um": config.flatten_params.offset_um,
+            "projection_baseline": config.flatten_params.projection_baseline,
         },
         "denoise_params": {
             "channel": config.denoise_params.channel,
@@ -429,7 +462,9 @@ def save_project_config(root, config: ProjectConfig):
             stem: sorted(channels) for stem, channels in config.denoise_channels_done.items()
         },
     }
-    path.write_text(json.dumps(data, indent=2))
+    tmp_path = path.with_name(path.name + ".tmp")
+    tmp_path.write_text(json.dumps(data, indent=2))
+    tmp_path.replace(path)
 
 
 def mark_stage_run(root, stage: str, files_processed: list[str]):

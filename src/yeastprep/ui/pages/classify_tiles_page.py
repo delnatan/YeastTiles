@@ -10,6 +10,9 @@ from pathlib import Path
 from qtpy.QtCore import QThread, Signal
 from qtpy.QtWidgets import (
     QCheckBox,
+    QComboBox,
+    QDoubleSpinBox,
+    QFormLayout,
     QFrame,
     QGroupBox,
     QHBoxLayout,
@@ -28,7 +31,12 @@ from qtpy.QtWidgets import (
 from tileclass.classifiers.device import select_device
 from tileclass.classifiers.yeast_efficientnet import YeastEfficientNetClassifier
 from tileclass.main_window import MainWindow
-from tileclass.training.embeddings import extract_embeddings, knn_accuracy, tsne_2d
+from tileclass.training.embeddings import (
+    UMAP_METRICS,
+    extract_embeddings,
+    knn_accuracy,
+    umap_2d,
+)
 from tileclass.training.vicreg import load_backbone
 
 from yeastprep.core.classify import sample_unlabeled
@@ -50,6 +58,9 @@ class ClassifyTilesPage(QWidget):
         self._inference_thread = None
         self._inference_worker = None
         self._embedding_viewer_windows: list[MainWindow] = []
+        # (embeddings, labels, paths, knn_acc) from the last Evaluate, so
+        # Re-plot can re-run just UMAP when only its settings changed.
+        self._last_embeddings = None
 
         self._build_ui()
         self._wire_up()
@@ -156,17 +167,82 @@ class ClassifyTilesPage(QWidget):
         v.addLayout(sample_row)
         self.include_unlabeled_cb.toggled.connect(self.unlabeled_sample_size.setEnabled)
 
+        v.addLayout(self._build_umap_form())
+
+        buttons = QHBoxLayout()
         self.evaluate_btn = QPushButton("Evaluate Embeddings")
         self.evaluate_btn.setToolTip(
-            "Plot a t-SNE projection of the checkpoint above's embeddings "
+            "Plot a UMAP projection of the checkpoint above's embeddings "
             "over every currently pooled confirmed tile (and, if checked, a "
             "random sample of unlabeled ones). Lasso-select points on the "
             "plot to open them in a tile viewer."
         )
         self.evaluate_btn.clicked.connect(self._evaluate_embeddings)
-        v.addWidget(self.evaluate_btn)
+        buttons.addWidget(self.evaluate_btn)
+        self.replot_btn = QPushButton("Re-plot")
+        self.replot_btn.setToolTip(
+            "Re-run only the UMAP layout on the last evaluated embeddings, "
+            "with the settings above -- no new forward pass."
+        )
+        self.replot_btn.setEnabled(False)
+        self.replot_btn.clicked.connect(self._replot_embeddings)
+        buttons.addWidget(self.replot_btn)
+        v.addLayout(buttons)
 
         return group
+
+    def _build_umap_form(self) -> QFormLayout:
+        form = QFormLayout()
+
+        self.umap_neighbors = QSpinBox()
+        self.umap_neighbors.setRange(2, 200)
+        self.umap_neighbors.setValue(15)
+        self.umap_neighbors.setToolTip(
+            "Neighborhood size: small values emphasize fine local structure, "
+            "large values the overall arrangement of clusters."
+        )
+        form.addRow("UMAP neighbors", self.umap_neighbors)
+
+        self.umap_min_dist = QDoubleSpinBox()
+        self.umap_min_dist.setRange(0.0, 0.99)
+        self.umap_min_dist.setSingleStep(0.05)
+        self.umap_min_dist.setDecimals(2)
+        self.umap_min_dist.setValue(0.1)
+        self.umap_min_dist.setToolTip(
+            "How tightly points may pack: low values give dense, well-"
+            "separated clumps; high values spread clusters out."
+        )
+        form.addRow("Min. distance", self.umap_min_dist)
+
+        self.umap_metric = QComboBox()
+        self.umap_metric.addItems(UMAP_METRICS)
+        self.umap_metric.setToolTip(
+            "Distance between embeddings. Cosine compares directions only, "
+            "often a better fit for self-supervised embeddings."
+        )
+        form.addRow("Metric", self.umap_metric)
+
+        self.umap_seed = QSpinBox()
+        self.umap_seed.setRange(-1, 99999)
+        self.umap_seed.setValue(0)
+        self.umap_seed.setSpecialValueText("random")
+        self.umap_seed.setToolTip(
+            "Fixed seed: the same layout every time (single-threaded). "
+            "'random': faster parallel run, a different layout each time."
+        )
+        form.addRow("Seed", self.umap_seed)
+
+        return form
+
+    def _umap_layout(self, embeddings):
+        seed = self.umap_seed.value()
+        return umap_2d(
+            embeddings,
+            n_neighbors=self.umap_neighbors.value(),
+            min_dist=self.umap_min_dist.value(),
+            metric=self.umap_metric.currentText(),
+            seed=None if seed < 0 else seed,
+        )
 
     # ------------------------------------------------------------------
 
@@ -216,7 +292,7 @@ class ClassifyTilesPage(QWidget):
             return
 
         self.status_label.setText("Running inference on pool...")
-        self.infer_btn.setEnabled(False)
+        self._set_inference_running(True)
 
         self._inference_worker = ClassifierInferenceWorker(pooled, classifier)
         self._inference_thread = QThread()
@@ -253,6 +329,12 @@ class ClassifyTilesPage(QWidget):
         self.inference_log.appendPlainText(f"cleared {removed} unconfirmed AI prediction(s)")
         self.annotation_analytics.refresh_from_pool()
 
+    def _set_inference_running(self, running: bool):
+        self.infer_btn.setEnabled(not running)
+        self.infer_btn.setText("Running inference..." if running else "Run Inference on Pool")
+        # Clearing predictions while inference is writing new ones would race it.
+        self.clear_predictions_btn.setEnabled(not running)
+
     def _teardown_inference_thread(self):
         self._inference_thread.quit()
         self._inference_thread.wait()
@@ -273,7 +355,7 @@ class ClassifyTilesPage(QWidget):
                 f"{result.accuracy_vs_human:.3f} ({result.n_agree_with_human}/{result.n_human_confirmed})"
             )
         self.status_label.setText("Inference complete.")
-        self.infer_btn.setEnabled(True)
+        self._set_inference_running(False)
         self._teardown_inference_thread()
         # Newly-tagged predictions just landed on disk -- refresh the
         # Annotation Analytics tab's pool-wide summary rather than leaving
@@ -284,11 +366,11 @@ class ClassifyTilesPage(QWidget):
     def _on_inference_error(self, message: str):
         self.inference_log.appendPlainText(f"inference ERROR: {message}")
         self.status_label.setText(f"Inference error: {message.splitlines()[0] if message else ''}")
-        self.infer_btn.setEnabled(True)
+        self._set_inference_running(False)
         self._teardown_inference_thread()
 
     # ------------------------------------------------------------------
-    # Explore Embeddings -- t-SNE projection of a backbone's embeddings
+    # Explore Embeddings -- UMAP projection of a backbone's embeddings
     # over the pool's confirmed tiles, optionally plus a random sample of
     # unlabeled ones (see `core.classify.sample_unlabeled`). Runs
     # synchronously on the GUI thread -- fine for confirmed tiles plus a
@@ -335,7 +417,7 @@ class ClassifyTilesPage(QWidget):
             backbone.eval()
             with torch.no_grad():
                 embeddings = extract_embeddings(paths, backbone, device)
-            xy = tsne_2d(embeddings)
+            xy = self._umap_layout(embeddings)
             n_confirmed = len(records)
             confirmed_labels = labels[:n_confirmed]
             acc = (
@@ -344,6 +426,8 @@ class ClassifyTilesPage(QWidget):
                 else None
             )
             self.embedding_scatter.show_embedding_scatter(xy, labels, paths=paths, knn_acc=acc)
+            self._last_embeddings = (embeddings, labels, paths, acc)
+            self.replot_btn.setEnabled(True)
             self.status_label.setText("Embeddings evaluated.")
         except Exception as exc:
             QMessageBox.critical(
@@ -353,6 +437,25 @@ class ClassifyTilesPage(QWidget):
         finally:
             QApplication.restoreOverrideCursor()
             self.evaluate_btn.setEnabled(True)
+
+    def _replot_embeddings(self):
+        if self._last_embeddings is None:
+            return
+        from qtpy.QtCore import Qt
+        from qtpy.QtWidgets import QApplication
+
+        embeddings, labels, paths, acc = self._last_embeddings
+        self.replot_btn.setEnabled(False)
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            xy = self._umap_layout(embeddings)
+            self.embedding_scatter.show_embedding_scatter(xy, labels, paths=paths, knn_acc=acc)
+            self.status_label.setText("Re-plotted embeddings.")
+        except Exception as exc:
+            QMessageBox.critical(self, "yeastprep", f"UMAP failed:\n\n{exc}")
+        finally:
+            QApplication.restoreOverrideCursor()
+            self.replot_btn.setEnabled(True)
 
     def _open_viewer_for_selection(self, paths: list[str]) -> None:
         """Opens tiles lasso-selected on the embedding scatter in a tile
@@ -372,6 +475,9 @@ class ClassifyTilesPage(QWidget):
         )
 
     # ------------------------------------------------------------------
+
+    def busy_description(self) -> str | None:
+        return "Inference on pool" if self._inference_thread is not None else None
 
     def shutdown(self):
         if self._inference_thread is not None:

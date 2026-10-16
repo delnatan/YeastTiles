@@ -333,6 +333,30 @@ class TileAnnotations(MutableMapping):
             self.save()
         return len(stale)
 
+    def remap(self, mapping):
+        """Move tags to new relpaths in one save: `mapping` is old relpath
+        -> new relpath, or -> None to drop that tag. Relpaths not in
+        `mapping` keep their tags, unless a mapped tag lands on one -- a
+        moved tag replaces whatever was there. Confidences move with their
+        tags (an unreviewed prediction stays unreviewed). For re-keying a
+        container's tags after its cells were re-exported under different
+        cell_ids (see yeastprep's `core/tiles.py`)."""
+        self.load()
+        moved = {}
+        for old, new in mapping.items():
+            if old not in self._categories:
+                continue
+            category = self._categories.pop(old)
+            confidence = self.confidences.pop(old, None)
+            if new is not None:
+                moved[new] = (category, confidence)
+        for new, (category, confidence) in moved.items():
+            self._categories[new] = category
+            self.confidences.pop(new, None)
+            if confidence is not None:
+                self.confidences[new] = confidence
+        self.save()
+
     def categories(self):
         """Predefined category vocabulary, if one has been set; otherwise
         the sorted list of distinct category names currently in use."""

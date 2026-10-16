@@ -88,13 +88,18 @@ class RawStackViewerPanel(QWidget):
         splitter.addWidget(right)
         splitter.setStretchFactor(0, 1)
 
-    def load_file(self, path):
+    def load_file(self, path) -> bool:
+        """Show `path`; False (with the error in the info line, and nothing
+        left over from the previous file) if it can't be read."""
         self._clear_channel_rows()
         try:
             proxy, meta = load_image(str(path))
         except Exception as exc:
+            self._proxy = None
+            self._meta = None
+            self.canvas.clear_plane()
             self.info_label.setText(f"Failed to load: {exc}")
-            return
+            return False
 
         self._proxy = proxy
         self._meta = meta
@@ -137,6 +142,10 @@ class RawStackViewerPanel(QWidget):
         self._update_slice()
         self.canvas.reset_camera()
         self.canvas.auto_contrast()
+        return True
+
+    def channels_meta(self) -> list[dict]:
+        return list((self._meta or {}).get("channels") or [])
 
     def _on_display_changed(self, idx, field):
         if field == "colormap_name":

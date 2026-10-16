@@ -10,7 +10,7 @@ PSF file this stage consumes.
 
 from pathlib import Path
 
-from qtpy.QtCore import QThread, Signal
+from qtpy.QtCore import Signal
 from qtpy.QtWidgets import (
     QComboBox,
     QGroupBox,
@@ -28,7 +28,7 @@ from yeastprep.core.combined_tiff import load_combined_channels
 from yeastprep.core.deconvolve import DeconvolveParams
 
 from .. import settings
-from ..batch_progress_bar import BatchProgressBar
+from ..common.batch_runner import BatchRunner
 from ..common.preview_source_label import PreviewSourceLabel
 from ..deconvolve_params_panel import DeconvolveParamsPanel
 from ..diagnostics.deconvolve_preview_panel import DeconvolvePreviewPanel
@@ -69,8 +69,8 @@ class DeconvolvePage(QWidget):
         self._output_target = None
         self._source_stage = None
         self._source_generation = 0
-        self._batch_thread = None
-        self._batch_worker = None
+        self._batch_root = None
+        self._batch_succeeded_stems = []
 
         self._build_ui()
         self._wire_up()
@@ -122,8 +122,8 @@ class DeconvolvePage(QWidget):
         action_row = QHBoxLayout()
         self.deconvolve_btn = QPushButton("Deconvolve && Save Selected")
         action_row.addWidget(self.deconvolve_btn)
-        self.batch_progress = BatchProgressBar()
-        action_row.addWidget(self.batch_progress, 1)
+        self.batch_runner = BatchRunner("Batch deconvolve")
+        action_row.addWidget(self.batch_runner, 1)
         right_layout.addLayout(action_row)
 
         row.addWidget(right, 1)
@@ -176,6 +176,10 @@ class DeconvolvePage(QWidget):
         self.params_panel.save_defaults_requested.connect(self._save_project_defaults)
         self.params_panel.reset_defaults_requested.connect(self._reset_project_defaults)
         self.deconvolve_btn.clicked.connect(self._start_batch)
+        self.batch_runner.progress_changed.connect(self.progress_changed)
+        self.batch_runner.progress_changed.connect(self._on_batch_progress)
+        self.batch_runner.file_result.connect(self._on_batch_file_result)
+        self.batch_runner.finished.connect(self._on_batch_finished)
 
         self.psf_calculator_panel.psf_saved.connect(self.params_panel.set_psf_path)
 
@@ -211,6 +215,7 @@ class DeconvolvePage(QWidget):
         # The old preview/target belonged to whichever stage was active
         # before -- leaving it up would look like it's still the current
         # input, so it's cleared rather than left stale.
+        self.controller.invalidate()
         self._mode = "live"
         self._last_target = None
         self._output_target = None
@@ -246,17 +251,20 @@ class DeconvolvePage(QWidget):
     # File selection -> live preview, or a saved-output inspect
 
     def load_selection(self, stage: str, path: str, mode: str):
+        # Whatever's showing next, a preview still running (or debounced)
+        # for the previous selection mustn't land on top of it.
+        self.controller.invalidate()
         self.preview_source_label.set_path(path)
         if mode == "saved":
             self._load_saved_output(path)
             return
 
-        self._mode = "live"
         try:
             _brightfield, target = load_combined_channels(path)
         except Exception as exc:
             self.status_label.setText(f"Failed to load {path}: {exc}")
             return
+        self._mode = "live"
         self._last_target = target
         self._source_generation += 1
 
@@ -358,8 +366,11 @@ class DeconvolvePage(QWidget):
         checked = (
             self.tree_panel.checked_paths_for_stage(input_stage) if input_stage else []
         )
-        self.deconvolve_btn.setEnabled(bool(checked))
-        if paths_root is None:
+        running = self.batch_runner.is_running()
+        self.deconvolve_btn.setEnabled(bool(checked) and not running)
+        if running:
+            self.deconvolve_btn.setToolTip("A batch is already running -- see the progress bar.")
+        elif paths_root is None:
             self.deconvolve_btn.setToolTip("Open a project first.")
         elif input_stage is None:
             self.deconvolve_btn.setToolTip(
@@ -371,67 +382,50 @@ class DeconvolvePage(QWidget):
             self.deconvolve_btn.setToolTip("")
 
     def _start_batch(self):
+        if self.batch_runner.is_running():
+            return
         paths_root = self.tree_panel.project_paths()
         input_stage = self._input_stage()
         paths = [Path(p) for p in self.tree_panel.checked_paths_for_stage(input_stage)]
-        outdir = paths_root.deconvolved
-
-        self._batch_thread = QThread()
-        self._batch_worker = DeconvolveBatchWorker(paths, outdir, self.params_panel.params())
-        self._batch_worker.moveToThread(self._batch_thread)
-        self._batch_thread.started.connect(self._batch_worker.run)
-        self._batch_worker.progress.connect(self._on_batch_progress)
-        self._batch_worker.file_result.connect(self._on_batch_file_result)
-        self._batch_worker.finished.connect(self._on_batch_finished)
+        if paths_root is None or not paths:
+            return
 
         self._source_stage = input_stage
-        self.deconvolve_btn.setEnabled(False)
-        self._emit_progress(PageProgress(active=True, done=0, total=len(paths)))
+        self._batch_root = str(paths_root.root)
+        self._batch_succeeded_stems = []
+        self.batch_runner.start(
+            DeconvolveBatchWorker(paths, paths_root.deconvolved, self.params_panel.params())
+        )
+        self._update_batch_button_state()
 
-        self._batch_thread.start()
-
-    def _emit_progress(self, progress: PageProgress):
-        self.progress_changed.emit(progress)
-        self.batch_progress.apply(progress)
-
-    def _on_batch_progress(self, done: int, total: int, name: str):
-        self._emit_progress(PageProgress(active=True, done=done, total=total, message=name))
-        self.status_label.setText(f"Deconvolving {name} ({done}/{total})")
+    def _on_batch_progress(self, progress: PageProgress):
+        if progress.active and progress.message:
+            self.status_label.setText(
+                f"Deconvolving {progress.message} ({progress.done}/{progress.total})"
+            )
 
     def _on_batch_file_result(self, result):
-        if self._source_stage:
-            self.tree_panel.mark_result(
-                self._source_stage, result.path, result.success, result.error
-            )
+        self.tree_panel.mark_result(self._source_stage, result.path, result.success, result.error)
         if result.success:
+            self._batch_succeeded_stems.append(result.path.stem)
             self.status_label.setText(f"{result.path.name}: saved to {result.output_path}")
         else:
             self.status_label.setText(f"{result.path.name}: {result.error}")
 
-    def _on_batch_finished(self):
-        self._emit_progress(PageProgress(active=False))
+    def _on_batch_finished(self, outcome):
         self._update_batch_button_state()
-        self.status_label.setText("Batch deconvolve complete.")
-
-        root = self.tree_panel.project_root()
-        if root and self._source_stage:
-            processed = [
-                Path(p).stem
-                for p in self.tree_panel.checked_paths_for_stage(self._source_stage)
-            ]
-            project_core.mark_stage_run(root, project_core.STAGE_DECONVOLVED, processed)
+        self.status_label.setText(outcome.summary())
+        project_core.mark_stage_run(
+            self._batch_root, project_core.STAGE_DECONVOLVED, self._batch_succeeded_stems
+        )
         self.tree_panel.refresh()
 
-        self._batch_thread.quit()
-        self._batch_thread.wait()
-        self._batch_thread = None
-        self._batch_worker = None
+    def busy_description(self) -> str | None:
+        return self.batch_runner.describe_running()
 
     # ------------------------------------------------------------------
 
     def shutdown(self):
         settings.set_default_deconvolve_params(self.params_panel.params())
         self.controller.shutdown()
-        if self._batch_thread is not None:
-            self._batch_thread.quit()
-            self._batch_thread.wait()
+        self.batch_runner.shutdown()

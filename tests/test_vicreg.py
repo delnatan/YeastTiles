@@ -13,7 +13,7 @@ import tifffile
 pytest.importorskip("torch")
 
 from tileclass.tile_container import write_container
-from tileclass.training.embeddings import extract_embeddings, knn_accuracy, tsne_2d
+from tileclass.training.embeddings import extract_embeddings, knn_accuracy, umap_2d
 from tileclass.training.model import build_yeast_efficientnet
 from tileclass.training.supervised import TrainingCancelled
 from tileclass.training.vicreg import (
@@ -374,23 +374,23 @@ def test_knn_accuracy_separates_well_separated_clusters():
     assert acc > 0.95
 
 
-def test_tsne_2d_shape():
+def test_umap_2d_shape():
     embeddings, _, _ = _separable_embeddings(n_per_class=20)
-    coords = tsne_2d(embeddings)
+    coords = umap_2d(embeddings)
     assert coords.shape == (embeddings.shape[0], 2)
 
 
-def test_tsne_2d_reproducible_with_same_seed():
+def test_umap_2d_reproducible_with_same_seed():
     embeddings, _, _ = _separable_embeddings(n_per_class=20)
-    first = tsne_2d(embeddings, seed=0)
-    second = tsne_2d(embeddings, seed=0)
+    first = umap_2d(embeddings, seed=0)
+    second = umap_2d(embeddings, seed=0)
     np.testing.assert_array_equal(first, second)
 
 
-def test_tsne_2d_handles_tiny_sample_count():
-    """A handful of points, well below the requested perplexity -- the
-    perplexity clamp in `tsne_2d` should keep sklearn from raising rather
-    than requiring the caller to pick a perplexity that fits."""
+def test_umap_2d_handles_tiny_sample_count():
+    """A handful of points, well below the requested n_neighbors -- the
+    clamp in `umap_2d` should keep UMAP running rather than requiring the
+    caller to pick a value that fits."""
     embeddings, _, _ = _separable_embeddings(n_per_class=1, num_classes=4)
-    coords = tsne_2d(embeddings, perplexity=30.0)
+    coords = umap_2d(embeddings, n_neighbors=15, metric="cosine")
     assert coords.shape == (embeddings.shape[0], 2)

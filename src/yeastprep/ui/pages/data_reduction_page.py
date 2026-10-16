@@ -8,7 +8,7 @@ panel + file list.
 
 from pathlib import Path
 
-from qtpy.QtCore import Qt, QThread, Signal
+from qtpy.QtCore import Qt, Signal
 from qtpy.QtWidgets import (
     QCheckBox,
     QHBoxLayout,
@@ -27,7 +27,7 @@ from yeastprep.core.combined_tiff import load_brightfield_channel
 from yeastprep.core.pipeline import DEFAULT_CHANNELS
 
 from .. import settings
-from ..batch_progress_bar import BatchProgressBar
+from ..common.batch_runner import BatchRunner
 from ..common.preview_source_label import PreviewSourceLabel
 from ..diagnostics.coarse_heatmap_panel import CoarseHeatmapPanel
 from ..diagnostics.focal_preview_panel import FocalPreviewPanel
@@ -51,8 +51,8 @@ class DataReductionPage(QWidget):
         self._channels_inferred_for_folder = False
         self._last_diagnostics = None
         self._current_raw_path = None
-        self._batch_thread = None
-        self._batch_worker = None
+        self._batch_root = None
+        self._batch_succeeded_stems = []
 
         self._build_ui()
         self._wire_up()
@@ -77,8 +77,8 @@ class DataReductionPage(QWidget):
         action_row = QHBoxLayout()
         self.process_btn = QPushButton("Process && Save Selected")
         action_row.addWidget(self.process_btn)
-        self.batch_progress = BatchProgressBar()
-        action_row.addWidget(self.batch_progress, 1)
+        self.batch_runner = BatchRunner("Batch processing")
+        action_row.addWidget(self.batch_runner, 1)
         outer.addLayout(action_row)
 
         self.preview_source_label = PreviewSourceLabel()
@@ -150,6 +150,10 @@ class DataReductionPage(QWidget):
         self.tree_panel.checked_changed.connect(self._update_batch_button_state)
         self.tree_panel.refreshed.connect(self._update_batch_button_state)
         self.process_btn.clicked.connect(self._start_batch)
+        self.batch_runner.progress_changed.connect(self.progress_changed)
+        self.batch_runner.progress_changed.connect(self._on_batch_progress)
+        self.batch_runner.file_result.connect(self._on_batch_file_result)
+        self.batch_runner.finished.connect(self._on_batch_finished)
 
         self.pipeline = PipelineController()
         self.pipeline.stage_a_done.connect(self._on_stage_a_done)
@@ -183,12 +187,18 @@ class DataReductionPage(QWidget):
     # File selection -> raw viewer + flatten pipeline
 
     def load_selection(self, stage: str, path: str, mode: str = "live"):
+        # A recompute still running (or debounced) for the previous file
+        # would otherwise land on top of this one's view.
+        self.pipeline.invalidate()
         self._current_raw_path = path
         self.preview_source_label.set_path(path)
 
-        self.rawstack_panel.load_file(path)
-        channels_meta = getattr(self.rawstack_panel, "_meta", None)
-        channels_meta = (channels_meta or {}).get("channels") or []
+        if not self.rawstack_panel.load_file(path):
+            self._current_raw_path = None
+            self._clear_flatten_views()
+            self.status_label.setText(f"Failed to load {Path(path).name}.")
+            return
+        channels_meta = self.rawstack_panel.channels_meta()
         self.params_panel.set_channels_meta(channels_meta)
 
         if not self._channels_inferred_for_folder:
@@ -235,16 +245,20 @@ class DataReductionPage(QWidget):
         # analysis, which this fast path skips -- clear them rather than
         # leaving them showing a previous file's data under a misleading
         # current-file label.
-        self._last_diagnostics = None
-        self.raw_slice_panel.clear()
-        self.coarse_heatmap_panel.clear()
-        self.focus_surface_panel.clear()
-        self.tile_variance_panel.clear()
+        self._clear_flatten_views()
         self.focal_preview_panel.set_data(focal_slice)
         self.status_label.setText(
             f"{Path(path).name}: showing saved output. Click 'Do it' to tune live."
         )
         return True
+
+    def _clear_flatten_views(self):
+        self._last_diagnostics = None
+        self.raw_slice_panel.clear()
+        self.coarse_heatmap_panel.clear()
+        self.focus_surface_panel.clear()
+        self.tile_variance_panel.clear()
+        self.focal_preview_panel.clear()
 
     def _on_params_or_channels_changed(self, _value):
         if not self.params_panel.is_auto_recompute():
@@ -355,8 +369,11 @@ class DataReductionPage(QWidget):
     def _update_batch_button_state(self, *_args):
         paths_root = self.tree_panel.project_paths()
         checked = self.tree_panel.checked_paths_for_stage("raw") if paths_root else []
-        self.process_btn.setEnabled(bool(checked))
-        if paths_root is None:
+        running = self.batch_runner.is_running()
+        self.process_btn.setEnabled(bool(checked) and not running)
+        if running:
+            self.process_btn.setToolTip("A batch is already running -- see the progress bar.")
+        elif paths_root is None:
             self.process_btn.setToolTip("Open a project first.")
         elif not checked:
             self.process_btn.setToolTip("Check at least one raw file in the tree.")
@@ -364,53 +381,45 @@ class DataReductionPage(QWidget):
             self.process_btn.setToolTip("")
 
     def _start_batch(self):
+        if self.batch_runner.is_running():
+            return
         paths_root = self.tree_panel.project_paths()
         paths = [Path(p) for p in self.tree_panel.checked_paths_for_stage("raw")]
-        outdir = paths_root.reduced
+        if paths_root is None or not paths:
+            return
 
-        self._batch_thread = QThread()
-        self._batch_worker = BatchProcessWorker(
-            paths, outdir, self.params_panel.params(), self.params_panel.channels()
+        # Results are recorded against the project the run started in, even
+        # if a different one is open by the time it finishes.
+        self._batch_root = str(paths_root.root)
+        self._batch_succeeded_stems = []
+        self.batch_runner.start(
+            BatchProcessWorker(
+                paths, paths_root.reduced, self.params_panel.params(), self.params_panel.channels()
+            )
         )
-        self._batch_worker.moveToThread(self._batch_thread)
-        self._batch_thread.started.connect(self._batch_worker.run)
-        self._batch_worker.progress.connect(self._on_batch_progress)
-        self._batch_worker.file_result.connect(self._on_batch_file_result)
-        self._batch_worker.finished.connect(self._on_batch_finished)
+        self._update_batch_button_state()
 
-        self.process_btn.setEnabled(False)
-        self._emit_progress(PageProgress(active=True, done=0, total=len(paths)))
-
-        self._batch_thread.start()
-
-    def _emit_progress(self, progress: PageProgress):
-        self.progress_changed.emit(progress)
-        self.batch_progress.apply(progress)
-
-    def _on_batch_progress(self, done: int, total: int, name: str):
-        self._emit_progress(PageProgress(active=True, done=done, total=total, message=name))
-        self.status_label.setText(f"Processing {name} ({done}/{total})")
+    def _on_batch_progress(self, progress: PageProgress):
+        if progress.active and progress.message:
+            self.status_label.setText(
+                f"Processing {progress.message} ({progress.done}/{progress.total})"
+            )
 
     def _on_batch_file_result(self, result):
         self.tree_panel.mark_result("raw", result.path, result.success, result.error)
+        if result.success:
+            self._batch_succeeded_stems.append(result.path.stem)
 
-    def _on_batch_finished(self):
-        self._emit_progress(PageProgress(active=False))
+    def _on_batch_finished(self, outcome):
         self._update_batch_button_state()
-        self.status_label.setText("Batch processing complete.")
-
-        root = self.tree_panel.project_root()
-        if root:
-            processed = [
-                Path(p).stem for p in self.tree_panel.checked_paths_for_stage("raw")
-            ]
-            project_core.mark_stage_run(root, project_core.STAGE_REDUCED, processed)
+        self.status_label.setText(outcome.summary())
+        project_core.mark_stage_run(
+            self._batch_root, project_core.STAGE_REDUCED, self._batch_succeeded_stems
+        )
         self.tree_panel.refresh()
 
-        self._batch_thread.quit()
-        self._batch_thread.wait()
-        self._batch_thread = None
-        self._batch_worker = None
+    def busy_description(self) -> str | None:
+        return self.batch_runner.describe_running()
 
     # ------------------------------------------------------------------
 
@@ -418,6 +427,4 @@ class DataReductionPage(QWidget):
         settings.set_default_params(self.params_panel.params())
         settings.set_default_channels(self.params_panel.channels())
         self.pipeline.shutdown()
-        if self._batch_thread is not None:
-            self._batch_thread.quit()
-            self._batch_thread.wait()
+        self.batch_runner.shutdown()

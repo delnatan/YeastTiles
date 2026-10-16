@@ -40,6 +40,12 @@ def add_recent_project_root(path: str):
     _add_recent("recent_project_roots", path)
 
 
+def remove_recent_project_root(path: str):
+    _settings().setValue(
+        "recent_project_roots", [p for p in _recent("recent_project_roots") if p != path]
+    )
+
+
 def get_default_params() -> FlattenFieldParams:
     s = _settings()
     s.beginGroup("default_params")
@@ -57,6 +63,9 @@ def get_default_params() -> FlattenFieldParams:
             int(s.value("poly_degree_y", 2)),
         ),
         offset_um=float(s.value("offset_um", FlattenFieldParams().offset_um)),
+        projection_baseline=float(
+            s.value("projection_baseline", FlattenFieldParams().projection_baseline)
+        ),
     )
     s.endGroup()
     return params
@@ -71,6 +80,7 @@ def set_default_params(params: FlattenFieldParams):
     s.setValue("poly_degree_x", params.poly_degree[0])
     s.setValue("poly_degree_y", params.poly_degree[1])
     s.setValue("offset_um", params.offset_um)
+    s.setValue("projection_baseline", params.projection_baseline)
     s.endGroup()
 
 

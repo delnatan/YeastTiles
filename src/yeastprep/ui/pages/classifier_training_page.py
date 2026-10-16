@@ -59,6 +59,7 @@ class _TrainingTab(QWidget):
     progress_changed = Signal(object)  # PageProgress
 
     kind = ""  # "classifier" | "backbone", see checkpoint_choice.py
+    title = ""  # e.g. "Supervised training", for the quit-while-running prompt
     session_kind = ""  # core.classify.find_project_checkpoint's `kind`
     secondary_label = None  # second plotted metric, if any
 
@@ -267,6 +268,21 @@ class _TrainingTab(QWidget):
         self.monitor_panel.log(f"ERROR: {message}")
         self._finish(f"Training error: {message.splitlines()[0] if message else ''}")
 
+    def set_blocked(self, blocked: bool):
+        """Another training run (the other tab's) is going: only one at a
+        time, since they'd compete for the same GPU."""
+        if self._thread is not None:
+            return
+        self.start_btn.setEnabled(not blocked)
+        self.start_btn.setToolTip(
+            "Wait for the other training run to finish -- they share the GPU."
+            if blocked
+            else ""
+        )
+
+    def busy_description(self) -> str | None:
+        return self.title if self._thread is not None else None
+
     def _cancel_training(self):
         if self._worker is not None:
             self._worker.cancel()
@@ -310,6 +326,7 @@ class _TrainingTab(QWidget):
 
 class _SupervisedTrainingTab(_TrainingTab):
     kind = "classifier"
+    title = "Supervised training"
     session_kind = "supervised"
     secondary_label = "val accuracy"
 
@@ -343,6 +360,7 @@ class _SupervisedTrainingTab(_TrainingTab):
 
 class _VicregTrainingTab(_TrainingTab):
     kind = "backbone"
+    title = "VICReg pretraining"
     session_kind = "vicreg"
     secondary_label = "std"
 
@@ -411,10 +429,20 @@ class ClassifierTrainingPage(QWidget):
             self.tabs.addTab(tab.right_panel, title)
             self.settings_stack.addWidget(tab.left_panel)
             tab.progress_changed.connect(self.progress_changed)
+        self.supervised_tab.progress_changed.connect(
+            lambda progress: self.vicreg_tab.set_blocked(progress.active)
+        )
+        self.vicreg_tab.progress_changed.connect(
+            lambda progress: self.supervised_tab.set_blocked(progress.active)
+        )
         self.tabs.currentChanged.connect(self.settings_stack.setCurrentIndex)
         splitter.addWidget(self.tabs)
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
+
+    def busy_description(self) -> str | None:
+        running = [tab.busy_description() for tab in (self.supervised_tab, self.vicreg_tab)]
+        return "; ".join(r for r in running if r) or None
 
     def shutdown(self):
         self.supervised_tab.shutdown()

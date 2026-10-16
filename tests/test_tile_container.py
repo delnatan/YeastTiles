@@ -89,3 +89,12 @@ def test_tile_display_name_shows_fov_and_cell_index():
     dotted = "/data/05_tiles/WT_1.5um.tiles/WT_1.5um_cell00003"
     assert tile_display_name(dotted) == "WT_1.5um · cell 3"
     assert tile_display_name("/data/05_tiles/x.tiles/odd_name") == "odd_name"
+
+
+def test_rewriting_a_container_invalidates_its_cached_index(tmp_path):
+    container_path = tmp_path / "fov.tiles"
+    write_container(container_path, [("fov_cell00001", 1, np.zeros((3, 4, 4), np.uint8))])
+    assert get_container(container_path).cell_ids() == ["fov_cell00001"]
+
+    write_container(container_path, [("fov_cell00002", 2, np.ones((3, 4, 4), np.uint8))])
+    assert get_container(container_path).cell_ids() == ["fov_cell00002"]

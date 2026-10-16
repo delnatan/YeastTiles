@@ -36,6 +36,13 @@ def main(argv=None):
     )
     parser.add_argument("--poly-degree", type=int, nargs=2, metavar=("DX", "DY"), default=(2, 2))
     parser.add_argument("--offset-um", type=float, default=FlattenFieldParams().offset_um)
+    parser.add_argument(
+        "--projection-baseline",
+        type=float,
+        default=FlattenFieldParams().projection_baseline,
+        help="Raw counts subtracted from each target-channel z-slice (clipped "
+        "at zero) before sum-projecting, e.g. the camera offset (default: 0)",
+    )
     parser.add_argument("--brightfield-channel", type=int, default=DEFAULT_CHANNELS.brightfield)
     parser.add_argument("--target-channel", type=int, default=DEFAULT_CHANNELS.projection)
     args = parser.parse_args(argv)
@@ -46,6 +53,7 @@ def main(argv=None):
         inverted_variance_prominence=args.prominence,
         poly_degree=tuple(args.poly_degree),
         offset_um=args.offset_um,
+        projection_baseline=args.projection_baseline,
     )
     channels = ChannelSelection(
         brightfield=args.brightfield_channel, projection=args.target_channel
