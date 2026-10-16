@@ -35,7 +35,7 @@ class ManageCategoriesDialog(QDialog):
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel("Predefined categories for this folder:"))
+        layout.addWidget(QLabel("Predefined categories (shared by every FOV in the project):"))
 
         self.list_widget = QListWidget()
         self.list_widget.setSelectionMode(QAbstractItemView.SingleSelection)

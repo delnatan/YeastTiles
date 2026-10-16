@@ -18,18 +18,27 @@ absent entirely for folders that never touched the Colors... panel.
 Any other ``#`` line (e.g. the ``#dims`` line older versions wrote) is
 ignored, and dropped on the next save.
 
+For a `<fov_id>.tiles` container the category vocabulary is not kept in
+that header but in one `categories.tsv` (one name per line, in number-key
+order) shared by every container in the same folder -- i.e. one list per
+project's `05_tiles/`, so number keys and colors mean the same category in
+every FOV. Copying `categories.tsv` into another project's `05_tiles/`
+reuses the same list there. The first time a container is loaded from a
+folder without one, it's built from the union of every sibling sidecar's
+old ``#categories`` header (or in-use names, for one without a header),
+and `save()` then drops the per-container header. Renaming a category
+rewrites the tags in every sibling sidecar, not just the open ones.
+
+Any other folder (not a `.tiles` container) keeps its vocabulary in its
+own ``#categories`` header, as above.
+
 The category vocabulary is optional — if absent, `categories()` falls
 back to whatever category names are actually in use (the original
 behavior), so old annotation files without a header still round-trip.
 
-A ``#categories`` line can be pre-written by hand for a folder that has
-never been opened/annotated yet, to seed it with the same preset list
-used elsewhere (e.g. copy another folder's category vocabulary into a
-new sibling file before opening that folder in the tiled viewer).
-`save()` always writes the canonical tab-delimited form above, but a
-hand-typed header doesn't need literal tab characters — a comma- or
-space-separated list works too, e.g. ``#categories: CategoryA,
-CategoryB, CategoryC``. See `_parse_categories_header`.
+A hand-typed ``#categories`` header doesn't need literal tab characters
+— a comma- or space-separated list works too, e.g. ``#categories:
+CategoryA, CategoryB, CategoryC``. See `_parse_categories_header`.
 
 `TileAnnotations` is a `MutableMapping` of relpath -> category, so
 editing/replacing entries uses plain dict idiom: `annotations[relpath]`,
@@ -72,6 +81,9 @@ from collections.abc import MutableMapping
 # still keyed that way is rewritten without it the first time it's loaded.
 _LEGACY_SUFFIX = ".tif"
 
+_CONTAINER_SUFFIX = ".tiles"
+CATEGORIES_FILE_NAME = "categories.tsv"
+
 
 def normalized_category_key(name):
     """Case/whitespace-insensitive identity for a category name -- shared by
@@ -89,6 +101,10 @@ class TileAnnotations(MutableMapping):
     def __init__(self, root_dir):
         self.root_dir = os.path.normpath(root_dir)
         self.file_path = self._annotation_file_path(self.root_dir)
+        # Shared per-folder vocabulary file, or None to keep the vocabulary
+        # in this sidecar's own `#categories` header (see module docstring).
+        self.vocab_path = self._vocab_file_path(self.root_dir)
+        self._sibling_vocab_checked = False
         self._categories = {}  # relpath -> category name
         self.confidences = {}  # relpath -> AI confidence, only if unreviewed
         self._category_vocab = []  # explicit predefined category list, if any
@@ -99,35 +115,65 @@ class TileAnnotations(MutableMapping):
     def _annotation_file_path(root_dir):
         parent = os.path.dirname(root_dir)
         name = os.path.basename(root_dir)
-        if name.endswith(".tiles"):
+        if name.endswith(_CONTAINER_SUFFIX):
             # `<fov_id>.tiles` keeps its tags in `<fov_id>.txt`.
-            name = name[: -len(".tiles")]
+            name = name[: -len(_CONTAINER_SUFFIX)]
         if not name:
             # root_dir was the filesystem root; nothing to nest alongside.
             return os.path.join(root_dir, "pyvistra_annotations.txt")
         return os.path.join(parent, f"{name}.txt")
 
+    @staticmethod
+    def _vocab_file_path(root_dir):
+        if not os.path.basename(root_dir).endswith(_CONTAINER_SUFFIX):
+            return None
+        return os.path.join(os.path.dirname(root_dir), CATEGORIES_FILE_NAME)
+
     def load(self):
         """(Re)load categories and header settings from the annotation file,
-        if it exists."""
+        if it exists, and the shared vocabulary file, if this store uses
+        one."""
         self._categories.clear()
         self.confidences.clear()
         self._category_vocab = []
         self.channel_colors = {}
-        if not os.path.exists(self.file_path):
-            return
         migrated = False
-        with open(self.file_path, "r", encoding="utf-8") as f:
+        if os.path.exists(self.file_path):
+            sidecar = self._parse_sidecar(self.file_path)
+            self._categories.update(sidecar["tags"])
+            self.confidences.update(sidecar["confidences"])
+            self._category_vocab = sidecar["vocab"]
+            self.channel_colors = sidecar["channel_colors"]
+            migrated = sidecar["migrated"]
+        if self.vocab_path is not None:
+            # Before any save below, which drops this sidecar's header.
+            self._category_vocab = self._load_shared_vocab()
+        if migrated:
+            self.save()
+
+    @classmethod
+    def _parse_sidecar(cls, file_path):
+        """Read one sidecar file into its tags, confidences, ``#categories``
+        header and ``#channel_colors`` settings; ``migrated`` says whether
+        any legacy `.tif`-suffixed key was rewritten on the way."""
+        result = {
+            "tags": {},
+            "confidences": {},
+            "vocab": [],
+            "channel_colors": {},
+            "migrated": False,
+        }
+        with open(file_path, "r", encoding="utf-8") as f:
             for raw_line in f:
                 line = raw_line.rstrip("\n")
-                if self._is_categories_header(line):
-                    self._category_vocab = self._parse_categories_header(
+                if cls._is_categories_header(line):
+                    result["vocab"] = cls._parse_categories_header(
                         line[len("#categories") :]
                     )
                     continue
                 parts = line.split("\t")
                 if parts[0] == "#channel_colors":
-                    self.channel_colors = self._parse_channel_colors(parts[1:])
+                    result["channel_colors"] = cls._parse_channel_colors(parts[1:])
                     continue
                 if line.startswith("#"):
                     continue
@@ -136,15 +182,72 @@ class TileAnnotations(MutableMapping):
                 relpath, category = parts[0], parts[1]
                 if relpath.endswith(_LEGACY_SUFFIX):
                     relpath = relpath[: -len(_LEGACY_SUFFIX)]
-                    migrated = True
-                self._categories[relpath] = category
+                    result["migrated"] = True
+                result["tags"][relpath] = category
                 if len(parts) == 3:
                     try:
-                        self.confidences[relpath] = float(parts[2])
+                        result["confidences"][relpath] = float(parts[2])
                     except ValueError:
                         pass
-        if migrated:
+        return result
+
+    # --- Shared vocabulary file (`.tiles` containers only) ---
+
+    def _sibling_roots(self):
+        """Every `.tiles` container in this store's folder, this one
+        included -- the stores sharing `vocab_path`."""
+        parent = os.path.dirname(self.vocab_path)
+        roots = {self.root_dir}
+        if os.path.isdir(parent):
+            for name in os.listdir(parent):
+                if name.endswith(_CONTAINER_SUFFIX) and not name.startswith("."):
+                    roots.add(os.path.join(parent, name))
+        return sorted(roots)
+
+    def _load_shared_vocab(self):
+        if os.path.exists(self.vocab_path):
+            with open(self.vocab_path, "r", encoding="utf-8") as f:
+                return [
+                    line.strip()
+                    for line in f
+                    if line.strip() and not line.startswith("#")
+                ]
+        # No shared file yet: build it once from the sibling sidecars.
+        if self._sibling_vocab_checked:
+            return []
+        self._sibling_vocab_checked = True
+        vocab = self._collect_sibling_vocab()
+        if vocab:
+            self._write_shared_vocab(vocab)
+        return vocab
+
+    def _collect_sibling_vocab(self):
+        """Union of every sibling sidecar's vocabulary -- its ``#categories``
+        header, or its in-use names if it has none -- in first-seen order,
+        collapsing case/whitespace variants (see `normalized_category_key`)."""
+        vocab, seen_keys = [], set()
+        for root in self._sibling_roots():
+            path = self._annotation_file_path(root)
+            if not os.path.exists(path):
+                continue
+            sidecar = self._parse_sidecar(path)
+            for name in sidecar["vocab"] or sorted(set(sidecar["tags"].values())):
+                key = normalized_category_key(name)
+                if key not in seen_keys:
+                    vocab.append(name)
+                    seen_keys.add(key)
+        return vocab
+
+    def _write_shared_vocab(self, vocab):
+        with open(self.vocab_path, "w", encoding="utf-8") as f:
+            f.writelines(f"{name}\n" for name in vocab)
+
+    def _save_vocab(self):
+        """Persist `_category_vocab` wherever this store keeps it."""
+        if self.vocab_path is None:
             self.save()
+        else:
+            self._write_shared_vocab(self._category_vocab)
 
     @staticmethod
     def _is_categories_header(line):
@@ -205,9 +308,10 @@ class TileAnnotations(MutableMapping):
 
     def save(self):
         """Write the current header settings and categories out, data
-        sorted by relative path."""
+        sorted by relative path. A store with a shared vocabulary file
+        writes no ``#categories`` header (see `_save_vocab`)."""
         with open(self.file_path, "w", encoding="utf-8") as f:
-            if self._category_vocab:
+            if self._category_vocab and self.vocab_path is None:
                 f.write("#categories\t" + "\t".join(self._category_vocab) + "\n")
             if self.channel_colors:
                 f.write(
@@ -372,7 +476,7 @@ class TileAnnotations(MutableMapping):
         silently drop out of the picker. No-ops if a case/whitespace variant
         of `name` is already present -- see `normalized_category_key`. This
         only ever appends to (or skips adding to) the `#categories` header
-        line; it never touches existing per-tile tags.
+        line (or `categories.tsv`); it never touches existing per-tile tags.
         """
         name = name.strip()
         if not name:
@@ -384,11 +488,21 @@ class TileAnnotations(MutableMapping):
         if any(normalized_category_key(existing) == key for existing in self._category_vocab):
             return
         self._category_vocab.append(name)
-        self.save()
+        self._save_vocab()
 
     def usage_count(self, name):
-        """Number of tiles currently tagged with category `name`."""
-        return sum(1 for category in self._categories.values() if category == name)
+        """Number of tiles tagged with category `name` -- across every
+        container sharing this store's vocabulary file, since that's what
+        removing it from the vocabulary affects."""
+        if self.vocab_path is None:
+            return sum(1 for category in self._categories.values() if category == name)
+        count = 0
+        for root in self._sibling_roots():
+            path = self._annotation_file_path(root)
+            if os.path.exists(path):
+                tags = self._parse_sidecar(path)["tags"]
+                count += sum(1 for category in tags.values() if category == name)
+        return count
 
     def remove_category(self, name):
         """Remove name from the predefined vocabulary and persist.
@@ -399,20 +513,36 @@ class TileAnnotations(MutableMapping):
         self.load()
         if name in self._category_vocab:
             self._category_vocab.remove(name)
-            self.save()
+            self._save_vocab()
 
     def rename_category(self, old, new):
-        """Rename a vocabulary entry and update any tiles tagged with it."""
+        """Rename a vocabulary entry and update any tiles tagged with it --
+        in every container sharing this store's vocabulary file. Renaming
+        onto a name already in the vocabulary merges the two."""
         new = new.strip()
         if not new or old == new:
             return
         self.load()
         if old in self._category_vocab:
-            self._category_vocab[self._category_vocab.index(old)] = new
-        for relpath, category in self._categories.items():
-            if category == old:
-                self._categories[relpath] = new
-        self.save()
+            if new in self._category_vocab:
+                self._category_vocab.remove(old)
+            else:
+                self._category_vocab[self._category_vocab.index(old)] = new
+            self._save_vocab()
+        if self.vocab_path is None:
+            self._rename_tags(old, new)
+            return
+        for root in self._sibling_roots():
+            store = self if root == self.root_dir else TileAnnotations(root)
+            store._rename_tags(old, new)
+
+    def _rename_tags(self, old, new):
+        self.load()
+        renamed = [relpath for relpath, category in self._categories.items() if category == old]
+        for relpath in renamed:
+            self._categories[relpath] = new
+        if renamed:
+            self.save()
 
     def set_channel_colors(self, channel_colors):
         """Persist the fast thumbnail grid's per-channel color/blend-mode

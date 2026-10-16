@@ -197,7 +197,10 @@ several experiments into one session.
 
 Annotating: click / Shift-click / Ctrl-click (or Ctrl+A) to select tiles,
 then press a number key to apply that category -- the legend under the
-toolbar lists them (Annotate > Manage Categories... edits the list). T picks
+toolbar lists them (Annotate > Manage Categories... edits the list). The list
+is shared by every FOV in a project, kept in `05_tiles/categories.tsv` (one
+name per line, in number-key order); copy that file into another project's
+`05_tiles/` to reuse the same categories there. T picks
 a category from a list instead, Delete clears it. Annotate > Auto-Annotate
 Page runs the deployed classifier on the current page's un-annotated tiles;
 its predictions show a confidence and a dashed outline until you accept them

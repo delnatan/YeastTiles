@@ -16,7 +16,9 @@ folder-relative one, since a bare relpath isn't unique across a pool
 Folder-vocabulary operations (`add_category`, `remove_category`,
 `rename_category`) propagate to *every* pooled folder, so the picker's
 choices stay in sync and a folder later reopened on its own still has the
-full vocabulary. This assumes pooled folders are meant to share one
+full vocabulary. Containers from one project share one `categories.tsv`
+(see annotations.py), so these run once per vocabulary file rather than
+once per pooled container. This assumes pooled folders are meant to share one
 category vocabulary (design.md's stated use case: pooling experiments for
 one consistent training run) -- if they don't, `categories()`'s union
 still works, propagation on add/rename/remove is just slightly more
@@ -144,20 +146,38 @@ class PooledAnnotations:
             names.update(store.values())
         return sorted(names)
 
-    def add_category(self, name):
+    def _vocab_owners(self):
+        """One store per distinct vocabulary -- a project's shared
+        `categories.tsv`, or a plain folder's own sidecar header."""
+        owners = {}
         for store in self._stores.values():
+            owners.setdefault(store.vocab_path or store.file_path, store)
+        return list(owners.values())
+
+    def _reload_all(self):
+        """A vocabulary change went through one store per vocabulary file
+        (and a rename rewrote sibling sidecars) behind the other stores'
+        backs."""
+        for store in self._stores.values():
+            store.load()
+
+    def add_category(self, name):
+        for store in self._vocab_owners():
             store.add_category(name)
+        self._reload_all()
 
     def remove_category(self, name):
-        for store in self._stores.values():
+        for store in self._vocab_owners():
             store.remove_category(name)
+        self._reload_all()
 
     def rename_category(self, old, new):
-        for store in self._stores.values():
+        for store in self._vocab_owners():
             store.rename_category(old, new)
+        self._reload_all()
 
     def usage_count(self, name):
-        return sum(store.usage_count(name) for store in self._stores.values())
+        return sum(store.usage_count(name) for store in self._vocab_owners())
 
     # ------------------------------------------------------------------
     # Display settings -- also propagated (pooled tiles are assumed to
