@@ -591,19 +591,25 @@ class TrainingWorker(QObject):
     `jssl_denoise.callbacks.TrainingCallback` (`on_step_end`/
     `on_epoch_end`/`on_epoch_metrics`/`on_early_stop`) and passes itself to
     `Trainer.fit` directly as `callback=self`.
+
+    Takes frame *paths* plus the channel to read from each, and reads them
+    on its own thread first -- pooling a few projects' worth of tiffs is
+    slow enough to freeze the window if done before starting.
     """
 
+    frames_loaded = Signal(int, tuple)  # number of frames, first frame's shape
     step_progress = Signal(int, int, int, float)  # step, total_steps, epoch, loss
     epoch_finished = Signal(int, int, float, float)  # epoch, total_epochs, loss, lr
     epoch_metrics = Signal(int, dict)  # epoch, {"mu_mse": ..., "sigma_mean": ...}
     early_stopped = Signal(int, int, float)  # epoch, best_epoch, best_mu_mse
     finished = Signal(object)  # checkpoint dict
-    cancelled = Signal(object)  # checkpoint dict -- see run()
+    cancelled = Signal(object)  # checkpoint dict, or None if cancelled while loading
     error = Signal(str)
 
-    def __init__(self, images, config):
+    def __init__(self, frame_paths, channel: int, config):
         super().__init__()
-        self._images = images
+        self._frame_paths = list(frame_paths)
+        self._channel = channel
         self._config = config
         self._cancel_requested = False
 
@@ -627,8 +633,30 @@ class TrainingWorker(QObject):
 
     # ------------------------------------------------------------------
 
+    def _load_frames(self) -> list | None:
+        """The checked frames' chosen channel, or None if cancelled."""
+        import numpy as np
+        import tifffile
+
+        frames = []
+        for path in self._frame_paths:
+            if self._cancel_requested:
+                return None
+            frames.append(np.asarray(tifffile.imread(path)[self._channel]))
+        return frames
+
     def run(self):
         import torch
+
+        try:
+            frames = self._load_frames()
+        except Exception as exc:
+            self.error.emit(f"Couldn't read training frames: {exc}")
+            return
+        if frames is None:
+            self.cancelled.emit(None)
+            return
+        self.frames_loaded.emit(len(frames), tuple(frames[0].shape))
 
         device = (
             torch.device(self._config.device)
@@ -645,7 +673,7 @@ class TrainingWorker(QObject):
             from jssl_denoise.training import Trainer
 
             checkpoint = Trainer(self._config).fit(
-                self._images, callback=self, should_stop=lambda: self._cancel_requested
+                frames, callback=self, should_stop=lambda: self._cancel_requested
             )
         except Exception as exc:
             self.error.emit(str(exc))

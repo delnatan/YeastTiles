@@ -28,6 +28,7 @@ from yeastprep.core.fs_status import list_visible
 from yeastprep.core.segmentation import SegmentationParams, load_saved_masks, seg_npy_path
 
 from .. import settings
+from ..common.background_task import BackgroundTask
 from ..common.batch_runner import BatchRunner
 from ..common.preview_source_label import PreviewSourceLabel
 from ..diagnostics.segmentation_preview_panel import SegmentationPreviewPanel
@@ -48,6 +49,7 @@ class SegmentationPage(QWidget):
         self._focal_slice_generation = 0
         self._source_stage = None
         self._batch_root = None
+        self._cellpose_prep = BackgroundTask(self)  # brightfield copies for the GUI
         self._batch_succeeded_stems = []
 
         self._build_ui()
@@ -129,6 +131,8 @@ class SegmentationPage(QWidget):
         self.batch_runner.file_result.connect(self._on_batch_file_result)
         self.batch_runner.finished.connect(self._on_batch_finished)
         self.open_cellpose_gui_btn.clicked.connect(self._open_cellpose_gui)
+        self._cellpose_prep.succeeded.connect(self._launch_cellpose_gui)
+        self._cellpose_prep.failed.connect(self._on_cellpose_prep_failed)
 
     # ------------------------------------------------------------------
     # Source / project handling
@@ -297,26 +301,38 @@ class SegmentationPage(QWidget):
         return self.batch_runner.describe_running()
 
     def _open_cellpose_gui(self):
+        if self._cellpose_prep.is_running():
+            return
         source_stage = self.tree_panel.active_2d_stage()
         paths_root = self.tree_panel.project_paths()
         if not source_stage or paths_root is None:
             QMessageBox.warning(self, "yeastprep", "No 2D images folder available yet.")
             return
         folder = paths_root.stage_dir(source_stage)
+        # Cellpose 4's SAM model dropped channel selection, so opening the
+        # 2-channel combined tiffs directly would segment/train on the
+        # target channel too -- the GUI opens the brightfield-only
+        # companion tiffs instead, written here if missing/stale (they live
+        # in combined_tiff.CELLPOSE_GUI_SUBDIR, so this glob never sees
+        # them). A whole folder's worth takes a while the first time, so
+        # it's done off the GUI thread.
+        combined_images = sorted(list_visible(folder, "*.tiff"))
+        self.open_cellpose_gui_btn.setEnabled(False)
+        self.status_label.setText(
+            f"Preparing {len(combined_images)} brightfield image(s) for Cellpose..."
+        )
+        self._cellpose_prep.start(
+            lambda: [write_brightfield_tiff(p) for p in combined_images]
+        )
+
+    def _launch_cellpose_gui(self, images):
+        self.open_cellpose_gui_btn.setEnabled(True)
         # Cellpose 4.x's CLI runs a *headless* batch job whenever --dir/
         # --image_path is given -- passing --dir no longer opens the GUI
         # like it did pre-4.0. Drive cellpose.gui.gui.run() directly
         # instead, preloading the first tiff (and its _seg.npy sidecar, if
         # any); the GUI's own next/prev navigation then covers the rest of
         # the folder.
-        #
-        # Cellpose 4's SAM model also dropped channel selection, so opening
-        # the 2-channel combined tiffs directly would segment/train on the
-        # target channel too -- open the brightfield-only companion tiffs
-        # instead (generated here if missing/stale; they live in
-        # combined_tiff.CELLPOSE_GUI_SUBDIR, so this glob never sees them).
-        combined_images = sorted(list_visible(folder, "*.tiff"))
-        images = [write_brightfield_tiff(p) for p in combined_images]
         launcher = (
             "from cellpose.gui import gui\n"
             "import sys\n"
@@ -325,11 +341,21 @@ class SegmentationPage(QWidget):
         args = [sys.executable, "-c", launcher]
         if images:
             args.append(str(images[0]))
-        subprocess.Popen(args, start_new_session=True)
+        try:
+            subprocess.Popen(args, start_new_session=True)
+        except OSError as exc:
+            self.status_label.setText(f"Couldn't start Cellpose: {exc}")
+            return
+        self.status_label.setText("Opening Cellpose GUI (it takes a moment to start)...")
+
+    def _on_cellpose_prep_failed(self, message: str):
+        self.open_cellpose_gui_btn.setEnabled(True)
+        self.status_label.setText(f"Couldn't prepare images for Cellpose: {message}")
 
     # ------------------------------------------------------------------
 
     def shutdown(self):
         settings.set_default_segmentation_params(self.segmentation_params_panel.params())
         self.controller.shutdown()
+        self._cellpose_prep.shutdown()
         self.batch_runner.shutdown()

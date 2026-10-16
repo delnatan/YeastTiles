@@ -233,3 +233,77 @@ def test_opening_a_missing_project_folder_warns_instead_of_creating_it(qapp, tmp
         assert "not found" in warnings[0]
     finally:
         panel.shutdown()
+
+
+# ----------------------------------------------------------------------
+# One-shot background jobs
+
+
+def test_background_task_delivers_result_or_error(qapp):
+    from yeastprep.ui.common.background_task import BackgroundTask
+
+    task = BackgroundTask()
+    got = []
+    task.succeeded.connect(lambda r: got.append(("ok", r)))
+    task.failed.connect(lambda m: got.append(("failed", m)))
+
+    gate = threading.Event()
+    task.start(lambda: gate.wait(10) and threading.current_thread().name)
+    assert task.is_running()
+    with pytest.raises(RuntimeError):
+        task.start(lambda: None)
+    gate.set()
+    _wait_until(lambda: got)
+    assert got[0][0] == "ok" and got[0][1] != threading.current_thread().name
+    assert not task.is_running()
+
+    task.start(lambda: 1 / 0)
+    _wait_until(lambda: len(got) == 2)
+    assert got[1] == ("failed", "division by zero")
+
+
+def test_background_task_shutdown_waits_and_drops_the_result(qapp):
+    from yeastprep.ui.common.background_task import BackgroundTask
+
+    task = BackgroundTask()
+    got = []
+    task.succeeded.connect(got.append)
+    finished = threading.Event()
+
+    def slow():
+        time.sleep(0.1)
+        finished.set()
+        return "late"
+
+    task.start(slow)
+    task.shutdown()
+    assert finished.is_set() and not task.is_running()
+    QCoreApplication.processEvents()
+    assert got == []
+
+
+def test_denoise_training_worker_reads_frames_itself(qapp, tmp_path):
+    """Frames are read on the worker's thread; a cancel while reading ends
+    the run with no checkpoint, and an unreadable frame is an error."""
+    import numpy as np
+    import tifffile
+
+    from yeastprep.ui.worker import TrainingWorker
+
+    frame = tmp_path / "f.tiff"
+    tifffile.imwrite(frame, np.zeros((2, 8, 8), np.uint16))
+
+    worker = TrainingWorker([frame, frame], channel=1, config=None)
+    assert [f.shape for f in worker._load_frames()] == [(8, 8), (8, 8)]
+
+    cancelled = []
+    worker.cancelled.connect(cancelled.append)
+    worker.cancel()
+    worker.run()
+    assert cancelled == [None]
+
+    errors = []
+    broken = TrainingWorker([tmp_path / "missing.tiff"], channel=0, config=None)
+    broken.error.connect(errors.append)
+    broken.run()
+    assert errors and errors[0].startswith("Couldn't read training frames")

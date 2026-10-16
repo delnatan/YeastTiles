@@ -8,6 +8,8 @@ core/denoise.py, core/deconvolve.py and core/tiles.py all need to read them
 back too, and none of those are really "about" the flatten stage.
 """
 
+import os
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -72,7 +74,17 @@ def write_brightfield_tiff(path) -> Path:
     bf_path = brightfield_tiff_path(path)
     if not bf_path.exists() or bf_path.stat().st_mtime < path.stat().st_mtime:
         bf_path.parent.mkdir(parents=True, exist_ok=True)
-        tifffile.imwrite(bf_path, load_brightfield_channel(path))
+        # Written to a temp file then renamed into place: a batch run and
+        # the Cellpose-GUI button can both refresh the same copy, and
+        # Cellpose may be reading it -- none of them should see half a file.
+        fd, tmp = tempfile.mkstemp(dir=bf_path.parent, prefix=".", suffix=".tmp.tiff")
+        os.close(fd)
+        try:
+            tifffile.imwrite(tmp, load_brightfield_channel(path))
+            os.replace(tmp, bf_path)
+        except BaseException:
+            Path(tmp).unlink(missing_ok=True)
+            raise
     return bf_path
 
 

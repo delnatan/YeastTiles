@@ -20,8 +20,6 @@ deliberately Browse elsewhere.
 
 from pathlib import Path
 
-import numpy as np
-import tifffile
 from qtpy.QtCore import QCoreApplication, Qt, QThread, Signal
 from qtpy.QtWidgets import (
     QComboBox,
@@ -331,15 +329,11 @@ class TrainDenoisePage(QWidget):
             if top_item.child(i).checkState(0) == Qt.Checked
         ]
 
-    def _gather_frames(self) -> list[np.ndarray]:
-        channel = self.channel_combo.currentData()
-        frames: list[np.ndarray] = []
+    def _checked_frame_paths(self) -> list[str]:
+        paths: list[str] = []
         for i in range(self.pool_tree.topLevelItemCount()):
-            top_item = self.pool_tree.topLevelItem(i)
-            for path in self._checked_paths_for_project(top_item):
-                arr = tifffile.imread(path)
-                frames.append(np.asarray(arr[channel]))
-        return frames
+            paths.extend(self._checked_paths_for_project(self.pool_tree.topLevelItem(i)))
+        return paths
 
     def _start_training(self):
         if self._train_thread is not None:
@@ -357,8 +351,8 @@ class TrainDenoisePage(QWidget):
             )
             return
 
-        frames = self._gather_frames()
-        if not frames:
+        frame_paths = self._checked_frame_paths()
+        if not frame_paths:
             QMessageBox.warning(
                 self,
                 "yeastprep",
@@ -373,7 +367,7 @@ class TrainDenoisePage(QWidget):
         self._run_checkpoint_path = checkpoint_path
         self.monitor_panel.clear()
         self.monitor_panel.log(
-            f"frames={len(frames)}  shape={frames[0].shape}  device={config.device or 'auto'}\n"
+            f"loading {len(frame_paths)} frame(s)...  device={config.device or 'auto'}\n"
             f"epochs={config.epochs}  steps_per_epoch={config.steps_per_epoch}  "
             f"tile_size={config.tile_size}  tiles_per_batch={config.tiles_per_batch}  lr={config.lr}  "
             f"early_stop_patience={config.early_stop_patience or 'off'}"
@@ -383,11 +377,12 @@ class TrainDenoisePage(QWidget):
         total_steps = max(1, config.epochs * config.steps_per_epoch)
         self._emit_progress(PageProgress(active=True, done=0, total=total_steps))
 
-        self._train_worker = TrainingWorker(frames, config)
+        self._train_worker = TrainingWorker(frame_paths, self._run_channel, config)
         self._train_thread = QThread()
         self._train_worker.moveToThread(self._train_thread)
 
         self._train_thread.started.connect(self._train_worker.run)
+        self._train_worker.frames_loaded.connect(self._on_frames_loaded)
         self._train_worker.step_progress.connect(self._on_step)
         self._train_worker.epoch_finished.connect(self._on_epoch)
         self._train_worker.epoch_metrics.connect(self._on_epoch_metrics)
@@ -401,6 +396,9 @@ class TrainDenoisePage(QWidget):
     def _emit_progress(self, progress: PageProgress):
         self.progress_changed.emit(progress)
         self.batch_progress.apply(progress)
+
+    def _on_frames_loaded(self, n_frames: int, shape: tuple):
+        self.monitor_panel.log(f"frames={n_frames}  shape={shape}")
 
     def _on_step(self, step, total_steps, epoch, loss):
         done = (epoch - 1) * total_steps + step
@@ -435,6 +433,11 @@ class TrainDenoisePage(QWidget):
 
     def _finish(self, checkpoint, cancelled: bool):
         path = self._run_checkpoint_path
+        if checkpoint is None:  # cancelled while still reading frames
+            self.monitor_panel.log("cancelled before training started -- nothing saved")
+            self.status_label.setText("Training cancelled before it started.")
+            self._teardown_training()
+            return
         try:
             save_checkpoint(path, checkpoint)
         except Exception as exc:
@@ -448,6 +451,9 @@ class TrainDenoisePage(QWidget):
                 if cancelled
                 else f"Training completed -- checkpoint saved to {path}."
             )
+        self._teardown_training()
+
+    def _teardown_training(self):
         self._set_running(False)
         self._emit_progress(PageProgress(active=False))
         self._train_thread.quit()
@@ -464,12 +470,7 @@ class TrainDenoisePage(QWidget):
     def _on_error(self, message: str):
         self.monitor_panel.log(f"ERROR: {message}")
         self.status_label.setText(f"Training error: {message.splitlines()[0] if message else ''}")
-        self._set_running(False)
-        self._emit_progress(PageProgress(active=False))
-        self._train_thread.quit()
-        self._train_thread.wait()
-        self._train_thread = None
-        self._train_worker = None
+        self._teardown_training()
 
     def _cancel_training(self):
         if self._train_worker is not None:

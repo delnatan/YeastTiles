@@ -42,6 +42,7 @@ from tileclass.training.vicreg import load_backbone
 from yeastprep.core.classify import sample_unlabeled
 
 from ..classifier_pool import ClassifierPool, ClassifierPoolWidget
+from ..common.background_task import BackgroundTask
 from ..common.checkpoint_choice import CheckpointChoice
 from ..diagnostics.annotation_analytics_panel import AnnotationAnalyticsPanel
 from ..diagnostics.embedding_scatter_widget import UNLABELED_LABEL, EmbeddingScatterWidget
@@ -61,6 +62,10 @@ class ClassifyTilesPage(QWidget):
         # (embeddings, labels, paths, knn_acc) from the last Evaluate, so
         # Re-plot can re-run just UMAP when only its settings changed.
         self._last_embeddings = None
+        # Forward pass + UMAP (Evaluate), or UMAP alone (Re-plot) -- one at
+        # a time, off the GUI thread.
+        self._embedding_task = BackgroundTask(self)
+        self._embedding_done_text = ""
 
         self._build_ui()
         self._wire_up()
@@ -234,10 +239,9 @@ class ClassifyTilesPage(QWidget):
 
         return form
 
-    def _umap_layout(self, embeddings):
+    def _umap_kwargs(self) -> dict:
         seed = self.umap_seed.value()
-        return umap_2d(
-            embeddings,
+        return dict(
             n_neighbors=self.umap_neighbors.value(),
             min_dist=self.umap_min_dist.value(),
             metric=self.umap_metric.currentText(),
@@ -248,6 +252,8 @@ class ClassifyTilesPage(QWidget):
 
     def _wire_up(self):
         self.embedding_scatter.pointsSelected.connect(self._open_viewer_for_selection)
+        self._embedding_task.succeeded.connect(self._on_embeddings_ready)
+        self._embedding_task.failed.connect(self._on_embeddings_failed)
         self.pool.changed.connect(self.annotation_analytics.refresh_from_pool)
 
     def _on_right_tab_changed(self, index: int):
@@ -372,15 +378,12 @@ class ClassifyTilesPage(QWidget):
     # ------------------------------------------------------------------
     # Explore Embeddings -- UMAP projection of a backbone's embeddings
     # over the pool's confirmed tiles, optionally plus a random sample of
-    # unlabeled ones (see `core.classify.sample_unlabeled`). Runs
-    # synchronously on the GUI thread -- fine for confirmed tiles plus a
-    # bounded unlabeled sample, not a full-pool sweep.
+    # unlabeled ones (see `core.classify.sample_unlabeled`). The forward
+    # pass and UMAP run on a background thread; the pool is read up front.
 
     def _evaluate_embeddings(self):
-        import torch
-        from qtpy.QtCore import Qt
-        from qtpy.QtWidgets import QApplication
-
+        if self._embedding_task.is_running():
+            return
         weights_path = self.embed_picker.weights_path()
         if weights_path is None:
             QMessageBox.warning(
@@ -400,6 +403,7 @@ class ClassifyTilesPage(QWidget):
 
         paths = [p for p, _ in records]
         labels = [label for _, label in records]
+        confirmed_labels = list(labels)
 
         if self.include_unlabeled_cb.isChecked():
             pooled = self.pool.pooled_annotations()
@@ -408,54 +412,56 @@ class ClassifyTilesPage(QWidget):
             paths = paths + unlabeled_paths
             labels = labels + [UNLABELED_LABEL] * len(unlabeled_paths)
 
-        self.status_label.setText("Evaluating embeddings...")
-        self.evaluate_btn.setEnabled(False)
-        QApplication.setOverrideCursor(Qt.WaitCursor)
-        try:
+        umap_kwargs = self._umap_kwargs()
+
+        def compute():
+            import torch
+
             device = select_device()
             backbone = load_backbone(weights_path=weights_path, device=device)
             backbone.eval()
             with torch.no_grad():
                 embeddings = extract_embeddings(paths, backbone, device)
-            xy = self._umap_layout(embeddings)
-            n_confirmed = len(records)
-            confirmed_labels = labels[:n_confirmed]
+            n_confirmed = len(confirmed_labels)
             acc = (
                 knn_accuracy(embeddings[:n_confirmed], confirmed_labels)
                 if len(set(confirmed_labels)) > 1
                 else None
             )
-            self.embedding_scatter.show_embedding_scatter(xy, labels, paths=paths, knn_acc=acc)
-            self._last_embeddings = (embeddings, labels, paths, acc)
-            self.replot_btn.setEnabled(True)
-            self.status_label.setText("Embeddings evaluated.")
-        except Exception as exc:
-            QMessageBox.critical(
-                self, "yeastprep", f"Embedding evaluation failed:\n\n{exc}"
-            )
-            self.status_label.setText("Embedding evaluation failed.")
-        finally:
-            QApplication.restoreOverrideCursor()
-            self.evaluate_btn.setEnabled(True)
+            return embeddings, labels, paths, acc, umap_2d(embeddings, **umap_kwargs)
+
+        self._embedding_done_text = "Embeddings evaluated."
+        self.status_label.setText(f"Evaluating embeddings for {len(paths)} tile(s)...")
+        self._set_embedding_running(True)
+        self._embedding_task.start(compute)
 
     def _replot_embeddings(self):
-        if self._last_embeddings is None:
+        if self._last_embeddings is None or self._embedding_task.is_running():
             return
-        from qtpy.QtCore import Qt
-        from qtpy.QtWidgets import QApplication
-
         embeddings, labels, paths, acc = self._last_embeddings
-        self.replot_btn.setEnabled(False)
-        QApplication.setOverrideCursor(Qt.WaitCursor)
-        try:
-            xy = self._umap_layout(embeddings)
-            self.embedding_scatter.show_embedding_scatter(xy, labels, paths=paths, knn_acc=acc)
-            self.status_label.setText("Re-plotted embeddings.")
-        except Exception as exc:
-            QMessageBox.critical(self, "yeastprep", f"UMAP failed:\n\n{exc}")
-        finally:
-            QApplication.restoreOverrideCursor()
-            self.replot_btn.setEnabled(True)
+        umap_kwargs = self._umap_kwargs()
+        self._embedding_done_text = "Re-plotted embeddings."
+        self.status_label.setText("Re-running UMAP...")
+        self._set_embedding_running(True)
+        self._embedding_task.start(
+            lambda: (embeddings, labels, paths, acc, umap_2d(embeddings, **umap_kwargs))
+        )
+
+    def _set_embedding_running(self, running: bool):
+        self.evaluate_btn.setEnabled(not running)
+        self.replot_btn.setEnabled(not running and self._last_embeddings is not None)
+
+    def _on_embeddings_ready(self, result):
+        embeddings, labels, paths, acc, xy = result
+        self._last_embeddings = (embeddings, labels, paths, acc)
+        self.embedding_scatter.show_embedding_scatter(xy, labels, paths=paths, knn_acc=acc)
+        self._set_embedding_running(False)
+        self.status_label.setText(self._embedding_done_text)
+
+    def _on_embeddings_failed(self, message: str):
+        self._set_embedding_running(False)
+        self.status_label.setText("Embedding evaluation failed.")
+        QMessageBox.critical(self, "yeastprep", f"Embedding evaluation failed:\n\n{message}")
 
     def _open_viewer_for_selection(self, paths: list[str]) -> None:
         """Opens tiles lasso-selected on the embedding scatter in a tile
@@ -477,9 +483,15 @@ class ClassifyTilesPage(QWidget):
     # ------------------------------------------------------------------
 
     def busy_description(self) -> str | None:
-        return "Inference on pool" if self._inference_thread is not None else None
+        jobs = []
+        if self._inference_thread is not None:
+            jobs.append("Inference on pool")
+        if self._embedding_task.is_running():
+            jobs.append("Embedding evaluation")
+        return ", ".join(jobs) or None
 
     def shutdown(self):
+        self._embedding_task.shutdown()
         if self._inference_thread is not None:
             self._inference_thread.quit()
             self._inference_thread.wait()
