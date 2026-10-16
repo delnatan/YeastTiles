@@ -110,22 +110,27 @@ class DataReductionPage(QWidget):
 
         right = QVBoxLayout()
 
-        grid_splitter_v = QSplitter(Qt.Vertical)
-        top_row = QSplitter(Qt.Horizontal)
+        # Raw vs. processed views go in separate tabs so each pair gets the
+        # full width. Both tabs use the same layout -- image on the left,
+        # per-tile focal indices on the right -- so flipping between them
+        # compares like with like.
+        self.flatten_view_tabs = QTabWidget()
+
+        raw_split = QSplitter(Qt.Horizontal)
         self.raw_slice_panel = RawSlicePanel()
         self.coarse_heatmap_panel = CoarseHeatmapPanel()
-        top_row.addWidget(self.raw_slice_panel)
-        top_row.addWidget(self.coarse_heatmap_panel)
+        raw_split.addWidget(self.raw_slice_panel)
+        raw_split.addWidget(self.coarse_heatmap_panel)
+        self.flatten_view_tabs.addTab(raw_split, "Raw")
 
-        bottom_row = QSplitter(Qt.Horizontal)
-        self.focus_surface_panel = FocusSurfacePanel()
+        processed_split = QSplitter(Qt.Horizontal)
         self.focal_preview_panel = FocalPreviewPanel()
-        bottom_row.addWidget(self.focus_surface_panel)
-        bottom_row.addWidget(self.focal_preview_panel)
+        self.focus_surface_panel = FocusSurfacePanel()
+        processed_split.addWidget(self.focal_preview_panel)
+        processed_split.addWidget(self.focus_surface_panel)
+        self.flatten_view_tabs.addTab(processed_split, "Processed")
 
-        grid_splitter_v.addWidget(top_row)
-        grid_splitter_v.addWidget(bottom_row)
-        right.addWidget(grid_splitter_v, 1)
+        right.addWidget(self.flatten_view_tabs, 1)
 
         self.tile_variance_visibility_checkbox = QCheckBox("Show tile variance inspector")
         self.tile_variance_visibility_checkbox.setChecked(True)
