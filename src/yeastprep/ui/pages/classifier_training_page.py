@@ -39,7 +39,7 @@ from tileclass.training.vicreg import warm_start_overlap
 
 from yeastprep.core.classify import find_project_checkpoint, supervised_output_dir, vicreg_output_dir
 
-from ..classifier_pool import ClassifierPool, ClassifierPoolWidget
+from ..classifier_pool import ClassifierPoolWidget, PoolScope
 from ..classify_params_panel import SupervisedTrainParamsPanel, VicregTrainParamsPanel
 from ..common.checkpoint_choice import (
     DEPLOYED_PATHS,
@@ -65,7 +65,7 @@ class _TrainingTab(QWidget):
     session_kind = ""  # core.classify.find_project_checkpoint's `kind`
     secondary_label = None  # second plotted metric, if any
 
-    def __init__(self, pool: ClassifierPool, parent=None):
+    def __init__(self, pool: PoolScope, parent=None):
         super().__init__(parent)
         self.pool = pool
         self._thread = None
@@ -412,7 +412,7 @@ class _VicregTrainingTab(_TrainingTab):
 class ClassifierTrainingPage(QWidget):
     progress_changed = Signal(object)  # PageProgress
 
-    def __init__(self, pool: ClassifierPool, parent=None):
+    def __init__(self, pool: PoolScope, parent=None):
         super().__init__(parent)
         self.pool = pool
 
@@ -425,7 +425,11 @@ class ClassifierTrainingPage(QWidget):
         left = QWidget()
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(0, 0, 0, 0)
-        left_layout.addWidget(ClassifierPoolWidget(pool))
+        left_layout.addWidget(
+            ClassifierPoolWidget(
+                pool, hint="Both training tabs use the FOVs checked here."
+            )
+        )
         self.settings_stack = QStackedWidget()
         left_layout.addWidget(self.settings_stack, 1)
 

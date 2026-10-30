@@ -214,7 +214,10 @@ over whole projects on its Classify Tiles page. Both pages share one
 classification pool of projects, kept between sessions (select a project's
 05 · Tiles entry in the tree and choose "Add Project to Classification
 Pool", or use "Add project..."), and both use only human-set or accepted
-annotations as ground truth. A training run saves to the first pooled
+annotations as ground truth. The project list is shared, but each page has
+its own FOV checkboxes (right-click a project to check/uncheck all, or check
+only one FOV): narrowing Classify Tiles to a few FOVs to sample a
+sub-population for Explore Embeddings leaves the training FOVs alone. A training run saves to the first pooled
 project's `06_classifier/` folder; "Deploy Latest" then makes it the model
 the tile viewer and Classify Tiles use.
 

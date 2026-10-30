@@ -74,8 +74,10 @@ class YeastPrepWindow(QMainWindow):
         self.segmentation_page = self._build_segmentation_page()
         self.tile_generation_page = TileGenerationPage(self.tree_panel)
         self.classifier_pool = ClassifierPool(self)
-        self.classifier_training_page = ClassifierTrainingPage(self.classifier_pool)
-        self.classify_tiles_page = ClassifyTilesPage(self.classifier_pool)
+        self.classifier_training_page = ClassifierTrainingPage(
+            self.classifier_pool.scope("training")
+        )
+        self.classify_tiles_page = ClassifyTilesPage(self.classifier_pool.scope("classify"))
         # page_key (see selection_actions.py) -> page, in stack order.
         self._pages = {
             "data_reduction": self.data_reduction_page,

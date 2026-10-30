@@ -40,7 +40,7 @@ from tileclass.training.vicreg import load_backbone
 
 from yeastprep.core.classify import sample_unlabeled, unlabeled_paths
 
-from ..classifier_pool import ClassifierPool, ClassifierPoolWidget
+from ..classifier_pool import ClassifierPoolWidget, PoolScope
 from ..common.background_task import BackgroundTask
 from ..common.checkpoint_choice import CheckpointChoice
 from ..diagnostics.annotation_analytics_panel import AnnotationAnalyticsPanel
@@ -61,7 +61,7 @@ _UNLABELED_MODES = (
 class ClassifyTilesPage(QWidget):
     progress_changed = Signal(object)  # PageProgress -- unused (nothing here is a batch/stage job)
 
-    def __init__(self, pool: ClassifierPool, parent=None):
+    def __init__(self, pool: PoolScope, parent=None):
         super().__init__(parent)
         self.pool = pool
         self._inference_thread = None
@@ -92,7 +92,14 @@ class ClassifyTilesPage(QWidget):
         left = QWidget()
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(0, 0, 0, 0)
-        left_layout.addWidget(ClassifierPoolWidget(self.pool))
+        left_layout.addWidget(
+            ClassifierPoolWidget(
+                self.pool,
+                hint="Inference, Explore Embeddings and Annotation Analytics "
+                "use the FOVs checked here -- narrow them to sample one "
+                "sub-population without changing what training uses.",
+            )
+        )
         left_layout.addWidget(self._build_inference_group())
         left_layout.addWidget(self._build_embeddings_controls_group())
         left_layout.addStretch(1)
@@ -455,8 +462,9 @@ class ClassifyTilesPage(QWidget):
             return embeddings, labels, paths, acc, umap_2d(embeddings, **umap_kwargs)
 
         self._embedding_done_text = "Embeddings evaluated."
+        n_fovs = len(pooled.folders) if pooled is not None else 0
         self.status_label.setText(
-            f"Evaluating embeddings for {len(paths)} tile(s) "
+            f"Evaluating embeddings for {len(paths)} tile(s) from {n_fovs} FOV(s) "
             f"({len(confirmed_labels)} annotated)..."
         )
         self._set_embedding_running(True)

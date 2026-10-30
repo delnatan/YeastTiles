@@ -249,19 +249,28 @@ def restore_splitter_state(key: str, splitter) -> bool:
     return False
 
 
-def get_classifier_pool() -> tuple[list[str], list[str]]:
-    """(project roots, excluded FOV container paths) of the shared
-    classification pool -- see `ui/classifier_pool.py`."""
+def get_classifier_pool(scopes) -> tuple[list[str], dict[str, list[str]]]:
+    """(project roots, {scope: excluded FOV container paths}) of the shared
+    classification pool -- see `ui/classifier_pool.py`. A scope with nothing
+    saved yet starts from the single exclusion list kept before scopes
+    existed."""
     s = _settings()
-    return _as_list(s.value("classifier_pool/roots", [])), _as_list(
-        s.value("classifier_pool/excluded_fovs", [])
-    )
+    legacy = _as_list(s.value("classifier_pool/excluded_fovs", []))
+    excluded = {
+        scope: _as_list(s.value(f"classifier_pool/excluded_{scope}", legacy))
+        for scope in scopes
+    }
+    return _as_list(s.value("classifier_pool/roots", [])), excluded
 
 
-def set_classifier_pool(roots: list[str], excluded_fovs: list[str]):
+def set_classifier_pool(roots: list[str], excluded: dict[str, list[str]]):
     s = _settings()
     s.setValue("classifier_pool/roots", list(roots))
-    s.setValue("classifier_pool/excluded_fovs", list(excluded_fovs))
+    for scope, fovs in excluded.items():
+        s.setValue(f"classifier_pool/excluded_{scope}", list(fovs))
+    # Migrated into every scope above; an emptied scope list must not read
+    # back as "nothing saved" and fall back to it.
+    s.remove("classifier_pool/excluded_fovs")
 
 
 def _as_list(value) -> list[str]:

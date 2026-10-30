@@ -352,7 +352,7 @@ def pretrain_vicreg(
     backbone_weights_path: Path | None = None,
 ) -> VICRegResult:
     """`paths`: tile paths to pretrain on -- e.g. every tile in the pool
-    (yeastprep's `ClassifierPool.tile_paths()`), annotated or not; labels
+    (yeastprep's `PoolScope.tile_paths()`), annotated or not; labels
     are never used. The resulting backbone has no classification head, so
     any later supervised run, with any set of categories, can start from
     it.
