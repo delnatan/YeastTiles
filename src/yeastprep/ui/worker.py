@@ -454,7 +454,7 @@ def _new_denoise_worker() -> SimplePipelineWorker:
 
 
 class DenoiseController(DebouncedController):
-    """Debounced controller for live denoise preview."""
+    """Runs the Denoise page's preview fit off the GUI thread."""
 
     def __init__(self, debounce_ms: int = 300, parent=None):
         super().__init__(
@@ -565,135 +565,6 @@ class TileBatchWorker(BatchWorker):
         if result.success and result.records is not None:
             append_tile_index(self._out_dir, result.records, fov_ids=[Path(path).stem])
         return result
-
-
-def _release_device_cache(device) -> None:
-    """MPS/CUDA's caching allocator doesn't return freed blocks to the
-    driver on its own -- worth releasing after a long training run so a
-    long-lived GUI session doesn't accumulate pinned device memory across
-    repeated Train runs (same justification as jssl_denoise's own
-    pyvistra-plugin worker, which isn't importable here -- see
-    TrainingWorker's docstring)."""
-    if device is None:
-        return
-    try:
-        import torch
-
-        if device.type == "mps":
-            torch.mps.empty_cache()
-        elif device.type == "cuda":
-            torch.cuda.empty_cache()
-    except Exception:
-        pass
-
-
-class TrainingWorker(QObject):
-    """Trains a D-Net/N-Net denoiser pair on pooled frames via
-    `jssl_denoise.training.Trainer.fit`, reporting progress via Qt signals.
-
-    jssl_denoise ships its own pyvistra-plugin version of this class
-    (`jssl_denoise.pyvistra_gui.train_worker.TrainingWorker`), but that
-    submodule isn't part of the installed `jssl-denoise` package pin (see
-    pyproject.toml) -- only `jssl_denoise.training` itself is guaranteed
-    available, so this is a from-scratch, Qt-only re-implementation of
-    that same thin wrapper: it duck-types
-    `jssl_denoise.callbacks.TrainingCallback` (`on_step_end`/
-    `on_epoch_end`/`on_epoch_metrics`/`on_early_stop`) and passes itself to
-    `Trainer.fit` directly as `callback=self`.
-
-    Takes frame *paths* plus the channel to read from each, and reads them
-    on its own thread first -- pooling a few projects' worth of tiffs is
-    slow enough to freeze the window if done before starting.
-    """
-
-    frames_loaded = Signal(int, tuple)  # number of frames, first frame's shape
-    step_progress = Signal(int, int, int, float)  # step, total_steps, epoch, loss
-    epoch_finished = Signal(int, int, float, float)  # epoch, total_epochs, loss, lr
-    epoch_metrics = Signal(int, dict)  # epoch, {"mu_mse": ..., "sigma_mean": ...}
-    early_stopped = Signal(int, int, float)  # epoch, best_epoch, best_mu_mse
-    finished = Signal(object)  # checkpoint dict
-    cancelled = Signal(object)  # checkpoint dict, or None if cancelled while loading
-    error = Signal(str)
-
-    def __init__(self, frame_paths, channel: int, config):
-        super().__init__()
-        self._frame_paths = list(frame_paths)
-        self._channel = channel
-        self._config = config
-        self._cancel_requested = False
-
-    def cancel(self):
-        self._cancel_requested = True
-
-    # ------------------------------------------------------------------
-    # TrainingCallback protocol
-
-    def on_step_end(self, step, total_steps, epoch, loss):
-        self.step_progress.emit(step, total_steps, epoch, loss)
-
-    def on_epoch_end(self, epoch, total_epochs, loss, lr):
-        self.epoch_finished.emit(epoch, total_epochs, loss, lr)
-
-    def on_epoch_metrics(self, epoch, metrics):
-        self.epoch_metrics.emit(epoch, dict(metrics))
-
-    def on_early_stop(self, epoch, best_epoch, best_mu_mse):
-        self.early_stopped.emit(epoch, best_epoch, best_mu_mse)
-
-    # ------------------------------------------------------------------
-
-    def _load_frames(self) -> list | None:
-        """The checked frames' chosen channel, or None if cancelled."""
-        import numpy as np
-        import tifffile
-
-        frames = []
-        for path in self._frame_paths:
-            if self._cancel_requested:
-                return None
-            frames.append(np.asarray(tifffile.imread(path)[self._channel]))
-        return frames
-
-    def run(self):
-        import torch
-
-        try:
-            frames = self._load_frames()
-        except Exception as exc:
-            self.error.emit(f"Couldn't read training frames: {exc}")
-            return
-        if frames is None:
-            self.cancelled.emit(None)
-            return
-        self.frames_loaded.emit(len(frames), tuple(frames[0].shape))
-
-        device = (
-            torch.device(self._config.device)
-            if self._config.device
-            else torch.device(
-                "cuda"
-                if torch.cuda.is_available()
-                else "mps"
-                if torch.backends.mps.is_available()
-                else "cpu"
-            )
-        )
-        try:
-            from jssl_denoise.training import Trainer
-
-            checkpoint = Trainer(self._config).fit(
-                frames, callback=self, should_stop=lambda: self._cancel_requested
-            )
-        except Exception as exc:
-            self.error.emit(str(exc))
-            return
-        finally:
-            _release_device_cache(device)
-
-        if self._cancel_requested:
-            self.cancelled.emit(checkpoint)
-        else:
-            self.finished.emit(checkpoint)
 
 
 class ClassifierTrainingWorker(QObject):

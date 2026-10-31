@@ -1,7 +1,6 @@
 """Training hyperparameter controls for the Classifier Training page's two
 tabs, wrapping `tileclass.training.supervised.TrainingParams` and
-`tileclass.training.vicreg.VICRegParams` -- same spinbox-per-field pattern
-as `train_params_panel.TrainParamsPanel` (denoise's equivalent)."""
+`tileclass.training.vicreg.VICRegParams` -- one spinbox per field."""
 
 from qtpy.QtCore import Signal
 from qtpy.QtWidgets import (

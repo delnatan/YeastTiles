@@ -149,9 +149,8 @@ def get_default_denoise_params() -> DenoiseParams:
     s.beginGroup("default_denoise_params")
     defaults = DenoiseParams()
     params = DenoiseParams(
-        channel=int(s.value("channel", defaults.channel)),
-        checkpoint_path=s.value("checkpoint_path", defaults.checkpoint_path) or None,
-        tta=_as_bool(s.value("tta", defaults.tta)),
+        channels=tuple(int(c) for c in _as_list(s.value("channels", list(defaults.channels)))),
+        steps=int(s.value("steps", defaults.steps)),
     )
     s.endGroup()
     return params
@@ -160,9 +159,8 @@ def get_default_denoise_params() -> DenoiseParams:
 def set_default_denoise_params(params: DenoiseParams):
     s = _settings()
     s.beginGroup("default_denoise_params")
-    s.setValue("channel", params.channel)
-    s.setValue("checkpoint_path", params.checkpoint_path or "")
-    s.setValue("tta", params.tta)
+    s.setValue("channels", [str(c) for c in params.channels])
+    s.setValue("steps", params.steps)
     s.endGroup()
 
 

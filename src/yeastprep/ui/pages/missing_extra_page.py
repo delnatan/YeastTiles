@@ -1,4 +1,4 @@
-"""Stand-in for a page whose packages aren't installed (e.g. Denoise or
+"""Stand-in for a page whose packages aren't installed (e.g.
 Segmentation on a `lite` install -- see
 yeastprep/optional_deps.py). Keeps the page's slot in the stage list and
 the `progress_changed`/`load_selection`/`shutdown` shape the shell expects,

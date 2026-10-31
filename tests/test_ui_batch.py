@@ -282,33 +282,6 @@ def test_background_task_shutdown_waits_and_drops_the_result(qapp):
     assert got == []
 
 
-def test_denoise_training_worker_reads_frames_itself(qapp, tmp_path):
-    """Frames are read on the worker's thread; a cancel while reading ends
-    the run with no checkpoint, and an unreadable frame is an error."""
-    import numpy as np
-    import tifffile
-
-    from yeastprep.ui.worker import TrainingWorker
-
-    frame = tmp_path / "f.tiff"
-    tifffile.imwrite(frame, np.zeros((2, 8, 8), np.uint16))
-
-    worker = TrainingWorker([frame, frame], channel=1, config=None)
-    assert [f.shape for f in worker._load_frames()] == [(8, 8), (8, 8)]
-
-    cancelled = []
-    worker.cancelled.connect(cancelled.append)
-    worker.cancel()
-    worker.run()
-    assert cancelled == [None]
-
-    errors = []
-    broken = TrainingWorker([tmp_path / "missing.tiff"], channel=0, config=None)
-    broken.error.connect(errors.append)
-    broken.run()
-    assert errors and errors[0].startswith("Couldn't read training frames")
-
-
 def test_errors_from_superseded_preview_requests_are_dropped(qapp):
     def compute(payload, params):
         raise ValueError(f"bad {payload}")

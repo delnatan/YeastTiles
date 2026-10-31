@@ -69,7 +69,7 @@ The profiles are bundles of smaller extras, which can still be combined by
 hand for an unusual machine:
 
 - `classification` -- torch, pyvistra/qtkit, scikit-learn, plotting.
-- `prep` -- cellpose, jssl-denoise, scipy/vispy (Denoise, Segmentation).
+- `prep` -- cellpose, scipy/vispy (Segmentation).
 - `psf` -- `psfkit`, only for the PSF Calculator tab on the Deconvolve
   page. Deconvolution itself just needs a PSF tiff file.
 - `notebooks` -- jupyter.
@@ -81,8 +81,7 @@ missing `classification` packages rather than crashing.
 
 ### Third-party packages
 
-`jssl-denoise` (`prep`), `pyvistra` and `qtkit` (`classification`), and
-`psfkit` (`psf`) are git-URL dependencies in `pyproject.toml` -- `uv sync`
+`pyvistra` and `qtkit` (`classification`) and `psfkit` (`psf`) are git-URL dependencies in `pyproject.toml` -- `uv sync`
 clones them itself. `resolvde` isn't a dependency at all: its
 deconvolution code is vendored into `src/yeastprep/core/deconvolution/`
 (see that package's docstring).
@@ -126,7 +125,10 @@ Pipeline, in order (see [design.md](design.md) for the full rationale):
    Both are saved as one 2-channel tiff per field of view -- this is the
    step that collapses the large raw footprint down to something small
    enough to work with directly.
-2. **Denoise (02_denoised)** -- optional, jssl-denoise.
+2. **Denoise (02_denoised)** -- optional. Each channel of each image is
+   denoised by a small network fitted to that image alone (self-supervised,
+   Noise2Self-style; about 30 s per channel on an Apple M5) -- nothing to
+   train beforehand and no checkpoints. See `core/denoise.py`.
 3. **Deconvolve (03_deconvolved)** -- optional, Poisson-ML deconvolution of
    the target channel only (brightfield has no PSF model). Reads from
    02_denoised if that ran, else 01_reduced.

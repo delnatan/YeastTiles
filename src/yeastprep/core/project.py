@@ -195,7 +195,7 @@ def stage_file_status(
     # Whether the upstream dir has *anything relevant* -- deliberately not
     # "has any file at all": `upstream_dir` can be the project root itself
     # (01_reduced/'s upstream), which also holds the config sidecar,
-    # denoise checkpoints, `.DS_Store`, other stage folders, etc., none of
+    # `.DS_Store`, other stage folders, etc., none of
     # which will ever share a stem with a real FOV file. Intersecting on
     # stem is what tells "raw stacks archived off this computer" (no
     # overlap at all) apart from "raw stacks still here" (full or partial
@@ -255,13 +255,6 @@ class ProjectConfig:
     channels: ChannelSelection = field(default_factory=lambda: DEFAULT_CHANNELS)
     flatten_params: FlattenFieldParams = field(default_factory=FlattenFieldParams)
     denoise_params: DenoiseParams = field(default_factory=DenoiseParams)
-    # channel (0=brightfield, 1=target) -> checkpoint path -- brightfield and
-    # the target/fluorescence channel are different imaging modalities, so
-    # each needs its own trained network; this is what lets the Denoising
-    # tab restore the right checkpoint when you switch which channel you're
-    # working on, instead of remembering only whichever channel you saved
-    # defaults for last.
-    denoise_checkpoints: dict[int, str] = field(default_factory=dict)
     deconvolve_params: DeconvolveParams = field(default_factory=DeconvolveParams)
     segmentation_params: SegmentationParams = field(default_factory=SegmentationParams)
     tile_params: TileParams = field(default_factory=TileParams)
@@ -275,7 +268,7 @@ class ProjectConfig:
     # stage -> {"last_run": iso timestamp, "files": [stems processed]}
     stage_runs: dict[str, dict] = field(default_factory=dict)
     # 02_denoised file stem -> channels (0=brightfield, 1=target) actually
-    # run through jssl-denoise for it, as of the most recent successful
+    # denoised for it, as of the most recent successful
     # batch that touched it -- denoise_and_save merges per-channel
     # (core/denoise.py), so a file existing in 02_denoised/ doesn't by
     # itself say which channel(s) inside it were ever denoised versus just
@@ -297,10 +290,11 @@ def _flatten_params_from_dict(data: dict, defaults: FlattenFieldParams) -> Flatt
 
 
 def _denoise_params_from_dict(data: dict, defaults: DenoiseParams) -> DenoiseParams:
+    # Projects saved before per-image denoising have channel/checkpoint_path/
+    # tta here instead; those mean nothing now, so they fall back to defaults.
     return DenoiseParams(
-        channel=int(data.get("channel", defaults.channel)),
-        checkpoint_path=data.get("checkpoint_path", defaults.checkpoint_path) or None,
-        tta=bool(data.get("tta", defaults.tta)),
+        channels=tuple(int(c) for c in data.get("channels", defaults.channels)),
+        steps=int(data.get("steps", defaults.steps)),
     )
 
 
@@ -372,9 +366,6 @@ def _config_from_dict(data: dict) -> ProjectConfig:
         denoise_params=_denoise_params_from_dict(
             data.get("denoise_params", {}), defaults.denoise_params
         ),
-        denoise_checkpoints={
-            int(channel): path for channel, path in data.get("denoise_checkpoints", {}).items()
-        },
         deconvolve_params=_deconvolve_params_from_dict(
             data.get("deconvolve_params", {}), defaults.deconvolve_params
         ),
@@ -431,12 +422,8 @@ def save_project_config(root, config: ProjectConfig):
             "offset_um": config.flatten_params.offset_um,
         },
         "denoise_params": {
-            "channel": config.denoise_params.channel,
-            "checkpoint_path": config.denoise_params.checkpoint_path or "",
-            "tta": config.denoise_params.tta,
-        },
-        "denoise_checkpoints": {
-            str(channel): path for channel, path in config.denoise_checkpoints.items()
+            "channels": list(config.denoise_params.channels),
+            "steps": config.denoise_params.steps,
         },
         "deconvolve_params": {
             "enabled": config.deconvolve_params.enabled,
@@ -486,16 +473,14 @@ def mark_stage_run(root, stage: str, files_processed: list[str]):
     save_project_config(root, config)
 
 
-def mark_denoise_channels(root, channel: int, stems: list[str]):
-    """Record that `channel` was actually run through jssl-denoise (not just
-    carried over) for each of `stems`, merged into whatever
+def mark_denoise_channels(root, channels, stems: list[str]):
+    """Record that `channels` were actually denoised (not just carried
+    over) for each of `stems`, merged into whatever
     `denoise_channels_done` already has for that stem -- so denoising
     channel 0 today and channel 1 tomorrow accumulates to "both done"
     rather than the later run clobbering the earlier one's record."""
     config = load_project_config(root) or ProjectConfig()
     done = config.denoise_channels_done
     for stem in stems:
-        channels = set(done.get(stem, []))
-        channels.add(channel)
-        done[stem] = sorted(channels)
+        done[stem] = sorted(set(done.get(stem, [])) | set(channels))
     save_project_config(root, config)

@@ -23,10 +23,9 @@ there's no per-page folder state, and no hand-wired "use X output"
 buttons: every page just asks the shared tree which stage is currently the
 active 2D source.
 
-Denoise and Segmentation need the `prep` extra's jssl-denoise/cellpose, so
-on an install without them those two slots get a `MissingExtraPage` saying
-what to install, and the rest of the window (Classifier Training, Classify
-Tiles, ...) still works -- see yeastprep/optional_deps.py.
+Segmentation needs the `prep` extra's cellpose, so on an install without
+it that slot gets a `MissingExtraPage` saying what to install, and the rest
+of the window still works -- see yeastprep/optional_deps.py.
 """
 
 from qtpy.QtCore import Qt
@@ -51,6 +50,7 @@ from .pages.classifier_training_page import ClassifierTrainingPage
 from .pages.classify_tiles_page import ClassifyTilesPage
 from .pages.data_reduction_page import DataReductionPage
 from .pages.deconvolve_page import DeconvolvePage
+from .pages.denoise_page import DenoisePage
 from .pages.missing_extra_page import MissingExtraPage
 from .pages.preview_page import PreviewPage
 from .pages.tile_generation_page import TileGenerationPage
@@ -69,7 +69,7 @@ class YeastPrepWindow(QMainWindow):
 
         self.data_reduction_page = DataReductionPage(self.tree_panel)
         self.preview_page = PreviewPage(self.tree_panel)
-        self.denoise_page = self._build_denoise_page()
+        self.denoise_page = DenoisePage(self.tree_panel)
         self.deconvolve_page = DeconvolvePage(self.tree_panel)
         self.segmentation_page = self._build_segmentation_page()
         self.tile_generation_page = TileGenerationPage(self.tree_panel)
@@ -101,17 +101,8 @@ class YeastPrepWindow(QMainWindow):
     # ------------------------------------------------------------------
     # UI construction
 
-    # The page modules are imported only once their packages are known to
-    # be installed, since they (and their params panels) import them at
-    # module level.
-    def _build_denoise_page(self):
-        absent = missing("jssl_denoise")
-        if absent:
-            return MissingExtraPage("Denoise", absent, extra="prep")
-        from .pages.denoise_page import DenoisePage
-
-        return DenoisePage(self.tree_panel)
-
+    # Imported only once cellpose is known to be installed, since the page
+    # (and its params panel) import it at module level.
     def _build_segmentation_page(self):
         absent = missing("cellpose")
         if absent:

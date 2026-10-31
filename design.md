@@ -6,7 +6,7 @@ This project provides a self-contained implementation for processing images of y
 
 ## Project dependencies
 
-This project depends on cellpose-SAM (the default 'cellpose' install from PyPI as of August, 2026), PyQt, pyvistra, jssl-denoise and pytorch. Cellpose is used for yeast segmentation. pyvistra is used to render images. jssl-denoise is used to optionally denoise images.
+This project depends on cellpose-SAM (the default 'cellpose' install from PyPI as of August, 2026), PyQt, pyvistra and pytorch. Cellpose is used for yeast segmentation. pyvistra is used to render images. Optional denoising fits a small self-supervised network to each image (`core/denoise.py`).
 
 
 ## General pipeline

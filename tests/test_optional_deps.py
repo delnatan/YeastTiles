@@ -11,7 +11,7 @@ import textwrap
 import numpy as np
 import pytest
 
-PREP_ONLY_PACKAGES = ("cellpose", "jssl_denoise", "psfkit")
+PREP_ONLY_PACKAGES = ("cellpose", "psfkit")
 
 _HIDE_PACKAGES = f"""
 import importlib.abc, importlib.util, sys
@@ -59,7 +59,7 @@ def test_yeastprep_window_builds_without_prep_extra():
         from yeastprep.ui.pages.missing_extra_page import MissingExtraPage
 
         window = YeastPrepWindow()
-        assert isinstance(window.denoise_page, MissingExtraPage)
+        assert not isinstance(window.denoise_page, MissingExtraPage)
         assert isinstance(window.segmentation_page, MissingExtraPage)
         assert not isinstance(window.classify_tiles_page, MissingExtraPage)
         assert not isinstance(window.classifier_training_page, MissingExtraPage)

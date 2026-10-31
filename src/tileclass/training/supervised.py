@@ -270,7 +270,7 @@ def train_classifier(
 ) -> TrainingResult:
     """`records`: list of (crop_path, category) pairs -- typically
     `PooledAnnotations.tagged_items()` filtered to human-confirmed tags
-    only (see `workers.TrainingWorker`; training on the model's own
+    only (see yeastprep's `PoolScope.gather_confirmed_records`; training on the model's own
     unreviewed predictions would just reinforce its current mistakes).
     `backbone_weights_path`: optional headless VICReg backbone checkpoint
     (see `training.vicreg.pretrain_vicreg`) to start from instead of an

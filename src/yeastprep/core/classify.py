@@ -3,11 +3,10 @@ yeastprep's Classifier Training page. Training itself (`train_classifier`,
 `pretrain_vicreg`) lives in `tileclass.training` -- already fully decoupled
 from tileclass's Qt/annotation UI, so this module only supplies the
 yeastprep-side path conventions (which FOV folders a project offers to pool,
-and where a training session's non-live output checkpoint goes), mirroring
-`core/denoise.py`'s `checkpoint_filename_for_channel`/`find_project_checkpoint`.
+and where a training session's non-live output checkpoint goes).
 
-Unlike denoise, a classifier checkpoint is never written to a project folder
-directly by the training run -- see `checkpoint_dir_for_project` below --
+A classifier checkpoint is never written to a project folder directly by
+the training run -- see `checkpoint_dir_for_project` below --
 because a single pooled training session spans multiple projects at once, so
 there's no one project it "belongs" to; the session output directory is just
 a convenient, discoverable default, not project state.

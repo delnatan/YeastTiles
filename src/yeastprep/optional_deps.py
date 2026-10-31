@@ -1,6 +1,6 @@
 """Checks for the packages that only some install profiles have (see the
 extras in pyproject.toml). A `lite` install has no
-cellpose/jssl-denoise, so modules that need those import them inside the
+cellpose, so modules that need it import it inside the
 function that uses them (via `require`, for a message that names the
 extra to install), and ui/main_window.py uses `missing` to show an
 "install the `prep` extra" placeholder instead of a page it can't build.

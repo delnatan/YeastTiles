@@ -59,9 +59,9 @@ def main():
     except ImportError as exc:
         # A missing `classification` package (torch/pyvistra/...): the
         # window needs that extra to launch at all. The `prep` extra's
-        # cellpose/jssl-denoise aren't needed here -- without them the
-        # Segmentation/Denoise pages just show an "install prep"
-        # placeholder (see yeastprep/optional_deps.py).
+        # cellpose isn't needed here -- without it the Segmentation page
+        # just shows an "install prep" placeholder (see
+        # yeastprep/optional_deps.py).
         QMessageBox.critical(
             None,
             "yeastprep",
