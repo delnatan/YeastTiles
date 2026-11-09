@@ -400,7 +400,7 @@ class ClassifyTilesPage(QWidget):
     # Explore Embeddings -- UMAP projection of a backbone's embeddings
     # over the pool's confirmed tiles plus all, a random sample, or none of
     # its unlabeled ones (`core.classify.unlabeled_paths`). The forward
-    # pass and UMAP run on a background thread; the pool is read up front.
+    # pass and UMAP run on a background thread, and so does reading the pool.
 
     def _sync_unlabeled_controls(self, *_args):
         self.unlabeled_sample_size.setVisible(self.unlabeled_mode.currentData() == "sample")
@@ -415,37 +415,37 @@ class ClassifyTilesPage(QWidget):
             )
             return
 
-        records = self.pool.gather_confirmed_records()
-        paths = [p for p, _ in records]
-        labels = [label for _, label in records]
-        confirmed_labels = list(labels)
-
-        pooled = self.pool.pooled_annotations()
+        # Everything below that reads the pool -- annotations, tile lists --
+        # runs on the worker thread, from a snapshot of what's checked now.
+        snapshot = self.pool.snapshot()
         mode = self.unlabeled_mode.currentData()
-        if pooled is None or mode == "none":
-            unlabeled = []
-        elif mode == "sample":
-            unlabeled = sample_unlabeled(pooled, self.unlabeled_sample_size.value())
-        else:
-            unlabeled = unlabeled_paths(pooled)
-        paths = paths + unlabeled
-        labels = labels + [UNLABELED_LABEL] * len(unlabeled)
-
-        if len(paths) < 2:
-            QMessageBox.warning(
-                self,
-                "yeastprep",
-                "Need at least 2 tiles to evaluate embeddings -- check some "
-                "FOVs with exported tiles in the pool"
-                + (", or include unlabeled tiles." if mode == "none" else "."),
-            )
-            return
-
-        self._embedding_pooled = pooled
+        sample_size = self.unlabeled_sample_size.value()
         umap_kwargs = self._umap_kwargs()
 
         def compute():
             import torch
+
+            records = snapshot.gather_confirmed_records()
+            paths = [p for p, _ in records]
+            labels = [label for _, label in records]
+            confirmed_labels = list(labels)
+
+            pooled = snapshot.pooled_annotations()
+            if pooled is None or mode == "none":
+                unlabeled = []
+            elif mode == "sample":
+                unlabeled = sample_unlabeled(pooled, sample_size)
+            else:
+                unlabeled = unlabeled_paths(pooled)
+            paths = paths + unlabeled
+            labels = labels + [UNLABELED_LABEL] * len(unlabeled)
+
+            if len(paths) < 2:
+                return (
+                    "Need at least 2 tiles to evaluate embeddings -- check some "
+                    "FOVs with exported tiles in the pool"
+                    + (", or include unlabeled tiles." if mode == "none" else ".")
+                )
 
             device = select_device()
             backbone = load_backbone(weights_path=weights_path, device=device)
@@ -459,14 +459,11 @@ class ClassifyTilesPage(QWidget):
                     acc = knn_accuracy(embeddings[:n_confirmed], confirmed_labels)
                 except ValueError:
                     pass  # too few annotations yet for a train/val split
-            return embeddings, labels, paths, acc, umap_2d(embeddings, **umap_kwargs)
+            xy = umap_2d(embeddings, **umap_kwargs)
+            return embeddings, labels, paths, acc, xy, pooled
 
         self._embedding_done_text = "Embeddings evaluated."
-        n_fovs = len(pooled.folders) if pooled is not None else 0
-        self.status_label.setText(
-            f"Evaluating embeddings for {len(paths)} tile(s) from {n_fovs} FOV(s) "
-            f"({len(confirmed_labels)} annotated)..."
-        )
+        self.status_label.setText("Evaluating embeddings...")
         self._set_embedding_running(True)
         self._embedding_task.start(compute)
 
@@ -477,11 +474,12 @@ class ClassifyTilesPage(QWidget):
         # Keep tags set in the explorer since Evaluate.
         labels = self.embedding_explorer.labels_for(paths)
         umap_kwargs = self._umap_kwargs()
+        pooled = self._embedding_pooled
         self._embedding_done_text = "Re-plotted embeddings."
         self.status_label.setText("Re-running UMAP...")
         self._set_embedding_running(True)
         self._embedding_task.start(
-            lambda: (embeddings, labels, paths, acc, umap_2d(embeddings, **umap_kwargs))
+            lambda: (embeddings, labels, paths, acc, umap_2d(embeddings, **umap_kwargs), pooled)
         )
 
     def _set_embedding_running(self, running: bool):
@@ -489,13 +487,21 @@ class ClassifyTilesPage(QWidget):
         self.replot_btn.setEnabled(not running and self._last_embeddings is not None)
 
     def _on_embeddings_ready(self, result):
-        embeddings, labels, paths, acc, xy = result
-        self._last_embeddings = (embeddings, labels, paths, acc)
-        self.embedding_explorer.show_embedding(
-            xy, labels, paths, self._embedding_pooled, knn_acc=acc
-        )
         self._set_embedding_running(False)
-        self.status_label.setText(self._embedding_done_text)
+        if isinstance(result, str):  # nothing to plot: why
+            self.status_label.setText("")
+            QMessageBox.warning(self, "yeastprep", result)
+            return
+        embeddings, labels, paths, acc, xy, pooled = result
+        self._embedding_pooled = pooled
+        self._last_embeddings = (embeddings, labels, paths, acc)
+        self.embedding_explorer.show_embedding(xy, labels, paths, pooled, knn_acc=acc)
+        n_annotated = sum(1 for label in labels if label != UNLABELED_LABEL)
+        n_fovs = len(pooled.folders) if pooled is not None else 0
+        self.status_label.setText(
+            f"{self._embedding_done_text} {len(paths)} tile(s) from {n_fovs} "
+            f"FOV(s), {n_annotated} annotated."
+        )
 
     def _on_embeddings_failed(self, message: str):
         self._set_embedding_running(False)
@@ -534,6 +540,7 @@ class ClassifyTilesPage(QWidget):
         return ", ".join(jobs) or None
 
     def shutdown(self):
+        self.annotation_analytics.shutdown()
         self._embedding_task.shutdown()
         self.embedding_explorer.shutdown()
         if self._inference_thread is not None:

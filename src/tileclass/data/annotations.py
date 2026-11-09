@@ -123,6 +123,18 @@ class TileAnnotations(MutableMapping):
             return os.path.join(root_dir, "pyvistra_annotations.txt")
         return os.path.join(parent, f"{name}.txt")
 
+    @classmethod
+    def source_paths(cls, root_dir):
+        """The files `TileAnnotations(root_dir)` reads: its sidecar and, for
+        a container, the project's shared vocabulary. Their mtimes/sizes say
+        whether a copy loaded earlier is still current."""
+        root_dir = os.path.normpath(root_dir)
+        paths = [cls._annotation_file_path(root_dir)]
+        vocab = cls._vocab_file_path(root_dir)
+        if vocab is not None:
+            paths.append(vocab)
+        return paths
+
     @staticmethod
     def _vocab_file_path(root_dir):
         if not os.path.basename(root_dir).endswith(_CONTAINER_SUFFIX):

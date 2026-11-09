@@ -35,13 +35,19 @@ from tileclass.scan import scan_container
 from yeastprep.core.classify import discover_fov_dirs
 
 from . import settings
+from .pool_data import PoolDataCache, PoolSummary
 
 
 SCOPES = ("training", "classify")
 
 
 class ClassifierPool(QObject):
-    changed = Signal()  # a project was added/removed, or a FOV (un)checked
+    # Which projects are pooled changed (added, removed).
+    projects_changed = Signal()
+    # A FOV was (un)checked in the named scope. This only changes what that
+    # scope's page looks at: nothing is loaded or dropped here -- the pages
+    # read what they need, when they need it (see `PoolDataCache`).
+    selection_changed = Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -50,16 +56,19 @@ class ClassifierPool(QObject):
         self._excluded: dict[str, set[str]] = {
             scope: set(fovs) for scope, fovs in excluded.items()
         }
+        self.cache = PoolDataCache()
+        self._scopes: dict[str, PoolScope] = {}
 
-    def _save_and_notify(self):
+    def _save(self):
         settings.set_classifier_pool(
             self._roots, {scope: sorted(fovs) for scope, fovs in self._excluded.items()}
         )
-        self.changed.emit()
 
     def scope(self, name: str) -> "PoolScope":
         """The pool as one page sees it: the shared projects, its own FOV checks."""
-        return PoolScope(self, name)
+        if name not in self._scopes:
+            self._scopes[name] = PoolScope(self, name)
+        return self._scopes[name]
 
     # ------------------------------------------------------------------
 
@@ -70,7 +79,8 @@ class ClassifierPool(QObject):
         root = str(root)
         if root not in self._roots:
             self._roots.append(root)
-            self._save_and_notify()
+            self._save()
+            self.projects_changed.emit()
 
     def remove_project(self, root: str):
         if root in self._roots:
@@ -78,29 +88,95 @@ class ClassifierPool(QObject):
             prefix = os.path.join(root, "")
             for scope, fovs in self._excluded.items():
                 self._excluded[scope] = {f for f in fovs if not f.startswith(prefix)}
-            self._save_and_notify()
+            self.cache.forget_project(root)
+            self._save()
+            self.projects_changed.emit()
 
     def set_fovs_included(self, scope: str, fov_paths, included: bool):
         excluded = self._excluded[scope]
+        before = set(excluded)
         if included:
             excluded.difference_update(fov_paths)
         else:
             excluded.update(fov_paths)
-        self._save_and_notify()
+        if excluded != before:
+            self._save()
+            self.selection_changed.emit(scope)
 
     def is_fov_included(self, scope: str, fov_path: str) -> bool:
         return fov_path not in self._excluded[scope]
 
+    def excluded(self, scope: str) -> frozenset:
+        return frozenset(self._excluded[scope])
 
-class PoolScope:
+
+class PoolSnapshot:
+    """The checked FOVs of one scope at one moment, plus everything that
+    reads them. Taken on the GUI thread (`PoolScope.snapshot()`), so a
+    worker thread can use it while the user keeps clicking checkboxes."""
+
+    def __init__(self, roots, excluded, cache: PoolDataCache):
+        self.roots = tuple(roots)
+        self.excluded = frozenset(excluded)
+        self._cache = cache
+
+    def checked_fov_dirs(self) -> list[str]:
+        return [
+            str(fov)
+            for root in self.roots
+            for fov in discover_fov_dirs(root)
+            if str(fov) not in self.excluded
+        ]
+
+    def summary(self) -> PoolSummary:
+        """Tile and tag counts over the checked FOVs, from the cache."""
+        return self._cache.summarize(self.checked_fov_dirs())
+
+    def pooled_annotations(self) -> PooledAnnotations | None:
+        """A `PooledAnnotations` over the checked FOVs, or `None` if none
+        are checked. Always fresh from disk: it's what tags are written
+        through."""
+        fov_dirs = self.checked_fov_dirs()
+        return PooledAnnotations(fov_dirs) if fov_dirs else None
+
+    def tile_paths(self) -> list[str]:
+        return [p for fov in self.checked_fov_dirs() for p in scan_container(fov)]
+
+    def gather_confirmed_records(self) -> list[tuple[str, str]]:
+        """(path, category) pairs restricted to human-set tags -- training
+        on the model's own unreviewed predictions would just reinforce its
+        current mistakes."""
+        pooled = self.pooled_annotations()
+        if pooled is None:
+            return []
+        return [
+            (path, category)
+            for path, category, confidence in pooled.tagged_items()
+            if confidence is None
+        ]
+
+
+class PoolScope(QObject):
     """One page's view of a `ClassifierPool`: projects are shared, FOV
     checks are this scope's own. Everything a page reads -- tile paths,
     annotations, training records -- covers only the FOVs checked here."""
 
+    projects_changed = Signal()
+    selection_changed = Signal()  # this scope's checks only
+    changed = Signal()  # either
+
     def __init__(self, pool: ClassifierPool, name: str):
+        super().__init__(pool)
         self.pool = pool
         self.name = name
-        self.changed = pool.changed
+        pool.projects_changed.connect(self.projects_changed)
+        pool.projects_changed.connect(self.changed)
+        pool.selection_changed.connect(self._on_selection_changed)
+
+    def _on_selection_changed(self, scope: str):
+        if scope == self.name:
+            self.selection_changed.emit()
+            self.changed.emit()
 
     def roots(self) -> list[str]:
         return self.pool.roots()
@@ -122,35 +198,20 @@ class PoolScope:
 
     # ------------------------------------------------------------------
 
+    def snapshot(self) -> PoolSnapshot:
+        return PoolSnapshot(self.roots(), self.pool.excluded(self.name), self.pool.cache)
+
     def checked_fov_dirs(self) -> list[str]:
-        return [
-            str(fov)
-            for root in self.roots()
-            for fov in discover_fov_dirs(root)
-            if self.is_fov_included(str(fov))
-        ]
+        return self.snapshot().checked_fov_dirs()
 
     def pooled_annotations(self) -> PooledAnnotations | None:
-        """A `PooledAnnotations` over the checked FOVs, or `None` if none
-        are checked."""
-        fov_dirs = self.checked_fov_dirs()
-        return PooledAnnotations(fov_dirs) if fov_dirs else None
+        return self.snapshot().pooled_annotations()
 
     def tile_paths(self) -> list[str]:
-        return [p for fov in self.checked_fov_dirs() for p in scan_container(fov)]
+        return self.snapshot().tile_paths()
 
     def gather_confirmed_records(self) -> list[tuple[str, str]]:
-        """(path, category) pairs restricted to human-set tags -- training
-        on the model's own unreviewed predictions would just reinforce its
-        current mistakes."""
-        pooled = self.pooled_annotations()
-        if pooled is None:
-            return []
-        return [
-            (path, category)
-            for path, category, confidence in pooled.tagged_items()
-            if confidence is None
-        ]
+        return self.snapshot().gather_confirmed_records()
 
 
 class ClassifierPoolWidget(QWidget):
@@ -195,7 +256,8 @@ class ClassifierPoolWidget(QWidget):
         buttons.addWidget(remove_btn)
         v.addLayout(buttons)
 
-        pool.changed.connect(self._on_pool_changed)
+        pool.projects_changed.connect(self._rebuild)
+        pool.selection_changed.connect(self._on_selection_changed)
         self._rebuild()
 
     def _prompt_add_project(self):
@@ -214,7 +276,7 @@ class ClassifierPoolWidget(QWidget):
     def _on_item_changed(self, item: QTreeWidgetItem, _column: int):
         if item.parent() is None:
             return
-        # This tree already shows the new state; don't rebuild it from
+        # This tree already shows the new state; don't touch it from
         # inside its own itemChanged.
         self._editing = True
         try:
@@ -245,9 +307,21 @@ class ClassifierPoolWidget(QWidget):
             menu.addAction(f"Check only {item.text(0)}", only_this)
         menu.exec_(self.pool_tree.viewport().mapToGlobal(pos))
 
-    def _on_pool_changed(self):
-        if not self._editing:
-            self._rebuild()
+    def _on_selection_changed(self):
+        # A bulk check/uncheck (context menu), or the same scope's other
+        # widget. Only the checkmarks move; the project list is untouched.
+        if self._editing:
+            return
+        self.pool_tree.blockSignals(True)
+        try:
+            for i in range(self.pool_tree.topLevelItemCount()):
+                project = self.pool_tree.topLevelItem(i)
+                for j in range(project.childCount()):
+                    leaf = project.child(j)
+                    included = self.pool.is_fov_included(leaf.data(0, Qt.UserRole))
+                    leaf.setCheckState(0, Qt.Checked if included else Qt.Unchecked)
+        finally:
+            self.pool_tree.blockSignals(False)
 
     def _rebuild(self):
         self.pool_tree.blockSignals(True)

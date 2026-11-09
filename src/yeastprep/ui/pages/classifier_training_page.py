@@ -47,6 +47,7 @@ from ..common.checkpoint_choice import (
     describe_checkpoint,
     pick_checkpoint_file,
 )
+from ..common.lazy_refresh import LazyRefresh
 from ..diagnostics.classifier_training_monitor_panel import ClassifierTrainingMonitorPanel
 from ..worker import ClassifierTrainingWorker, ClassifierVicregWorker
 from .page_progress import PageProgress
@@ -77,9 +78,20 @@ class _TrainingTab(QWidget):
         self.cancel_btn.clicked.connect(self._cancel_training)
         self.deploy_latest_btn.clicked.connect(self._deploy_latest)
         self.deploy_other_btn.clicked.connect(self._deploy_other)
+        # The Dataset tab fills in when it's on screen, off the GUI thread,
+        # and not at all while it's hidden: (un)checking FOVs is just a
+        # note that it's out of date.
+        self._dataset_refresh = LazyRefresh(
+            self.monitor_panel.dataset_stats,
+            capture=pool.snapshot,
+            compute=lambda snapshot: snapshot.summary(),
+            apply=self.monitor_panel.set_dataset_summary,
+        )
+        self._dataset_refresh.busyChanged.connect(self.monitor_panel.dataset_stats.set_busy)
         self.monitor_panel.datasetTabActivated.connect(self.refresh_dataset_summary)
         pool.changed.connect(self.refresh_dataset_summary)
-        pool.changed.connect(self._refresh_deploy_labels)
+        # Which checkpoints exist depends on the projects, not the checks.
+        pool.projects_changed.connect(self._refresh_deploy_labels)
         self._refresh_deploy_labels()
 
     # ------------------------------------------------------------------
@@ -170,9 +182,7 @@ class _TrainingTab(QWidget):
     # ------------------------------------------------------------------
 
     def refresh_dataset_summary(self):
-        pooled = self.pool.pooled_annotations()
-        if pooled is not None:
-            self.monitor_panel.set_dataset_summary(pooled, self.pool.tile_paths())
+        self._dataset_refresh.invalidate()
 
     def _latest_checkpoint(self) -> Path | None:
         """This session's last run, else a previous session's output in the
@@ -320,6 +330,7 @@ class _TrainingTab(QWidget):
         self._refresh_deploy_labels()
 
     def shutdown(self):
+        self._dataset_refresh.shutdown()
         if self._thread is not None:
             self._cancel_training()
             self._thread.quit()

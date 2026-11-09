@@ -33,9 +33,9 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
-from tileclass.data.pooled_annotations import PooledAnnotations
-from tileclass.scan import scan_container
 from tileclass.widgets.annotation_stats_panel import AnnotationStatsPanel
+
+from ..common.lazy_refresh import LazyRefresh
 
 _INCLUDE_COL, _PROJECT_COL, _FOV_COL, _INDEX_COL, _VARIABLE_COL = range(5)
 
@@ -54,6 +54,15 @@ class AnnotationAnalyticsPanel(QWidget):
         self._last_counts_df: pl.DataFrame | None = None
 
         self._build_ui()
+        # Filled in when the panel is on screen, off the GUI thread; the
+        # pool changing just marks it out of date.
+        self._refresh = LazyRefresh(
+            self,
+            capture=pool.snapshot,
+            compute=lambda snapshot: snapshot.summary(),
+            apply=self._apply_summary,
+        )
+        self._refresh.busyChanged.connect(self.stats_panel.set_busy)
 
     # ------------------------------------------------------------------
     # UI construction
@@ -268,22 +277,22 @@ class AnnotationAnalyticsPanel(QWidget):
         return group
 
     # ------------------------------------------------------------------
-    # Refresh from pool -- called on ClassifierPool.changed and
+    # Refresh from pool -- called on PoolScope.changed and
     # whenever this tab becomes the visible one (annotation files can
     # change on disk from an external tileclass viewer session).
 
     def refresh_from_pool(self):
-        fov_dirs = self.pool.checked_fov_dirs()
-        pooled = self.pool.pooled_annotations()
+        self._refresh.invalidate()
 
-        self._refresh_fov_table(fov_dirs)
-        self._refresh_category_checks(pooled)
-        self._refresh_stats(pooled, fov_dirs)
+    def _apply_summary(self, summary):
+        self._refresh_fov_table(summary.fov_dirs)
+        self._refresh_category_checks(summary.vocabulary)
+        self.stats_panel.show_counts(
+            summary.counts, summary.human_counts, summary.untagged, summary.vocabulary
+        )
 
-    def _refresh_stats(self, pooled, fov_dirs):
-        annotations = pooled if pooled is not None else PooledAnnotations([])
-        paths = [p for f in fov_dirs for p in scan_container(f)]
-        self.stats_panel.refresh(annotations, paths)
+    def shutdown(self):
+        self._refresh.shutdown()
 
     def _refresh_fov_table(self, fov_dirs: list[str]):
         current_paths = set(fov_dirs)
@@ -369,7 +378,7 @@ class AnnotationAnalyticsPanel(QWidget):
         finally:
             self.fov_table.blockSignals(False)
 
-    def _refresh_category_checks(self, pooled):
+    def _refresh_category_checks(self, categories):
         for name, checkbox in self._category_checkboxes.items():
             self._category_checked[name] = checkbox.isChecked()
 
@@ -379,7 +388,6 @@ class AnnotationAnalyticsPanel(QWidget):
             if widget is not None:
                 widget.deleteLater()
 
-        categories = pooled.categories() if pooled is not None else []
         self._category_checkboxes = {}
         for name in categories:
             checkbox = QCheckBox(name)

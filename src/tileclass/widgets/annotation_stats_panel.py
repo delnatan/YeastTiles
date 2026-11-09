@@ -7,6 +7,7 @@ from qtpy.QtWidgets import (
     QApplication,
     QHBoxLayout,
     QHeaderView,
+    QLabel,
     QPushButton,
     QShortcut,
     QTableWidget,
@@ -42,10 +43,18 @@ class AnnotationStatsPanel(QWidget):
 
         copy_button = QPushButton("Copy to Clipboard")
         copy_button.clicked.connect(self._copy_all)
+        self.busy_label = QLabel()
+        self.busy_label.setStyleSheet("color: #a0a0a0;")
         button_row = QHBoxLayout()
         button_row.addWidget(copy_button)
+        button_row.addWidget(self.busy_label)
         button_row.addStretch(1)
         layout.addLayout(button_row)
+
+    def set_busy(self, busy: bool) -> None:
+        """Say the table is about to change because a tally is still being
+        computed elsewhere (see `show_counts`)."""
+        self.busy_label.setText("Updating..." if busy else "")
 
     def _table_text(self, rows):
         """Tab-separated text (header + rows) for the given row indices --
@@ -96,9 +105,15 @@ class AnnotationStatsPanel(QWidget):
             counts[category] = counts.get(category, 0) + 1
             if annotations.confidence(key) is None:
                 human_counts[category] = human_counts.get(category, 0) + 1
+        self.show_counts(counts, human_counts, untagged, annotations.categories())
+
+    def show_counts(self, counts, human_counts, untagged, vocabulary):
+        """`refresh`'s table from counts already tallied -- e.g. on a worker
+        thread, for a pool too big to tally on the GUI thread. `counts` and
+        `human_counts` map category -> tiles (the latter only the ones a
+        human set); `untagged` is the tiles with no tag at all."""
         tagged_total = sum(counts.values())
 
-        vocabulary = annotations.categories()
         rows = [("Un-annotated", untagged, False)]
         rows += [(name, counts.get(name, 0), True) for name in vocabulary]
         # Categories still in use but no longer in the vocabulary (e.g.

@@ -155,7 +155,8 @@ class ClassifierTrainingMonitorPanel(QWidget):
         self.dataset_stats = AnnotationStatsPanel()
         return self.dataset_stats
 
-    def set_dataset_summary(self, pooled, paths) -> None:
-        """`pooled`: a `PooledAnnotations` over the checked FOVs; `paths`:
-        every tile in them."""
-        self.dataset_stats.refresh(pooled, paths)
+    def set_dataset_summary(self, summary) -> None:
+        """`summary`: the checked FOVs' `pool_data.PoolSummary`."""
+        self.dataset_stats.show_counts(
+            summary.counts, summary.human_counts, summary.untagged, summary.vocabulary
+        )
