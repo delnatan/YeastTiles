@@ -436,7 +436,13 @@ class AnnotationAnalyticsPanel(QWidget):
             return
 
         confirmed_only = self.confirmed_only_cb.isChecked()
-        fov_prefixes = [(path + "/", value) for path, value in included_fovs]
+        # (prefix, variable value, project, FOV name): the FOV name is kept
+        # on every row so the exported CSV can be regrouped by any other
+        # identifier embedded in it.
+        fov_prefixes = [
+            (path + "/", value, Path(path).parent.parent.name, Path(path).stem)
+            for path, value in included_fovs
+        ]
 
         rows = []
         for tile_path, category, confidence in pooled.tagged_items():
@@ -444,9 +450,16 @@ class AnnotationAnalyticsPanel(QWidget):
                 continue
             if category not in selected_categories:
                 continue
-            for prefix, value in fov_prefixes:
+            for prefix, value, project, fov in fov_prefixes:
                 if tile_path.startswith(prefix):
-                    rows.append({"variable_raw": value, "category": category})
+                    rows.append(
+                        {
+                            "project": project,
+                            "fov": fov,
+                            "variable_raw": value,
+                            "category": category,
+                        }
+                    )
                     break
 
         if not rows:
@@ -468,7 +481,19 @@ class AnnotationAnalyticsPanel(QWidget):
             .sort(["variable", "category"])
         )
         totals = df.group_by("variable").agg(pl.len().alias("total_count")).sort("variable")
-        self._last_counts_df = counts
+        # Export is per FOV (not pooled per variable value like the plot);
+        # percentage is the category share within that FOV.
+        self._last_counts_df = (
+            df.group_by(["project", "fov", "variable", "category"])
+            .len()
+            .rename({"len": "count"})
+            .with_columns(
+                (pl.col("count") / pl.col("count").sum().over(["project", "fov"]) * 100).alias(
+                    "percentage"
+                )
+            )
+            .sort(["project", "fov", "category"])
+        )
 
         variable_name = self.variable_name_edit.text().strip() or "variable"
 
