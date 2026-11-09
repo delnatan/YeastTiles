@@ -110,3 +110,23 @@ def test_scatter_lasso_reports_indices_inside(explorer_setup):
     lo, hi = xy.min(axis=0) - 1, xy.max(axis=0) + 1
     explorer.scatter._on_lasso([(lo[0], lo[1]), (hi[0], lo[1]), (hi[0], hi[1]), (lo[0], hi[1])])
     assert got == [list(range(6))]
+
+
+def test_refresh_picks_up_tags_written_elsewhere(explorer_setup):
+    explorer, paths, container = explorer_setup
+    explorer._on_lasso([0, 1, 5])
+
+    # A tile viewer opened on these tiles tags two and clears the third.
+    viewer = PooledAnnotations([container])
+    viewer.update([(paths[0], "budding"), (paths[1], "single"), (paths[5], "")])
+    viewer.update_with_confidence([(paths[2], "single", 0.8)])  # AI guess: not "labeled"
+    assert explorer.labels_for(paths)[0] == UNLABELED_LABEL  # not yet seen
+
+    explorer.refresh_from_disk()
+
+    assert explorer.labels_for(paths) == [
+        "budding", "single", UNLABELED_LABEL, UNLABELED_LABEL, UNLABELED_LABEL, UNLABELED_LABEL
+    ]
+    assert explorer.grid.paths == [paths[0], paths[1], paths[5]]  # grid unchanged
+    sizes = explorer.scatter._points.get_sizes()
+    assert list(sizes[:4]) == [5] * 4 and all(sizes[4:] == 16)

@@ -154,12 +154,18 @@ class PooledAnnotations:
             owners.setdefault(store.vocab_path or store.file_path, store)
         return list(owners.values())
 
+    def reload(self):
+        """Re-read every pooled sidecar (and shared vocabulary) from disk,
+        for tags written meanwhile by another window -- e.g. a tile viewer
+        opened on some of these tiles."""
+        for store in self._stores.values():
+            store.load()
+
     def _reload_all(self):
         """A vocabulary change went through one store per vocabulary file
         (and a rename rewrote sibling sidecars) behind the other stores'
         backs."""
-        for store in self._stores.values():
-            store.load()
+        self.reload()
 
     def add_category(self, name):
         for store in self._vocab_owners():

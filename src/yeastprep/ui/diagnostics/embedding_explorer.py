@@ -14,6 +14,8 @@ open viewer windows is safe. Labels set here are human-confirmed, exactly
 like the viewer's number keys.
 """
 
+import os
+
 import numpy as np
 from qtpy.QtCore import QPoint, Qt, Signal
 from qtpy.QtGui import QImage, QKeySequence, QPixmap, QShortcut
@@ -132,7 +134,18 @@ class EmbeddingExplorerWidget(QWidget):
         self.categories_btn.setToolTip("Add, rename or remove categories.")
         self.open_viewer_btn = QPushButton("Open in Viewer")
         self.open_viewer_btn.setToolTip("Open these tiles in a full tile viewer window.")
-        for btn in (self.clear_tag_btn, self.select_all_btn, self.categories_btn, self.open_viewer_btn):
+        self.refresh_btn = QPushButton("Refresh")
+        self.refresh_btn.setToolTip(
+            "Re-read the tags from disk: pick up what was changed in a tile "
+            "viewer window opened from here."
+        )
+        for btn in (
+            self.clear_tag_btn,
+            self.select_all_btn,
+            self.categories_btn,
+            self.open_viewer_btn,
+            self.refresh_btn,
+        ):
             actions.addWidget(btn)
         side_layout.addLayout(actions)
 
@@ -169,6 +182,7 @@ class EmbeddingExplorerWidget(QWidget):
         self.clear_tag_btn.clicked.connect(lambda: self.assign_category(""))
         self.select_all_btn.clicked.connect(self.grid.select_all)
         self.categories_btn.clicked.connect(self._manage_categories)
+        self.refresh_btn.clicked.connect(self.refresh_from_disk)
         self.open_viewer_btn.clicked.connect(
             lambda: self.grid.paths and self.openInViewerRequested.emit(self.grid.paths)
         )
@@ -237,6 +251,30 @@ class EmbeddingExplorerWidget(QWidget):
             f"Cleared {len(selected)} tile(s)"
         )
         self.selection_label.setText(f"{verb}. {self._selection_summary()}")
+        self.annotationsChanged.emit()
+
+    def refresh_from_disk(self):
+        """Pick up tags changed outside this widget (a tile viewer opened on
+        the same tiles): re-read the sidecars, then recolor the plot, the
+        category buttons and the grid's badges. Which tiles are plotted,
+        and what the grid shows and has selected, stay as they are."""
+        if self._pooled is None:
+            return
+        self._pooled.reload()
+        confirmed = {
+            os.path.normpath(path): category
+            for path, category, confidence in self._pooled.tagged_items()
+            if confidence is None
+        }
+        self._labels = [confirmed.get(p, UNLABELED_LABEL) for p in self._paths]
+        self._refresh_categories()
+        self.scatter.set_labels(self._labels, self._category_colors)
+        self._refresh_badges()
+        n_labeled = sum(1 for label in self._labels if label != UNLABELED_LABEL)
+        self.selection_label.setText(
+            f"Refreshed: {n_labeled} of {len(self._paths)} tiles annotated. "
+            + self._selection_summary()
+        )
         self.annotationsChanged.emit()
 
     def shutdown(self):
