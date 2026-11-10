@@ -14,12 +14,12 @@ a convenient, discoverable default, not project state.
 
 import os
 import random
-import statistics
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from tileclass.scan import scan_container
+from tileclass.tile_container import training_provenance_contains
 
 from .fs_status import list_visible
 from .project import STAGE_TILES
@@ -87,12 +87,23 @@ def find_project_checkpoint(project_root, kind: str) -> tuple[Path, Path] | None
     return None
 
 
+# Tiles handed to `classifier.predict` at a time: the grain of
+# `classify_pool`'s progress reports.
+INFERENCE_CHUNK = 256
+
+
 @dataclass
 class ClassifyPoolResult:
-    n_total: int = 0
-    n_newly_tagged: int = 0
+    n_total: int = 0  # tiles scored
+    n_newly_tagged: int = 0  # had no tag before
+    n_replaced: int = 0  # an earlier AI prediction, re-predicted
     n_human_confirmed: int = 0
     n_agree_with_human: int = 0
+    # The human-confirmed tiles the checkpoint was *not* trained on, and how
+    # many of those it agrees with -- None when the checkpoint's training
+    # record can't be matched to these files (see `_usable_provenance`).
+    n_human_unseen: int | None = None
+    n_agree_unseen: int = 0
     category_counts: dict = field(default_factory=dict)
     mean_confidence: float | None = None
 
@@ -100,62 +111,91 @@ class ClassifyPoolResult:
     def accuracy_vs_human(self) -> float | None:
         return self.n_agree_with_human / self.n_human_confirmed if self.n_human_confirmed else None
 
+    @property
+    def accuracy_unseen(self) -> float | None:
+        return self.n_agree_unseen / self.n_human_unseen if self.n_human_unseen else None
 
-def classify_pool(pooled, classifier) -> ClassifyPoolResult:
-    """Run `classifier` (a `tileclass.classifiers.base.TileClassifier`,
-    e.g. a `YeastEfficientNetClassifier` pointed at a just-trained,
-    not-yet-deployed session checkpoint) over every tile crop under
-    `pooled`'s folders (a `tileclass.data.pooled_annotations.PooledAnnotations`),
-    tagging any tile that has no existing tag yet.
 
-    A tile that already carries a tag -- human-confirmed *or* a
-    still-standing AI prediction -- is never overwritten, matching
-    `tileclass`'s own Auto-Annotate convention: re-running after a newer
-    model is trained only fills in what's still blank, unless the sidecar
-    files are stripped of unreviewed predictions first
-    (`PooledAnnotations.clear_unconfirmed`). Every tile is still run
-    through the model regardless, so a human-confirmed tile doubles as a
-    free held-out accuracy check (`n_agree_with_human`/`accuracy_vs_human`)
-    for whatever checkpoint `classifier` wraps.
+def _usable_provenance(classifier):
+    """`classifier.trained_on` (`tile_container.group_training_provenance`'s
+    `{container path: [cell labels]}`), or None if it can't say which of
+    this machine's tiles were trained on: it records absolute paths, so a
+    checkpoint trained elsewhere (or before a project moved) matches
+    nothing here, and "not trained on" would wrongly mean every tile."""
+    trained_on = getattr(classifier, "trained_on", None)
+    if not trained_on or not any(os.path.exists(path) for path in trained_on):
+        return None
+    return {path: set(labels) for path, labels in trained_on.items()}
+
+
+def classify_pool(pooled, classifier, progress_callback=None) -> ClassifyPoolResult:
+    """Run `classifier` (a `tileclass.classifiers.base.TileClassifier`)
+    over every tile under `pooled`'s folders (a
+    `tileclass.data.pooled_annotations.PooledAnnotations`), one FOV at a
+    time, writing each FOV's predictions as it finishes.
+
+    Every tile without a human-set or accepted tag gets this classifier's
+    prediction -- including one still carrying an earlier, unreviewed AI
+    prediction, so after a run every prediction in the pool comes from the
+    one checkpoint rather than a mix of whichever models ran before. A
+    human-set tag is never overwritten.
+
+    The human-confirmed tiles are scored too, as an accuracy check. Most of
+    them are usually the checkpoint's own training tiles, which it has
+    memorized -- `n_human_unseen`/`accuracy_unseen` count only the ones it
+    wasn't trained on (its validation split, plus anything annotated
+    since), which is the number that says how far to trust the rest.
+
+    `progress_callback(done, total)` is called every `INFERENCE_CHUNK`
+    tiles.
     """
-    paths = []
-    for folder in pooled.folders:
-        paths.extend(scan_container(folder))
-    # PooledAnnotations dispatches per-tile calls by exact string match
-    # against its own normalized folder roots -- see its module docstring.
-    paths = [os.path.normpath(os.path.abspath(p)) for p in paths]
+    per_folder = [
+        # PooledAnnotations dispatches per-tile calls by exact string match
+        # against its own normalized folder roots -- see its module docstring.
+        (folder, [os.path.normpath(os.path.abspath(p)) for p in scan_container(folder)])
+        for folder in pooled.folders
+    ]
+    total = sum(len(paths) for _folder, paths in per_folder)
+    trained_on = _usable_provenance(classifier)
 
-    predictions = classifier.predict(paths)
-
-    updates = []
+    result = ClassifyPoolResult(n_total=total, n_human_unseen=0 if trained_on else None)
     category_counts = Counter()
-    confidences = []
-    n_human_confirmed = 0
-    n_agree = 0
-    for path, (label, confidence) in zip(paths, predictions):
-        category_counts[label] += 1
-        confidences.append(confidence)
+    confidence_sum = 0.0
+    done = 0
 
-        existing_category = pooled.get(path)
-        if existing_category is None:
-            updates.append((path, label, confidence))
-            continue
+    for _folder, paths in per_folder:
+        predictions = []
+        for start in range(0, len(paths), INFERENCE_CHUNK):
+            chunk = paths[start : start + INFERENCE_CHUNK]
+            predictions.extend(classifier.predict(chunk))
+            done += len(chunk)
+            if progress_callback is not None:
+                progress_callback(done, total)
 
-        if pooled.confidence(path) is None:
-            n_human_confirmed += 1
-            if label == existing_category:
-                n_agree += 1
+        updates = []
+        for path, (label, confidence) in zip(paths, predictions):
+            category_counts[label] += 1
+            confidence_sum += confidence
 
-    pooled.update_with_confidence(updates)
+            existing_category = pooled.get(path)
+            if existing_category is None:
+                result.n_newly_tagged += 1
+                updates.append((path, label, confidence))
+            elif pooled.confidence(path) is not None:
+                result.n_replaced += 1
+                updates.append((path, label, confidence))
+            else:
+                agrees = label == existing_category
+                result.n_human_confirmed += 1
+                result.n_agree_with_human += agrees
+                if trained_on and not training_provenance_contains(trained_on, path):
+                    result.n_human_unseen += 1
+                    result.n_agree_unseen += agrees
+        pooled.update_with_confidence(updates)
 
-    return ClassifyPoolResult(
-        n_total=len(paths),
-        n_newly_tagged=len(updates),
-        n_human_confirmed=n_human_confirmed,
-        n_agree_with_human=n_agree,
-        category_counts=dict(category_counts),
-        mean_confidence=statistics.fmean(confidences) if confidences else None,
-    )
+    result.category_counts = dict(category_counts)
+    result.mean_confidence = confidence_sum / total if total else None
+    return result
 
 
 def unlabeled_paths(pooled) -> list[str]:
@@ -164,11 +204,10 @@ def unlabeled_paths(pooled) -> list[str]:
     plots them (in gray) alongside the annotated ones. Same path-gathering
     as `classify_pool` (`scan_container` per folder, normalized abspath),
     filtered to whatever `pooled` has no *human-confirmed* tag for -- a
-    still-standing AI prediction still counts as "unlabeled" here (unlike
-    `classify_pool`'s own "never overwrite an existing tag" convention,
-    which does treat it as labeled): otherwise, running "Run Inference on
-    Pool" first -- which tags every untagged tile with an AI prediction --
-    would leave nothing unlabeled to show."""
+    still-standing AI prediction still counts as "unlabeled" here:
+    otherwise, running "Run Inference on Pool" first -- which tags every
+    untagged tile with an AI prediction -- would leave nothing unlabeled
+    to show."""
     paths = []
     for folder in pooled.folders:
         paths.extend(scan_container(folder))

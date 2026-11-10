@@ -69,6 +69,8 @@ class TrainingProgress:
 class TrainingResult:
     val_accuracy: float
     per_class_accuracy: dict = field(default_factory=dict)  # category -> accuracy
+    # category -> validation tiles behind that accuracy (0: not validated)
+    per_class_val_count: dict = field(default_factory=dict)
     categories: list = field(default_factory=list)
     train_count: int = 0
     val_count: int = 0
@@ -137,10 +139,10 @@ def _run_stage(
 ):
     """`best`: a dict shared across both training stages (probe + finetune)
     that this function updates in place whenever an epoch's validation
-    accuracy beats `best["val_accuracy"]` -- so whichever epoch across the
-    whole run scored highest is always recoverable, even if training gets
-    cancelled partway through, or later epochs (e.g. finetuning overfitting
-    the small labeled set) do worse than an earlier one."""
+    accuracy beats `best["val_accuracy"]` -- what a cancelled run saves.
+    A run that completes saves its last epoch instead: once the loss has
+    settled, epoch-to-epoch differences in validation accuracy are noise,
+    and picking the highest would only select on it."""
     val_acc, per_class_acc = 0.0, None
     for epoch in range(num_epochs):
         if cancel_check is not None and cancel_check():
@@ -210,6 +212,7 @@ def _save_weights(
     trained_on_paths,
     category_counts: dict[str, int] | None = None,
     output_dir: Path | None = None,
+    validation: dict | None = None,
 ) -> Path:
     """Write `weights.pth`/`meta.json` into `output_dir` if given, else
     into the live inference slot (`WEIGHTS_DIR`) -- backing up whatever's
@@ -229,6 +232,10 @@ def _save_weights(
     run's whole pool (train + val, unlike `trained_on_paths`) -- shown
     wherever a checkpoint is described (yeastprep's checkpoint dropdowns
     and Deploy group), so a lopsided training set is visible at a glance.
+
+    `validation`: the saved weights' score on this run's held-out split
+    (`{"accuracy", "n"}`), shown in the same places -- what "Deploy" is
+    decided on, kept with the checkpoint rather than only in a log.
     """
     import torch
 
@@ -249,6 +256,9 @@ def _save_weights(
     if category_counts is not None:
         meta["category_counts"] = {c: category_counts.get(c, 0) for c in categories}
     meta["trained_on"] = group_training_provenance(trained_on_paths)
+    meta.pop("validation", None)  # an earlier run's score isn't this one's
+    if validation is not None:
+        meta["validation"] = validation
     meta["last_trained"] = datetime.now(timezone.utc).isoformat()
     meta.setdefault(
         "description",
@@ -361,6 +371,7 @@ def train_classifier(
     # (see `_run_stage`'s docstring) -- recovered on cancellation instead of
     # discarding the whole run (see the `except TrainingCancelled` below).
     best = {"val_accuracy": -1.0, "per_class_acc": None, "state": None}
+    cancelled = False
 
     try:
         # Stage 1: linear probe -- freeze the backbone, train only the head.
@@ -414,38 +425,30 @@ def train_classifier(
         )
     except TrainingCancelled:
         # Nothing to fall back to (cancelled before a single epoch
-        # finished) -- same as before, discard the run entirely.
+        # finished) -- discard the run entirely.
         if best["state"] is None:
             raise
         model.load_state_dict(best["state"])
-        category_counts = Counter(label for _, label in records)
-        weights_dir = _save_weights(
-            model, categories, train_paths, category_counts=category_counts, output_dir=output_dir
-        )
-        return TrainingResult(
-            val_accuracy=best["val_accuracy"],
-            per_class_accuracy={
-                categories[c]: float(acc) for c, acc in enumerate(best["per_class_acc"])
-            },
-            categories=categories,
-            train_count=len(train_idx),
-            val_count=len(val_idx),
-            weights_path=weights_dir / "weights.pth",
-            cancelled=True,
-        )
+        val_acc, per_class_acc = best["val_accuracy"], best["per_class_acc"]
+        cancelled = True
 
     category_counts = Counter(label for _, label in records)
     weights_dir = _save_weights(
-        model, categories, train_paths, category_counts=category_counts, output_dir=output_dir
+        model,
+        categories,
+        train_paths,
+        category_counts=category_counts,
+        output_dir=output_dir,
+        validation={"accuracy": val_acc, "n": len(val_idx)},
     )
-
+    val_class_counts = Counter(val_labels)
     return TrainingResult(
         val_accuracy=val_acc,
-        per_class_accuracy={
-            categories[c]: float(acc) for c, acc in enumerate(per_class_acc)
-        },
+        per_class_accuracy={categories[c]: float(acc) for c, acc in enumerate(per_class_acc)},
+        per_class_val_count={categories[c]: val_class_counts.get(c, 0) for c in range(num_classes)},
         categories=categories,
         train_count=len(train_idx),
         val_count=len(val_idx),
         weights_path=weights_dir / "weights.pth",
+        cancelled=cancelled,
     )

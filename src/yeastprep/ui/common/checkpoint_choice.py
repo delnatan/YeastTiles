@@ -55,7 +55,13 @@ def describe_checkpoint(weights_path) -> str:
     categories = ", ".join(
         f"{c} ({counts[c]})" if c in counts else c for c in meta.get("categories") or []
     )
-    return f"trained {trained}; categories: {categories or 'n/a'}"
+    validation = meta.get("validation")
+    score = (
+        f"validation accuracy {validation['accuracy']:.3f} on {validation['n']} tiles; "
+        if validation
+        else ""
+    )
+    return f"trained {trained}; {score}categories: {categories or 'n/a'}"
 
 
 def pick_checkpoint_file(parent, kind: str) -> Path | None:

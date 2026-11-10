@@ -41,6 +41,10 @@ class YeastEfficientNetClassifier(TileClassifier):
         meta_path = Path(meta_path) if meta_path is not None else META_PATH
         meta = json.loads(meta_path.read_text())
         self.categories = meta["categories"]
+        # Which tiles this checkpoint trained on (see `_save_weights` in
+        # training/supervised.py) -- lets a caller scoring annotated tiles
+        # tell memorized ones from held-out ones.
+        self.trained_on = meta.get("trained_on") or {}
         self._model = None
         self._device = None
 

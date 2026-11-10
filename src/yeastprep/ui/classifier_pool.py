@@ -132,6 +132,10 @@ class PoolSnapshot:
         """Tile and tag counts over the checked FOVs, from the cache."""
         return self._cache.summarize(self.checked_fov_dirs())
 
+    def fov_tallies(self) -> list:
+        """(fov_dir, `FovTally`) per checked FOV, from the cache."""
+        return [(fov, self._cache.tally(fov)) for fov in self.checked_fov_dirs()]
+
     def pooled_annotations(self) -> PooledAnnotations | None:
         """A `PooledAnnotations` over the checked FOVs, or `None` if none
         are checked. Always fresh from disk: it's what tags are written

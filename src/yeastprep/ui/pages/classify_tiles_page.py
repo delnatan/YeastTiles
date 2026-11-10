@@ -1,8 +1,8 @@
 """Classify Tiles page: using a trained checkpoint on the shared
 classification pool (`ui/classifier_pool.py`) -- bulk-classifying its
-tiles, clearing stale AI predictions, exploring a backbone's embeddings
-(lasso-select a cluster to open it in a tile viewer), and plotting
-annotation counts against experimental variables.
+tiles, showing and saving the resulting per-FOV category counts (Results
+tab), exploring a backbone's embeddings (lasso-select a cluster to tag it),
+and plotting annotation counts against experimental variables.
 """
 
 from pathlib import Path
@@ -18,6 +18,7 @@ from qtpy.QtWidgets import (
     QLabel,
     QMessageBox,
     QPlainTextEdit,
+    QProgressBar,
     QPushButton,
     QScrollArea,
     QSpinBox,
@@ -44,10 +45,11 @@ from ..classifier_pool import ClassifierPoolWidget, PoolScope
 from ..common.background_task import BackgroundTask
 from ..common.checkpoint_choice import CheckpointChoice
 from ..diagnostics.annotation_analytics_panel import AnnotationAnalyticsPanel
+from ..diagnostics.classification_results_panel import ClassificationResultsPanel
 from ..diagnostics.embedding_explorer import EmbeddingExplorerWidget
 from ..diagnostics.embedding_scatter_widget import UNLABELED_LABEL
 from ..worker import ClassifierInferenceWorker
-from .page_progress import PageProgress  # noqa: F401 -- shape of progress_changed, never emitted here
+from .page_progress import PageProgress
 
 
 # (combo text, mode) for which unlabeled tiles Explore Embeddings plots.
@@ -59,7 +61,7 @@ _UNLABELED_MODES = (
 
 
 class ClassifyTilesPage(QWidget):
-    progress_changed = Signal(object)  # PageProgress -- unused (nothing here is a batch/stage job)
+    progress_changed = Signal(object)  # PageProgress -- Run Inference on Pool
 
     def __init__(self, pool: PoolScope, parent=None):
         super().__init__(parent)
@@ -95,8 +97,8 @@ class ClassifyTilesPage(QWidget):
         left_layout.addWidget(
             ClassifierPoolWidget(
                 self.pool,
-                hint="Inference, Explore Embeddings and Annotation Analytics "
-                "use the FOVs checked here -- narrow them to sample one "
+                hint="Inference, Results, Explore Embeddings and Annotation "
+                "Analytics use the FOVs checked here -- narrow them to sample one "
                 "sub-population without changing what training uses.",
             )
         )
@@ -113,10 +115,12 @@ class ClassifyTilesPage(QWidget):
         splitter.addWidget(left_scroll)
 
         self.embedding_explorer = EmbeddingExplorerWidget()
+        self.results_panel = ClassificationResultsPanel(self.pool)
         self.annotation_analytics = AnnotationAnalyticsPanel(self.pool)
 
         self.right_tabs = QTabWidget()
         self.right_tabs.addTab(self.embedding_explorer, "Embeddings")
+        self._results_tab_index = self.right_tabs.addTab(self.results_panel, "Results")
         self._analytics_tab_index = self.right_tabs.addTab(
             self.annotation_analytics, "Annotation Analytics"
         )
@@ -138,19 +142,24 @@ class ClassifyTilesPage(QWidget):
 
         self.infer_btn = QPushButton("Run Inference on Pool")
         self.infer_btn.setToolTip(
-            "Classify every currently-untagged tile across the checked FOVs "
-            "with the checkpoint above, tagging results as unreviewed AI "
-            "predictions. Tiles that already have a tag are left untouched; "
-            "human-confirmed tiles are used as a free accuracy check, logged below."
+            "Classify every tile of the checked FOVs that has no human-set "
+            "tag with the checkpoint above -- earlier AI predictions are "
+            "replaced, human-set and accepted tags never are. The per-FOV "
+            "counts appear in the Results tab. Human-confirmed tiles are "
+            "scored too, as an accuracy check, logged below."
         )
         self.infer_btn.clicked.connect(self._run_inference)
         v.addWidget(self.infer_btn)
 
+        self.inference_progress = QProgressBar()
+        self.inference_progress.setFormat("%v / %m tiles")
+        self.inference_progress.setVisible(False)
+        v.addWidget(self.inference_progress)
+
         self.clear_predictions_btn = QPushButton("Clear AI Predictions in Pool...")
         self.clear_predictions_btn.setToolTip(
             "Remove every unconfirmed AI prediction across the checked FOVs, "
-            "keeping human-set and accepted annotations -- so a newer "
-            "checkpoint can re-predict those tiles."
+            "keeping human-set and accepted annotations."
         )
         self.clear_predictions_btn.clicked.connect(self._clear_predictions)
         v.addWidget(self.clear_predictions_btn)
@@ -276,6 +285,7 @@ class ClassifyTilesPage(QWidget):
         self._embedding_task.succeeded.connect(self._on_embeddings_ready)
         self._embedding_task.failed.connect(self._on_embeddings_failed)
         self.pool.changed.connect(self.annotation_analytics.refresh_from_pool)
+        self.embedding_explorer.annotationsChanged.connect(self.results_panel.refresh_from_pool)
 
     def _on_right_tab_changed(self, index: int):
         # Annotation files can change on disk from outside this page
@@ -284,12 +294,13 @@ class ClassifyTilesPage(QWidget):
         # visible rather than relying only on pool_changed.
         if index == self._analytics_tab_index:
             self.annotation_analytics.refresh_from_pool()
+        elif index == self._results_tab_index:
+            self.results_panel.refresh_from_pool()
 
     # ------------------------------------------------------------------
-    # Run Inference on Pool -- batch-classify every tile crop across the
-    # currently checked FOV folders with a chosen checkpoint, tagging
-    # results as unreviewed AI predictions. Never overwrites an existing
-    # tag (human-confirmed or a prior AI prediction) -- see
+    # Run Inference on Pool -- classify every tile across the checked FOVs
+    # with a chosen checkpoint, saving the results as unreviewed AI
+    # predictions. Never overwrites a human-set tag -- see
     # `core.classify.classify_pool`.
 
     def _run_inference(self):
@@ -325,6 +336,7 @@ class ClassifyTilesPage(QWidget):
         self._inference_thread = QThread()
         self._inference_worker.moveToThread(self._inference_thread)
         self._inference_thread.started.connect(self._inference_worker.run)
+        self._inference_worker.progress.connect(self._on_inference_progress)
         self._inference_worker.finished.connect(self._on_inference_finished)
         self._inference_worker.error.connect(self._on_inference_error)
         self._inference_thread.start()
@@ -354,9 +366,21 @@ class ClassifyTilesPage(QWidget):
             return
         removed = pooled.clear_unconfirmed()
         self.inference_log.appendPlainText(f"cleared {removed} unconfirmed AI prediction(s)")
+        self._refresh_result_views()
+
+    def _refresh_result_views(self):
+        self.results_panel.refresh_from_pool()
         self.annotation_analytics.refresh_from_pool()
 
+    def _on_inference_progress(self, done: int, total: int):
+        self.inference_progress.setRange(0, total)
+        self.inference_progress.setValue(done)
+        self.progress_changed.emit(PageProgress(active=True, done=done, total=total))
+
     def _set_inference_running(self, running: bool):
+        self.inference_progress.setRange(0, 0)  # busy until the first chunk reports
+        self.inference_progress.setVisible(running)
+        self.progress_changed.emit(PageProgress(active=running))
         self.infer_btn.setEnabled(not running)
         self.infer_btn.setText("Running inference..." if running else "Run Inference on Pool")
         # Clearing predictions while inference is writing new ones would race it.
@@ -371,7 +395,8 @@ class ClassifyTilesPage(QWidget):
     def _on_inference_finished(self, result):
         summary = (
             f"inference: {result.n_total} tile(s) scored, "
-            f"{result.n_newly_tagged} newly tagged"
+            f"{result.n_newly_tagged} newly tagged, "
+            f"{result.n_replaced} earlier prediction(s) replaced"
         )
         if result.mean_confidence is not None:
             summary += f", mean_confidence={result.mean_confidence:.3f}"
@@ -381,14 +406,17 @@ class ClassifyTilesPage(QWidget):
                 f"  agreement with {result.n_human_confirmed} human-confirmed tile(s): "
                 f"{result.accuracy_vs_human:.3f} ({result.n_agree_with_human}/{result.n_human_confirmed})"
             )
-        self.status_label.setText("Inference complete.")
+        if result.n_human_unseen:
+            # The rest are the model's own training tiles, which it has memorized.
+            self.inference_log.appendPlainText(
+                f"  ... on the {result.n_human_unseen} it was not trained on: "
+                f"{result.accuracy_unseen:.3f} ({result.n_agree_unseen}/{result.n_human_unseen})"
+            )
+        self.status_label.setText("Inference complete -- per-FOV counts are in the Results tab.")
         self._set_inference_running(False)
         self._teardown_inference_thread()
-        # Newly-tagged predictions just landed on disk -- refresh the
-        # Annotation Analytics tab's pool-wide summary rather than leaving
-        # it showing pre-inference counts until the user happens to click
-        # into that tab.
-        self.annotation_analytics.refresh_from_pool()
+        # New predictions just landed on disk.
+        self._refresh_result_views()
 
     def _on_inference_error(self, message: str):
         self.inference_log.appendPlainText(f"inference ERROR: {message}")
@@ -540,6 +568,7 @@ class ClassifyTilesPage(QWidget):
         return ", ".join(jobs) or None
 
     def shutdown(self):
+        self.results_panel.shutdown()
         self.annotation_analytics.shutdown()
         self._embedding_task.shutdown()
         self.embedding_explorer.shutdown()

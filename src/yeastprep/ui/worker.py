@@ -625,14 +625,11 @@ class ClassifierTrainingWorker(QObject):
 
 class ClassifierInferenceWorker(QObject):
     """Runs `core.classify.classify_pool` off the GUI thread -- a pooled
-    inference pass over every tile crop under the checked FOV folders can
-    be thousands of tiles across several projects, unlike tileclass's own
-    per-page Auto-Annotate (a single page, blocking is fine there). Only a
-    finished/error signal, no epoch-by-epoch progress -- inference has no
-    natural per-item checkpoint to report through, and no cancel: a batched
-    forward pass isn't interruptible mid-flight the way a training loop's
-    per-epoch boundary is."""
+    inference pass can be tens of thousands of tiles across several
+    projects. No cancel: it writes FOV by FOV, so there's nothing to roll
+    back, and a full pass is minutes, not hours."""
 
+    progress = Signal(int, int)  # tiles done, tiles total
     finished = Signal(object)  # core.classify.ClassifyPoolResult
     error = Signal(str)
 
@@ -643,7 +640,9 @@ class ClassifierInferenceWorker(QObject):
 
     def run(self):
         try:
-            result = classify_pool(self._pooled, self._classifier)
+            result = classify_pool(
+                self._pooled, self._classifier, progress_callback=self.progress.emit
+            )
         except Exception as exc:
             self.error.emit(str(exc))
             return

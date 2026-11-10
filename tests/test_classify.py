@@ -5,6 +5,7 @@ import numpy as np
 from tileclass.data.pooled_annotations import PooledAnnotations
 from tileclass.tile_container import write_container
 
+from yeastprep.core import classify
 from yeastprep.core.classify import (
     ClassifyPoolResult,
     checkpoint_dir_for_project,
@@ -98,13 +99,13 @@ def _make_fov(tmp_path, n_tiles=4):
     return container
 
 
-def test_classify_pool_tags_only_untagged_tiles(tmp_path):
+def test_classify_pool_replaces_predictions_but_never_human_tags(tmp_path):
     fov = _make_fov(tmp_path, n_tiles=4)
     sidecar = fov.parent / "fov_001.txt"
     sidecar.write_text(
         "#categories\tsingle\tjunk\n#dims\tCYX\n"
-        "fov_001_cell00000\tsingle\n"  # human-confirmed
-        "fov_001_cell00001\tjunk\t0.5\n"  # existing AI prediction
+        "fov_001_cell00000\tjunk\n"  # human-confirmed
+        "fov_001_cell00001\tjunk\t0.5\n"  # an older model's prediction
     )
     pooled = PooledAnnotations([str(fov)])
 
@@ -112,12 +113,54 @@ def test_classify_pool_tags_only_untagged_tiles(tmp_path):
 
     assert isinstance(result, ClassifyPoolResult)
     assert result.n_total == 4
-    assert result.n_newly_tagged == 2  # cell00002, cell00003 only
+    assert (result.n_newly_tagged, result.n_replaced) == (2, 1)
     tagged = dict((path, (category, confidence)) for path, category, confidence in pooled.tagged_items())
-    assert tagged[f"{fov}/fov_001_cell00000"] == ("single", None)  # untouched
-    assert tagged[f"{fov}/fov_001_cell00001"] == ("junk", 0.5)  # untouched
+    assert tagged[f"{fov}/fov_001_cell00000"] == ("junk", None)  # untouched
+    assert tagged[f"{fov}/fov_001_cell00001"] == ("single", 0.9)  # re-predicted
     assert tagged[f"{fov}/fov_001_cell00002"] == ("single", 0.9)  # newly tagged
     assert tagged[f"{fov}/fov_001_cell00003"] == ("single", 0.9)  # newly tagged
+
+
+def test_classify_pool_reports_progress_per_chunk(tmp_path, monkeypatch):
+    monkeypatch.setattr(classify, "INFERENCE_CHUNK", 3)
+    fov = _make_fov(tmp_path, n_tiles=4)
+    progress = []
+
+    classify_pool(
+        PooledAnnotations([str(fov)]),
+        _FakeClassifier(),
+        progress_callback=lambda done, total: progress.append((done, total)),
+    )
+
+    assert progress == [(3, 4), (4, 4)]
+
+
+def test_classify_pool_separates_tiles_the_model_trained_on(tmp_path):
+    fov = _make_fov(tmp_path, n_tiles=3)
+    (fov.parent / "fov_001.txt").write_text(
+        "fov_001_cell00000\tsingle\n"
+        "fov_001_cell00001\tsingle\n"
+        "fov_001_cell00002\tjunk\n"
+    )
+    pooled = PooledAnnotations([str(fov)])
+    classifier = _FakeClassifier(label="single")
+    classifier.trained_on = {pooled.folders[0]: [0, 1]}  # cell labels
+
+    result = classify_pool(pooled, classifier)
+
+    assert (result.n_human_confirmed, result.n_agree_with_human) == (3, 2)
+    assert (result.n_human_unseen, result.n_agree_unseen) == (1, 0)
+
+
+def test_classify_pool_cannot_separate_for_a_model_trained_elsewhere(tmp_path):
+    fov = _make_fov(tmp_path, n_tiles=1)
+    (fov.parent / "fov_001.txt").write_text("fov_001_cell00000\tsingle\n")
+    classifier = _FakeClassifier()
+    classifier.trained_on = {"/some/other/machine/05_tiles/fov_001.tiles": [0]}
+
+    result = classify_pool(PooledAnnotations([str(fov)]), classifier)
+
+    assert result.n_human_unseen is None
 
 
 def test_classify_pool_computes_agreement_with_human_confirmed(tmp_path):

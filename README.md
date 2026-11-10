@@ -212,7 +212,11 @@ unconfirmed prediction so a newer model can redo them.
 
 Training the classifier (supervised fine-tuning, and VICReg backbone
 pretraining) happens on yeastprep's Classifier Training page, and running it
-over whole projects on its Classify Tiles page. Both pages share one
+over whole projects on its Classify Tiles page. There, "Run Inference on
+Pool" classifies every tile of the checked FOVs that has no human-set tag
+(earlier AI predictions are replaced), and the Results tab shows the
+outcome -- tiles per category, one row per FOV -- and saves it as CSV,
+either that table or one row per tile. Both pages share one
 classification pool of projects, kept between sessions (select a project's
 05 · Tiles entry in the tree and choose "Add Project to Classification
 Pool", or use "Add project..."), and both use only human-set or accepted

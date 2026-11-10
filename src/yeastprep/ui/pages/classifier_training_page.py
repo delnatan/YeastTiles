@@ -265,7 +265,7 @@ class _TrainingTab(QWidget):
 
     def _on_finished(self, result):
         self._apply_result(result)
-        self._finish("Training completed.")
+        self._finish("Training completed -- not in use until deployed (Deploy Latest, below).")
 
     def _on_cancelled(self, result):
         # `result` is the best epoch reached before cancelling (already
@@ -274,7 +274,9 @@ class _TrainingTab(QWidget):
             self._finish("Training cancelled -- no epoch finished yet, nothing saved.")
             return
         self._apply_result(result)
-        self._finish("Training cancelled -- best epoch saved.")
+        self._finish(
+            "Training cancelled -- best epoch saved; not in use until deployed (Deploy Latest, below)."
+        )
 
     def _on_error(self, message: str):
         self.monitor_panel.log(f"ERROR: {message}")
@@ -373,10 +375,17 @@ class _SupervisedTrainingTab(_TrainingTab):
         )
 
     def _result_summary(self, result):
-        return (
-            f"val_accuracy={result.val_accuracy:.3f}  train={result.train_count}  "
-            f"val={result.val_count}  categories={result.categories}"
-        )
+        lines = [
+            f"validation accuracy {result.val_accuracy:.3f} "
+            f"({result.train_count} tiles trained on, {result.val_count} held out)"
+        ]
+        # Per category: the overall figure hides a rare category the model
+        # never gets right.
+        for name in result.categories:
+            n = result.per_class_val_count.get(name, 0)
+            score = f"{result.per_class_accuracy[name]:.3f} on {n}" if n else "too few tiles to validate"
+            lines.append(f"  {name}: {score}")
+        return "\n".join(lines)
 
 
 class _VicregTrainingTab(_TrainingTab):

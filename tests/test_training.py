@@ -89,6 +89,7 @@ def test_train_classifier_runs_and_saves_weights(tmp_path, monkeypatch):
     assert result.val_count > 0
     assert 0.0 <= result.val_accuracy <= 1.0
     assert set(result.per_class_accuracy) == set(result.categories)
+    assert sum(result.per_class_val_count.values()) == result.val_count
     # probe (1 epoch) + finetune (1 epoch)
     assert len(progress_events) == 2
     assert {e.stage for e in progress_events} == {"probe", "finetune"}
@@ -126,6 +127,8 @@ def test_train_classifier_records_trained_on_paths(tmp_path, monkeypatch):
     meta = json.loads((weights_dir / "meta.json").read_text())
     # Grouped by container path -> sorted cell labels -- see
     # tile_container.group_training_provenance.
+    # The score "Deploy" is decided on stays with the checkpoint.
+    assert meta["validation"] == {"accuracy": result.val_accuracy, "n": result.val_count}
     trained_on = meta["trained_on"]
     assert set(trained_on) == {str(tmp_path / "fov.tiles")}
     trained_labels = trained_on[str(tmp_path / "fov.tiles")]
