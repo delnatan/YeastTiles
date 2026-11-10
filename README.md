@@ -30,13 +30,19 @@ uv sync --extra lite      # laptop / tablet / anything else
   containers -- `tiled_viewer` has no notion of FOVs, raw stacks, or a
   `yeastprep` project, so point it at container files directly (see "Using
   tileclass" below). `yeastprep` also launches here: its Classifier Training
-  and Classify Tiles pages work, and the Denoise and Segmentation pages say
-  which packages they'd need.
+  and Classify Tiles pages work, Denoise needs nothing beyond torch, and
+  the Segmentation page says it needs the `prep` extra.
 
 The profiles are declared conflicting, so one environment holds one of
 them. Pass the same `--extra` on every later `uv sync` -- a bare `uv sync`
 removes the extras again. (`uv run` doesn't; it leaves an already-synced
 environment alone.)
+
+A fresh clone has no profile, so a bare `uv run yeastprep` before the first
+`uv sync --extra ...` fails with "torch is not installed" -- torch is only
+pulled in by the `classification` extra and the profiles built on it,
+because which build (CUDA, ROCm, CPU) it should be depends on the machine. `uv.lock` pins every build, so the same profile
+gives the same versions on every platform.
 
 Tests and the dev group: `uv sync --extra gpu` already includes the `dev`
 group (pytest) by default. Notebooks under `notebooks/` need
@@ -115,6 +121,8 @@ the raw files:
   02_denoised/      <stem>.tiff   optional
   03_deconvolved/   <stem>.tiff   optional
   05_tiles/         <fov>.tiles (packed cell crops) + tile_index.csv
+                    + <fov>.txt annotations + categories.tsv
+  06_classifier/    classifier training runs (weights + metadata)
   .yeastprep_project.json   per-project params, run history, source-stage choices
 ```
 
@@ -134,9 +142,10 @@ Pipeline, in order (see [design.md](design.md) for the full rationale):
    02_denoised if that ran, else 01_reduced.
 4. **Segment**: Cellpose masks each cell in the brightfield channel of
    whichever 2D stage is currently the "source" (see below) -- masks are
-   cellpose's own `_seg.npy` sidecars, written next to the source image
-   rather than into a folder of their own, so the real Cellpose GUI can
-   open that folder directly for manual correction.
+   cellpose's own `_seg.npy` sidecars, kept in a `.cellpose_bf/` subfolder
+   of that stage's folder (next to brightfield-only copies of the images)
+   rather than in a numbered folder of their own, so the real Cellpose GUI
+   can open that folder directly for manual correction.
 5. **Tile (05_tiles)**: crops every segmented cell into a fixed-size
    3-channel tile (brightfield, target, mask), packed into one compressed
    container per FOV (`05_tiles/<fov>.tiles`, see
@@ -184,6 +193,17 @@ those actions** to jump to the page that handles it, with the file already
 loaded. Checkboxes in the tree control which files a page's batch button
 processes; batch buttons enable only once there's something valid to run.
 
+To run just the first stage (Raw -> Reduced) without the GUI:
+
+```bash
+uv run yeastprep-batch <input_folder> <output_folder> [--pattern "*.ims"] [options]
+```
+
+It flattens every matching raw stack into a 2-channel tiff in
+`<output_folder>`, skipping (and reporting) files that fail rather than
+aborting the run. `--help` lists the options (tiling, focus prominence,
+channel numbers).
+
 ## Using tileclass (tile viewer / annotation)
 
 ```bash
@@ -216,16 +236,22 @@ over whole projects on its Classify Tiles page. There, "Run Inference on
 Pool" classifies every tile of the checked FOVs that has no human-set tag
 (earlier AI predictions are replaced), and the Results tab shows the
 outcome -- tiles per category, one row per FOV -- and saves it as CSV,
-either that table or one row per tile. Both pages share one
+either that table or one row per tile. The page's other tabs are
+Embeddings (the Explore Embeddings group: a UMAP of a backbone's tile
+embeddings) and Annotation Analytics (per-category counts, and the class
+distribution plotted against an experimental variable -- time, condition,
+... -- extracted from FOV names; saves the figure, or the per-FOV counts as
+CSV). Both pages share one
 classification pool of projects, kept between sessions (select a project's
 05 · Tiles entry in the tree and choose "Add Project to Classification
 Pool", or use "Add project..."), and both use only human-set or accepted
 annotations as ground truth. The project list is shared, but each page has
 its own FOV checkboxes (right-click a project to check/uncheck all, or check
 only one FOV): narrowing Classify Tiles to a few FOVs to sample a
-sub-population for Explore Embeddings leaves the training FOVs alone. A training run saves to the first pooled
-project's `06_classifier/` folder; "Deploy Latest" then makes it the model
-the tile viewer and Classify Tiles use.
+sub-population for Explore Embeddings leaves the training FOVs alone. A
+training run saves to the first pooled project's `06_classifier/` folder;
+"Deploy Latest" then makes it the model the tile viewer and Classify Tiles
+use.
 
 ## Tests
 
