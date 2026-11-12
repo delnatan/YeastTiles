@@ -66,8 +66,11 @@ def main():
             None,
             "yeastprep",
             "yeastprep needs extra packages that aren't installed:\n"
-            f"{exc}\n\nInstall with:\n  uv sync --extra lite\n"
-            "or, on a GPU workstation:\n  uv sync --extra gpu",
+            f"{exc}\n\nThis environment has no install profile yet. Run once:\n"
+            "  uv sync --extra gpu       (NVIDIA)\n"
+            "  uv sync --extra gpu-amd   (AMD, Linux)\n"
+            "  uv sync --extra lite      (anything else)\n"
+            "then `uv run yeastprep` again.",
         )
         sys.exit(1)
 
