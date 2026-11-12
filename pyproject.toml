@@ -5,7 +5,7 @@
 
 [project]
 name = "tileclass"
-version = "0.2.0"
+version = "0.3.0"
 description = "Yeast-cell microscopy pipeline: raw stacks to per-cell tiles (yeastprep), and a tile viewer/classifier (tileclass)."
 requires-python = ">=3.11"
 # Base install: just the tile-grid viewer/annotator (`tiled_viewer`), no
