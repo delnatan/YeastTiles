@@ -50,7 +50,12 @@ class ClassificationTransform:
             [
                 T.RandomHorizontalFlip(p=0.5),
                 T.RandomVerticalFlip(p=0.5),
-                T.RandomRotation(degrees=45),
+                # Bilinear, not v2's default nearest: nearest-neighbour
+                # resampling of a 64x64 tile makes jagged edges that can
+                # merge or split small DAPI foci.
+                T.RandomRotation(
+                    degrees=45, interpolation=T.InterpolationMode.BILINEAR
+                ),
                 RandomGaussianNoise(std=0.02, p=0.5),
                 ClampTensor(min_val=0.0, max_val=1.0),
             ]
@@ -64,12 +69,13 @@ class ClassificationTransform:
         return self._transform(x)
 
 
-def load_masked_crop(path):
-    """Read a (brightfield, fluorescence, mask) crop into a (2, H, W)
-    float32 array in [0, 1], zeroing pixels outside the mask (255 =
-    valid). Shared by `MaskedMicroscopyDataset`,
-    `classifiers.yeast_efficientnet`, and `vicreg.TileViewPairDataset` so
-    the three can't silently diverge on how a crop is decoded.
+def load_crop_with_mask(path):
+    """Read a (brightfield, fluorescence, mask) crop into a (3, H, W)
+    float32 array in [0, 1]: the two intensity channels *unmasked*, then
+    the mask as 0/1. For callers that need to move the mask around before
+    applying it (VICReg's augmentation jitters it -- see
+    `training.vicreg.VICRegAugmentation`); everything else wants
+    `load_masked_crop`.
 
     `path` is a virtual `<fov_id>.tiles/<cell_id>` container
     reference (see `tile_container.py`)."""
@@ -80,10 +86,20 @@ def load_masked_crop(path):
         img = img.transpose(2, 0, 1)
 
     brightfield, fluorescence, mask = img[0], img[1], img[2]
-    valid = mask == 255
-    bf = np.where(valid, brightfield, 0.0)
-    fl = np.where(valid, fluorescence, 0.0)
-    return np.stack([bf, fl], axis=0).astype(np.float32) / 255.0
+    valid = (mask == 255).astype(np.float32)
+    return np.stack(
+        [brightfield / 255.0, fluorescence / 255.0, valid], axis=0
+    ).astype(np.float32)
+
+
+def load_masked_crop(path):
+    """Read a crop into a (2, H, W) float32 array in [0, 1] (brightfield,
+    fluorescence), zeroing pixels outside the mask. Shared by
+    `MaskedMicroscopyDataset`, `classifiers.yeast_efficientnet`, and
+    (via `load_crop_with_mask`) `vicreg.TileViewPairDataset` so they can't
+    silently diverge on how a crop is decoded."""
+    crop = load_crop_with_mask(path)
+    return crop[:2] * crop[2:3]
 
 
 class MaskedMicroscopyDataset(Dataset):

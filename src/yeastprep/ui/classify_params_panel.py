@@ -218,7 +218,29 @@ class VicregTrainParamsPanel(QWidget):
         advanced_form.setVerticalSpacing(8)
 
         self.lr_spin = _dspin(defaults.lr, 1e-6, 1.0, 1e-4, decimals=6)
+        self.lr_spin.setToolTip(
+            "Highest learning rate of the run: reached at the end of warmup, "
+            "then cosine-decayed to zero by the last epoch."
+        )
+        self.warmup_spin = _ispin(defaults.warmup_epochs, 0, 2000)
+        self.warmup_spin.setToolTip(
+            "Epochs of linear warmup from ~0 up to the peak learning rate, so "
+            "the first large updates don't wreck the starting backbone's "
+            "features. Capped at the run's total epochs."
+        )
+        self.eval_every_spin = _ispin(defaults.eval_every, 0, 2000)
+        self.eval_every_spin.setToolTip(
+            "Every this many epochs (and after the last), score the backbone "
+            "with a kNN vote over the pool's annotated tiles -- the same score "
+            "as Explore Embeddings. The best-scoring epoch is the one saved. "
+            "Labels only pick the epoch; they're never trained on. 0 turns "
+            "this off and saves the last epoch."
+        )
         self.weight_decay_spin = _dspin(defaults.weight_decay, 0.0, 1.0, 1e-4, decimals=6)
+        self.weight_decay_spin.setToolTip(
+            "Applied to conv/linear weights only, never to BatchNorm "
+            "parameters or biases."
+        )
         self.proj_dim_spin = _ispin(defaults.proj_dim, 8, 8192)
         self.sim_coeff_spin = _dspin(defaults.sim_coeff, 0.0, 1000.0, 1.0, decimals=2)
         self.std_coeff_spin = _dspin(defaults.std_coeff, 0.0, 1000.0, 1.0, decimals=2)
@@ -226,7 +248,9 @@ class VicregTrainParamsPanel(QWidget):
         self.num_workers_spin = _ispin(defaults.num_workers, 0, 32)
         self.seed_spin = _ispin(defaults.seed, 0, 999999)
 
-        advanced_form.addRow("Learning rate:", self.lr_spin)
+        advanced_form.addRow("Peak learning rate:", self.lr_spin)
+        advanced_form.addRow("Warmup epochs:", self.warmup_spin)
+        advanced_form.addRow("kNN score every (epochs, 0 = off):", self.eval_every_spin)
         advanced_form.addRow("Weight decay:", self.weight_decay_spin)
         advanced_form.addRow("Projection dim:", self.proj_dim_spin)
         advanced_form.addRow("Invariance (sim) coeff:", self.sim_coeff_spin)
@@ -240,6 +264,8 @@ class VicregTrainParamsPanel(QWidget):
             self.epochs_spin,
             self.batch_size_spin,
             self.lr_spin,
+            self.warmup_spin,
+            self.eval_every_spin,
             self.weight_decay_spin,
             self.proj_dim_spin,
             self.sim_coeff_spin,
@@ -257,6 +283,8 @@ class VicregTrainParamsPanel(QWidget):
             epochs=self.epochs_spin.value(),
             batch_size=self.batch_size_spin.value(),
             lr=self.lr_spin.value(),
+            warmup_epochs=self.warmup_spin.value(),
+            eval_every=self.eval_every_spin.value(),
             weight_decay=self.weight_decay_spin.value(),
             proj_dim=self.proj_dim_spin.value(),
             sim_coeff=self.sim_coeff_spin.value(),

@@ -410,23 +410,41 @@ class _VicregTrainingTab(_TrainingTab):
         return paths, paths
 
     def _build_worker(self, paths, output_dir, backbone_path):
+        # Annotated tiles only score checkpoints (kNN), never train it.
+        eval_records = self.pool.gather_confirmed_records()
+        self.monitor_panel.log(
+            f"kNN checkpoint score on {len(eval_records)} annotated tiles"
+            if eval_records
+            else "no annotated tiles -- no kNN score; the last epoch is saved"
+        )
         return ClassifierVicregWorker(
             paths,
             params=self.params_panel.params(),
             output_dir=output_dir,
             backbone_weights_path=backbone_path,
+            eval_records=eval_records,
         )
 
     def _on_epoch_progress(self, progress):
         self.monitor_panel.append_vicreg_epoch(progress)
+        knn = (
+            f"  kNN={progress.knn_accuracy:.3f}"
+            if progress.knn_accuracy is not None
+            else ""
+        )
         self.progress_label.setText(
-            f"epoch {progress.epoch}/{progress.total_epochs}  loss={progress.avg_loss:.4f}"
+            f"epoch {progress.epoch}/{progress.total_epochs}  "
+            f"loss={progress.avg_loss:.4f}{knn}"
         )
 
     def _result_summary(self, result):
-        return (
-            f"final_loss={result.final_loss:.4f}  tiles={result.tile_count}"
+        summary = (
+            f"saved epoch {result.selected_epoch} (chosen by {result.selected_by})  "
+            f"loss={result.final_loss:.4f}  tiles={result.tile_count}"
         )
+        if result.knn_accuracy is not None:
+            summary += f"  kNN accuracy={result.knn_accuracy:.3f}"
+        return summary
 
 
 class ClassifierTrainingPage(QWidget):

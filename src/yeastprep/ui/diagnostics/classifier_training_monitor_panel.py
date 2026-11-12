@@ -28,7 +28,11 @@ class ClassifierTrainingMonitorPanel(QWidget):
         super().__init__(parent)
         self._epochs: list[int] = []
         self._losses: list[float] = []
-        self._secondary: list[float] = []  # val_accuracy (supervised) -- unused for VICReg
+        self._secondary: list[float] = []  # val_accuracy (supervised) / std (VICReg)
+        # VICReg's kNN accuracy: scored only every few epochs, so it keeps
+        # its own x positions rather than sharing `_epochs`.
+        self._knn_epochs: list[int] = []
+        self._knn: list[float] = []
         self._secondary_label = "val accuracy"
 
         layout = QVBoxLayout(self)
@@ -84,12 +88,16 @@ class ClassifierTrainingMonitorPanel(QWidget):
         self.ax_right.yaxis.set_label_position("right")
         self.ax.set_xlabel("epoch")
         self.ax.set_ylabel("loss")
-        self.ax_right.set_ylabel(self._secondary_label)
+        self.ax_right.set_ylabel(
+            self._secondary_label + (" / kNN acc" if self._knn else "")
+        )
 
     def clear(self, secondary_label: str | None = None):
         self._epochs = []
         self._losses = []
         self._secondary = []
+        self._knn_epochs = []
+        self._knn = []
         self._reset_axes(secondary_label)
         self.canvas.draw_idle()
         self.log_view.clear()
@@ -112,23 +120,31 @@ class ClassifierTrainingMonitorPanel(QWidget):
         )
 
     def append_vicreg_epoch(self, progress) -> None:
-        """`progress`: a `tileclass.training.vicreg.VICRegProgress`. VICReg
-        has no held-out accuracy metric per epoch (see the Classify Tiles
-        page's "Explore Embeddings" group for the post-hoc equivalent), so
-        the right axis instead tracks `std` -- collapsed
-        embeddings (VICReg's classic failure mode) show up as `std`
-        trending toward zero."""
+        """`progress`: a `tileclass.training.vicreg.VICRegProgress`. The
+        right axis tracks two things: the `std` loss term -- it's the
+        hinge on per-dimension spread, so it rising rather than settling
+        near zero is the sign of collapsing embeddings (VICReg's classic
+        failure mode) -- and, on the epochs it was scored, the kNN
+        accuracy on the annotated tiles (the same score as Explore
+        Embeddings), which decides which epoch gets saved."""
         self._epochs.append(progress.epoch)
         self._losses.append(progress.avg_loss)
         std = progress.metrics.get("std")
         if std is not None:
             self._secondary.append(std)
+        knn = getattr(progress, "knn_accuracy", None)
+        if knn is not None:
+            self._knn_epochs.append(progress.epoch)
+            self._knn.append(knn)
         self._redraw()
         metrics_str = ", ".join(f"{k}={v:.4f}" for k, v in progress.metrics.items())
-        self.log_view.appendPlainText(
+        line = (
             f"epoch {progress.epoch}/{progress.total_epochs}  "
-            f"loss={progress.avg_loss:.4f}  {metrics_str}"
+            f"loss={progress.avg_loss:.4f}  {metrics_str}  lr={progress.lr:.2e}"
         )
+        if knn is not None:
+            line += f"  kNN={knn:.3f}"
+        self.log_view.appendPlainText(line)
 
     def _redraw(self):
         self._reset_axes()
@@ -142,6 +158,16 @@ class ClassifierTrainingMonitorPanel(QWidget):
                 label=self._secondary_label,
             )
             lines.append(secondary_line)
+        if self._knn:
+            (knn_line,) = self.ax_right.plot(
+                self._knn_epochs,
+                self._knn,
+                color="tab:green",
+                marker="o",
+                markersize=3,
+                label="kNN acc",
+            )
+            lines.append(knn_line)
         self.ax.legend(lines, [line.get_label() for line in lines], loc="upper right")
         self.canvas.draw_idle()
 

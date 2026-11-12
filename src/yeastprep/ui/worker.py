@@ -667,12 +667,16 @@ class ClassifierVicregWorker(QObject):
         params: VICRegParams = VICRegParams(),
         output_dir: Path | None = None,
         backbone_weights_path=None,
+        eval_records=None,
     ):
         super().__init__()
         self._paths = list(paths)
         self._params = params
         self._output_dir = output_dir
         self._backbone_weights_path = backbone_weights_path
+        # Annotated (path, category) pairs for the kNN checkpoint score --
+        # see `pretrain_vicreg`.
+        self._eval_records = list(eval_records or [])
         self._cancel_requested = False
 
     def cancel(self):
@@ -687,6 +691,7 @@ class ClassifierVicregWorker(QObject):
                 cancel_check=lambda: self._cancel_requested,
                 output_dir=self._output_dir,
                 backbone_weights_path=self._backbone_weights_path,
+                eval_records=self._eval_records,
             )
         except TrainingCancelled:
             self.cancelled.emit(None)
