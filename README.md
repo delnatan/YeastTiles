@@ -39,10 +39,11 @@ removes the extras again. (`uv run` doesn't; it leaves an already-synced
 environment alone.)
 
 A fresh clone has no profile, so a bare `uv run yeastprep` before the first
-`uv sync --extra ...` fails with "torch is not installed" -- torch is only
-pulled in by the `classification` extra and the profiles built on it,
-because which build (CUDA, ROCm, CPU) it should be depends on the machine. `uv.lock` pins every build, so the same profile
-gives the same versions on every platform.
+`uv sync --extra ...` stops with a dialog naming the missing package and
+listing the three profiles to choose from. torch is only pulled in by the
+`classification` extra and the profiles built on it, because which build
+(CUDA, ROCm, CPU) it should be depends on the machine. `uv.lock` pins every
+build, so the same profile gives the same versions on every platform.
 
 Tests and the dev group: `uv sync --extra gpu` already includes the `dev`
 group (pytest) by default. Notebooks under `notebooks/` need
@@ -239,7 +240,11 @@ Embeddings (the Explore Embeddings group: a UMAP of a backbone's tile
 embeddings) and Annotation Analytics (per-category counts, and the class
 distribution plotted against an experimental variable -- time, condition,
 ... -- extracted from FOV names; saves the figure, or the per-FOV counts as
-CSV). Both pages share one
+CSV). VICReg pretraining learns from every pooled tile without labels;
+every few epochs (the "kNN score every" setting) it scores the backbone with
+a kNN vote over the annotated tiles -- the same score as Explore Embeddings
+-- and saves the best-scoring epoch, or the last epoch when there are no
+annotations or the setting is 0. Both pages share one
 classification pool of projects, kept between sessions (select a project's
 05 · Tiles entry in the tree and choose "Add Project to Classification
 Pool", or use "Add project..."), and both use only human-set or accepted
