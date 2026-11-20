@@ -87,10 +87,8 @@ missing `classification` packages rather than crashing.
 
 ### Third-party packages
 
-`pyvistra` and `qtkit` (`classification`) and `psfkit` (`psf`) are git-URL dependencies in `pyproject.toml` -- `uv sync`
-clones them itself. `resolvde` isn't a dependency at all: its
-deconvolution code is vendored into `src/yeastprep/core/deconvolution/`
-(see that package's docstring).
+`pyvistra` and `qtkit` (`classification`) and `psfkit` (`psf`) are
+git-URL dependencies in `pyproject.toml` -- `uv sync` clones them itself.
 
 ### GPU / PyTorch
 
